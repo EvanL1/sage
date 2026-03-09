@@ -19,6 +19,20 @@ interface Suggestion {
   feedback: FeedbackValue | null;
 }
 
+interface Report {
+  id: number;
+  report_type: string;
+  content: string;
+  created_at: string;
+}
+
+const REPORT_LABELS: Record<string, string> = {
+  morning: "Morning Brief",
+  evening: "Evening Review",
+  weekly: "Weekly Report",
+  week_start: "Week Start",
+};
+
 function formatTime(ts: string): string {
   try {
     const d = new Date(ts);
@@ -42,6 +56,7 @@ function Dashboard() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [reports, setReports] = useState<Record<string, Report>>({});
 
   // Status: load only on mount
   useEffect(() => {
@@ -64,6 +79,18 @@ function Dashboard() {
     };
     fetchSuggestions();
     const timer = setInterval(fetchSuggestions, 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Reports: mount + poll every 60s
+  useEffect(() => {
+    const fetchReports = () => {
+      invoke<Record<string, Report>>("get_latest_reports")
+        .then(setReports)
+        .catch(console.error);
+    };
+    fetchReports();
+    const timer = setInterval(fetchReports, 60_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -119,6 +146,29 @@ function Dashboard() {
             <p>Complete the initial setup and Sage will provide personalized suggestions based on your role and work rhythm.</p>
             <Link to="/welcome" className="btn btn-primary">Start setup</Link>
           </div>
+        </div>
+      )}
+
+      {Object.keys(reports).length > 0 && (
+        <div className="reports-section">
+          <div style={{ marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span className="card-title" style={{ margin: 0 }}>Reports</span>
+          </div>
+          {Object.entries(reports).map(([type, report]) => (
+            <details
+              key={type}
+              className="report-card"
+              open={type === "weekly" || type === "morning"}
+            >
+              <summary>
+                <span className="report-type">{REPORT_LABELS[type] ?? type}</span>
+                <span className="report-time">{formatTime(report.created_at)}</span>
+              </summary>
+              <div className="report-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{report.content}</ReactMarkdown>
+              </div>
+            </details>
+          ))}
         </div>
       )}
 
