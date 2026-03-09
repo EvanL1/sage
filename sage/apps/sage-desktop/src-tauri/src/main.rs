@@ -68,6 +68,9 @@ fn main() {
             commands::export_memories,
             commands::import_memories,
             commands::save_assessment,
+            commands::get_reports,
+            commands::get_latest_reports,
+            commands::trigger_test_report,
         ])
         .setup(|app| {
             tray::setup_tray(app)?;

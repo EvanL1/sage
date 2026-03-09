@@ -3,8 +3,8 @@ use sage_core::feedback::{FeedbackEffect, FeedbackProcessor};
 use sage_core::onboarding::OnboardingState;
 use sage_core::profile;
 use sage_types::{
-    BehaviorPrefs, CommPrefs, FeedbackAction, Project, ProviderConfig, Stakeholder, UserIdentity,
-    UserProfile, WorkContext, WorkSchedule,
+    BehaviorPrefs, CommPrefs, FeedbackAction, Project, ProviderConfig, Report, Stakeholder,
+    UserIdentity, UserProfile, WorkContext, WorkSchedule,
 };
 use serde_json::{json, Value};
 use tauri::State;
@@ -888,4 +888,52 @@ pub async fn import_memories(
         trigger_memory_sync(&state.store);
     }
     Ok(count)
+}
+
+// ─── Report 命令 ──────────────────────────────
+
+#[tauri::command]
+pub async fn get_reports(
+    state: State<'_, AppState>,
+    report_type: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<Report>, String> {
+    let limit = limit.unwrap_or(10);
+    match report_type {
+        Some(rt) => state.store.get_reports(&rt, limit).map_err(map_err),
+        None => state.store.get_all_reports(limit).map_err(map_err),
+    }
+}
+
+#[tauri::command]
+pub async fn get_latest_reports(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, Report>, String> {
+    let types = ["morning", "evening", "weekly", "week_start"];
+    let mut map = std::collections::HashMap::new();
+    for t in types {
+        if let Ok(Some(r)) = state.store.get_latest_report(t) {
+            map.insert(t.to_string(), r);
+        }
+    }
+    Ok(map)
+}
+
+#[tauri::command]
+pub async fn trigger_test_report(
+    state: State<'_, AppState>,
+    report_type: String,
+) -> Result<String, String> {
+    let rt = match report_type.as_str() {
+        "morning" => sage_core::context_gatherer::ReportType::MorningBrief,
+        "evening" => sage_core::context_gatherer::ReportType::EveningReview,
+        "weekly" => sage_core::context_gatherer::ReportType::WeeklyReport,
+        "week_start" => sage_core::context_gatherer::ReportType::WeekStart,
+        _ => return Err(format!("未知报告类型: {report_type}")),
+    };
+
+    let ctx = sage_core::context_gatherer::gather(&rt, &state.store);
+    let content = format!("## Context Preview\n\n{ctx}");
+    state.store.save_report(&report_type, &content).map_err(map_err)?;
+    Ok(format!("Test report '{report_type}' generated"))
 }
