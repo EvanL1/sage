@@ -1,0 +1,11 @@
+{
+  "name": "sage-wechat-bridge",
+  "version": "0.1.0",
+  "description": "WeChat sidecar for Sage Daemon — bridges Wechaty to Rust daemon via JSONL files",
+  "scripts": {
+    "start": "bun run index.ts"
+  },
+  "dependencies": {
+    "wechaty": "^1.20.2"
+  }
+}

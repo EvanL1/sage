@@ -1,0 +1,19 @@
+[package]
+name = "sage-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sage-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+toml = "0.8"
+notify = "7"
+regex = "1"

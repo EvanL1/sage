@@ -1,0 +1,37 @@
+[daemon]
+heartbeat_interval_secs = 1800  # 30 minutes
+log_level = "info"
+pid_file = "/tmp/sage-daemon.pid"
+
+[memory]
+base_dir = "~/.sage/memory"
+heartbeat_file = "~/.sage/HEARTBEAT.md"
+
+[agent]
+provider = "claude"  # "claude" | "codex" | "gemini"
+claude_binary = "/opt/homebrew/bin/claude"
+codex_binary = "/opt/homebrew/bin/codex"
+gemini_binary = "/opt/homebrew/bin/gemini"
+default_model = "sonnet"
+project_dir = "/Users/lyf/dev/digital-twin"
+max_budget_usd = 0.50
+permission_mode = "bypassPermissions"
+
+[channels.email]
+enabled = true
+poll_interval_secs = 300
+
+[channels.calendar]
+enabled = true
+poll_interval_secs = 900
+
+[channels.wechat]
+enabled = false
+events_file = "/tmp/sage-wechat-events.jsonl"
+
+[channels.hooks]
+enabled = true
+watch_dir = "~/.claude"
+
+[channels.notification]
+enabled = true

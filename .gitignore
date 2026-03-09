@@ -1,0 +1,24 @@
+# Build
+target/
+dist/
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Tauri
+sage/apps/sage-desktop/src-tauri/target/
+
+# Logs
+*.log

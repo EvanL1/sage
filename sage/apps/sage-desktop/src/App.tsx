@@ -1,0 +1,33 @@
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { ThemeProvider } from "./contexts/ThemeContext";
+import Layout from "./components/Layout";
+import Dashboard from "./pages/Dashboard";
+import Onboarding from "./pages/Onboarding";
+import Welcome from "./pages/Welcome";
+import History from "./pages/History";
+import Settings from "./pages/Settings";
+import Chat from "./pages/Chat";
+import AboutYou from "./pages/AboutYou";
+
+function App() {
+  return (
+    <ThemeProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/onboarding" element={<Onboarding />} />
+          <Route path="/welcome" element={<Welcome />} />
+          <Route element={<Layout />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/chat" element={<Chat />} />
+            <Route path="/about" element={<AboutYou />} />
+            <Route path="/history" element={<History />} />
+            <Route path="/settings" element={<Settings />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </ThemeProvider>
+  );
+}
+
+export default App;

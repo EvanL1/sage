@@ -1,0 +1,19 @@
+[package]
+name = "sage-desktop"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sage-core = { workspace = true }
+sage-types = { workspace = true }
+tauri = { workspace = true }
+tauri-plugin-shell = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }
+
+[build-dependencies]
+tauri-build = { workspace = true }

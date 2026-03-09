@@ -1,86 +1,185 @@
-# Sage — Evan 的个人参谋
+# Sage — Personal AI Advisor System
 
-## 这是什么
+> **不是替身，是参谋。** 决策权永远在你，Sage 提供推荐方案 + 理由 + 备选项。
 
-Sage 是一个基于 Claude Code 的个人参谋系统。它理解 Evan 的决策框架、沟通风格和管理哲学，在需要时提供结构化的建议和高效的执行支持。
+Sage is a personal AI advisor built in Rust. It learns your decision frameworks, communication patterns, and management philosophy — then provides structured advice when you need it.
 
-**不是替身，是参谋。** 决策权永远在 Evan，Sage 提供推荐方案 + 理由 + 备选项。
+<!-- TODO: Add screenshots -->
+<!-- ![Dashboard](docs/screenshots/dashboard.png) -->
+<!-- ![Chat](docs/screenshots/chat.png) -->
 
-## 快速开始
-
-```bash
-cd ~/dev/digital-twin
-claude
-```
-
-Claude Code 自动加载 `CLAUDE.md`，Sage 即刻就绪。
-
-## 使用自定义命令
+## Architecture
 
 ```
-/project:email-draft 给 Shawn 发邮件，汇报 PULSE 立项进展，需要他批准预算
-/project:weekly-review 帮我生成本周 VoltageEMS 和 PULSE 的进展报告
-/project:translate 我们的系统采用边缘优先架构，控制逻辑不依赖云端
-/project:meeting-prep 明天跟 Bob 的 1:1，讨论 AI Data Center 机会
-/project:code-review 看一下这个 PR，重点关注 Modbus 通信模块的错误处理
-/project:strategy-note 观察到竞品 Ageto 支持 85+ 设备驱动，我们的设备适配库是核心壁垒
-/project:team-feedback 帮我准备对 [某某] 的季度反馈
+┌─────────────────────────────────────────────────┐
+│                  Sage Desktop                    │
+│              (Tauri + React + TS)                │
+│   ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐          │
+│   │ Chat │ │Dash- │ │About │ │Sett- │          │
+│   │      │ │board │ │ You  │ │ings  │          │
+│   └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘          │
+│      └────────┴────────┴────────┘                │
+│                    │ Tauri IPC                    │
+└────────────────────┼─────────────────────────────┘
+                     │
+┌────────────────────┼─────────────────────────────┐
+│              sage-core (Rust)                     │
+│                    │                              │
+│  ┌─────────┐  ┌───┴────┐  ┌──────────────┐      │
+│  │  Agent   │  │ Store  │  │   Router     │      │
+│  │(LLM call)│  │(SQLite)│  │(event→action)│      │
+│  └────┬─────┘  └───┬────┘  └──────┬───────┘      │
+│       │            │              │               │
+│  ┌────┴─────────┐  │   ┌─────────┴────────┐      │
+│  │ Reliable     │  │   │ Coach / Mirror /  │      │
+│  │ Provider     │  │   │ Questioner /      │      │
+│  │ + HintRouter │  │   │ Guardian          │      │
+│  └──────────────┘  │   └──────────────────┘      │
+│                    │                              │
+└────────────────────┼──────────────────────────────┘
+                     │
+┌────────────────────┼──────────────────────────────┐
+│            sage-daemon (background)                │
+│                    │                               │
+│  ┌─────────┐ ┌────┴────┐ ┌───────────┐           │
+│  │Heartbeat│ │Channels │ │ Daemon    │           │
+│  │(cron)   │ │email/cal│ │ (event    │           │
+│  │         │ │hooks/wx │ │  loop)    │           │
+│  └─────────┘ └─────────┘ └───────────┘           │
+└───────────────────────────────────────────────────┘
 ```
 
-## 项目结构
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Unified Memory** | SQLite-backed memory with keyword search, replacing fragmented file storage |
+| **Reliable Provider** | Exponential backoff retry + automatic fallback to alternate LLM providers |
+| **Hint Router** | Route tasks to different models — `hint:reasoning` → Opus, `hint:fast` → Haiku |
+| **Cognitive Triangle** | Coach (pattern learning) → Mirror (gentle reflection) → Questioner (Socratic questions) |
+| **Agent Guardrails** | Max iteration limits, history windowing (20 msgs), credential scrubbing |
+| **Mental Models** | Encoded decision frameworks, communication matrix, people assessment |
+| **Desktop UI** | Tauri app — Chat, Dashboard, About You (memory), Settings |
+| **Background Daemon** | macOS LaunchAgent — email/calendar polling, heartbeat scheduling |
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Rust, ~3MB binary, <5MB RAM |
+| Storage | SQLite (WAL mode, shared by daemon + desktop) |
+| Desktop | Tauri v2 + React 18 + TypeScript |
+| LLM | Claude (CLI + HTTP API), Codex, Gemini — multi-provider |
+| Channels | AppleScript (Outlook email/calendar), Claude Code hooks, WeChat sidecar |
+| Deployment | macOS LaunchAgent (auto-start + crash recovery) |
+
+## Project Structure
 
 ```
 sage/
-├── CLAUDE.md                          # 核心身份 + 思维模型引用
-├── README.md                          # 本文件
-├── mental-models/                     # 思维模型（Sage 的核心）
-│   ├── decision-framework.md          #   决策框架
-│   ├── communication-matrix.md        #   沟通矩阵
-│   ├── people-assessment.md           #   识人框架
-│   └── cross-dept-strategy.md         #   跨部门策略
-├── .context/                          # 工作上下文（按需更新）
-│   ├── team.md                        #   团队结构
-│   ├── projects.md                    #   项目清单
-│   ├── vocabulary.md                  #   术语表
-│   └── stakeholders.md               #   利益相关者
-├── .claude/
-│   └── commands/                      # 自定义命令
-│       ├── weekly-review.md
-│       ├── email-draft.md
-│       ├── tech-doc.md
-│       ├── meeting-prep.md
-│       ├── code-review.md
-│       ├── translate.md
-│       ├── strategy-note.md
-│       └── team-feedback.md
-├── templates/                         # 文档模板
-│   ├── weekly-progress.md
-│   ├── project-proposal.md
-│   ├── meeting-notes.md
-│   └── email-templates.md
-└── workflows/                         # 工作流指南
-    └── agent-team-guide.md
+├── crates/
+│   ├── sage-types/              # Shared types (Event, Memory, UserProfile...)
+│   ├── sage-core/               # Core library
+│   │   ├── agent.rs             #   LLM invocation + guardrails
+│   │   ├── reliable_provider.rs #   Retry + fallback wrapper
+│   │   ├── hint_router.rs       #   Task-based model routing
+│   │   ├── store.rs             #   SQLite storage (unified memory)
+│   │   ├── router.rs            #   Event classification + handling
+│   │   ├── daemon.rs            #   Event loop orchestrator
+│   │   ├── channels/            #   email, calendar, hooks, wechat
+│   │   ├── coach.rs             #   Pattern learning → insights
+│   │   ├── mirror.rs            #   Gentle behavioral reflection
+│   │   ├── questioner.rs        #   Socratic deep questions
+│   │   ├── guardian.rs          #   Rule-based wellbeing checks
+│   │   ├── scrub.rs             #   Credential redaction
+│   │   └── ...
+│   └── sage-daemon/             # Background daemon binary
+├── apps/
+│   └── sage-desktop/            # Tauri desktop app
+│       ├── src/                 #   React frontend
+│       │   ├── pages/           #     Chat, Dashboard, AboutYou, Settings...
+│       │   └── App.css          #     Styles
+│       └── src-tauri/           #   Rust backend
+│           ├── commands.rs      #     Tauri IPC commands
+│           └── main.rs          #     App entry + embedded daemon
+├── mental-models/               # Decision & communication frameworks
+├── .context/                    # Team, projects, stakeholders, vocabulary
+├── templates/                   # Email, weekly report, meeting note templates
+├── docs/plans/                  # Implementation plans
+└── sop/                         # Standard Operating Procedures
 ```
 
-### 三层架构
+## Stats
 
-| 层 | 目录 | 作用 |
-|----|------|------|
-| **思维层** | `mental-models/` | 让 Sage 像 Evan 一样思考 |
-| **记忆层** | `.context/` + `.claude/memory/` | 让 Sage 知道当前的人、事、项目 |
-| **输出层** | `templates/` + `.claude/commands/` | 让 Sage 像 Evan 一样写 |
+| Metric | Value |
+|--------|-------|
+| Rust code | ~7,000 lines |
+| Frontend code | ~3,900 lines |
+| Tests | 83 (all passing) |
+| Clippy | 0 warnings |
+| Binary size | ~3MB |
 
-## 维护指南
+## Quick Start
 
-| 文件 | 更新频率 | 更新内容 |
-|------|----------|----------|
-| `.context/projects.md` | 每月/项目变更时 | 项目状态、新项目 |
-| `.context/team.md` | 人员变动时 | 团队成员、职责调整 |
-| `.context/stakeholders.md` | 关系变化时 | 新的关键人物 |
-| `.context/vocabulary.md` | 遇到新术语时 | 新增行业术语 |
-| `mental-models/` | 决策习惯变化时 | 新的思维框架 |
-| `CLAUDE.md` | 季度 | 工作重点、角色演进 |
+### Desktop App
 
-## 设计哲学
+```bash
+cd sage/apps/sage-desktop
+bun install
+bun run tauri dev
+```
+
+### Daemon (background)
+
+```bash
+cd sage
+cargo build --release -p sage-daemon
+cp target/release/sage-daemon ~/.sage/bin/
+launchctl load ~/Library/LaunchAgents/com.sage.daemon.plist
+```
+
+### Claude Code Integration
+
+```bash
+cd ~/dev/digital-twin
+claude   # auto-loads CLAUDE.md, Sage ready
+```
+
+#### Custom Commands
+
+```
+/project:email-draft    Draft bilingual work emails
+/project:weekly-review  Generate weekly progress reports
+/project:meeting-prep   Prepare meeting talking points
+/project:code-review    Review code (Rust/Python focus)
+/project:translate      CN↔EN with accurate tech terms
+/project:strategy-note  Structure strategic observations
+/project:team-feedback  Generate team member feedback
+```
+
+## Design Philosophy
 
 > "参谋不替主帅做决定，但要让主帅在 3 秒内做出决定。"
+>
+> *An advisor doesn't make decisions for the commander — but enables the commander to decide in 3 seconds.*
+
+### Core Principles
+
+1. **Advise, don't decide** — Always present options with trade-offs
+2. **Think in Chinese, output in English** — Help structure thoughts in native language, express precisely in English
+3. **Direction, not path** — Give frameworks, not step-by-step instructions
+4. **Systems thinking** — See the structure behind symptoms
+5. **Pragmatism** — Good enough beats perfect
+
+## Inspired By
+
+Architecture patterns borrowed from [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) — a lightweight Rust AI agent runtime:
+
+- **Unified Memory trait** with SQLite backend (adapted: LIKE search for CJK, no FTS5)
+- **ReliableProvider** pattern (retry + fallback chain)
+- **HintRouter** for task-based model routing
+- **Agent guardrails** (iteration limits, history compression, credential scrubbing)
+
+## License
+
+Private project. Not for redistribution.

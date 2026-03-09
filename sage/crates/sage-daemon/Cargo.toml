@@ -1,0 +1,13 @@
+[package]
+name = "sage-daemon"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sage-core = { workspace = true }
+sage-types = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true }
+clap = { version = "4", features = ["derive"] }

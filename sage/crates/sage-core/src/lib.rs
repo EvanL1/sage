@@ -1,0 +1,24 @@
+pub mod agent;
+pub mod applescript;
+pub mod channel;
+pub mod channels;
+pub mod coach;
+pub mod config;
+pub mod daemon;
+pub mod discovery;
+pub mod feedback;
+pub mod guardian;
+pub mod heartbeat;
+pub mod hint_router;
+pub mod memory;
+pub mod mirror;
+pub mod onboarding;
+pub mod profile;
+pub mod provider;
+pub mod questioner;
+pub mod reliable_provider;
+pub mod router;
+pub mod scrub;
+pub mod store;
+
+pub use daemon::Daemon;
