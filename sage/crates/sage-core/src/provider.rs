@@ -2,8 +2,11 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::process::Command;
 use tracing::{debug, info};
+
+static CODEX_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use crate::config::AgentConfig;
 use sage_types::{ProviderConfig, ProviderInfo, ProviderKind};
@@ -72,7 +75,8 @@ impl LlmProvider for ClaudeProvider {
         cmd.env_remove("CLAUDECODE");
 
         info!("Invoking Claude (model: {})", self.model);
-        debug!("Prompt: {}", &prompt[..prompt.len().min(100)]);
+        let preview: String = prompt.chars().take(100).collect();
+        debug!("Prompt: {preview}");
 
         let output = cmd.output().await?;
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -121,7 +125,12 @@ impl LlmProvider for CodexProvider {
             None => prompt.to_string(),
         };
 
-        let tmp_out = format!("/tmp/sage-codex-{}.txt", std::process::id());
+        let seq = CODEX_SEQ.fetch_add(1, Ordering::Relaxed);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp_out = format!("/tmp/sage-codex-{}-{}.txt", ts, seq);
 
         let mut cmd = Command::new(&self.binary);
         cmd.arg("exec")
@@ -135,7 +144,8 @@ impl LlmProvider for CodexProvider {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         info!("Invoking Codex (model: {})", self.model);
-        debug!("Prompt: {}", &full_prompt[..full_prompt.len().min(100)]);
+        let preview: String = full_prompt.chars().take(100).collect();
+        debug!("Prompt: {preview}");
 
         let output = cmd.output().await?;
 
@@ -199,7 +209,8 @@ impl LlmProvider for GeminiProvider {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         info!("Invoking Gemini (model: {})", self.model);
-        debug!("Prompt: {}", &full_prompt[..full_prompt.len().min(100)]);
+        let preview: String = full_prompt.chars().take(100).collect();
+        debug!("Prompt: {preview}");
 
         let output = cmd.output().await?;
 
@@ -282,7 +293,8 @@ impl LlmProvider for AnthropicHttpProvider {
         };
 
         info!("Invoking Anthropic API (model: {})", self.model);
-        debug!("Prompt: {}", &prompt[..prompt.len().min(100)]);
+        let preview: String = prompt.chars().take(100).collect();
+        debug!("Prompt: {preview}");
 
         let resp = self
             .client

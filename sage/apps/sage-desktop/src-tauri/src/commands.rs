@@ -1,4 +1,3 @@
-use sage_core::config::AgentConfig;
 use sage_core::feedback::{FeedbackEffect, FeedbackProcessor};
 use sage_core::onboarding::OnboardingState;
 use sage_core::profile;
@@ -13,6 +12,20 @@ use crate::AppState;
 
 fn map_err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+fn default_agent_config() -> sage_core::config::AgentConfig {
+    sage_core::config::AgentConfig {
+        provider: "claude".into(),
+        claude_binary: "claude".into(),
+        codex_binary: String::new(),
+        gemini_binary: String::new(),
+        default_model: "claude-sonnet-4-6".into(),
+        project_dir: ".".into(),
+        max_budget_usd: 1.0,
+        permission_mode: "default".into(),
+        max_iterations: 10,
+    }
 }
 
 /// 获取 Claude Code 的记忆目录路径
@@ -300,17 +313,7 @@ pub async fn test_provider(
             enabled: true,
         });
 
-    let agent_config = AgentConfig {
-        provider: "claude".into(),
-        claude_binary: "claude".into(),
-        codex_binary: String::new(),
-        gemini_binary: String::new(),
-        default_model: "claude-sonnet-4-6".into(),
-        project_dir: ".".into(),
-        max_budget_usd: 1.0,
-        permission_mode: "default".into(),
-        max_iterations: 10,
-    };
+    let agent_config = default_agent_config();
 
     let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
 
@@ -407,17 +410,7 @@ pub async fn chat(
     let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
         .ok_or("没有可用的 AI 服务。请在设置中配置 API Key。")?;
 
-    let agent_config = sage_core::config::AgentConfig {
-        provider: "claude".into(),
-        claude_binary: "claude".into(),
-        codex_binary: String::new(),
-        gemini_binary: String::new(),
-        default_model: "claude-sonnet-4-6".into(),
-        project_dir: ".".into(),
-        max_budget_usd: 1.0,
-        permission_mode: "default".into(),
-        max_iterations: 10,
-    };
+    let agent_config = default_agent_config();
 
     let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
 
@@ -683,17 +676,7 @@ pub async fn extract_memories(
     let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
         .ok_or("没有可用的 AI 服务")?;
 
-    let agent_config = sage_core::config::AgentConfig {
-        provider: "claude".into(),
-        claude_binary: "claude".into(),
-        codex_binary: String::new(),
-        gemini_binary: String::new(),
-        default_model: "claude-sonnet-4-6".into(),
-        project_dir: ".".into(),
-        max_budget_usd: 1.0,
-        permission_mode: "default".into(),
-        max_iterations: 10,
-    };
+    let agent_config = default_agent_config();
 
     let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
 

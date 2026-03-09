@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use tracing::info;
 
 use crate::applescript;
 use crate::channel::{Event, EventType, InputChannel};
@@ -13,27 +14,53 @@ impl InputChannel for EmailChannel {
     }
 
     async fn poll(&self) -> Result<Vec<Event>> {
+        // 遍历所有"收件箱"/"Inbox"文件夹以覆盖多账户
+        // sender address 用 try 包裹防止 -1700 错误
         let script = r#"
             tell application "System Events"
-                if not (exists process "Microsoft Outlook") then return ""
+                if not (exists process "Microsoft Outlook") then return "__NOT_RUNNING__"
             end tell
             tell application "Microsoft Outlook"
-                set unreadMsgs to messages of inbox whose is read is false
-                set msgCount to count of unreadMsgs
-                if msgCount is 0 then return ""
-                set maxCount to msgCount
-                if maxCount > 5 then set maxCount to 5
+                set allFolders to every mail folder
                 set output to ""
-                repeat with i from 1 to maxCount
-                    set msg to item i of unreadMsgs
-                    set output to output & "SUBJECT:" & subject of msg & "||FROM:" & (address of sender of msg) & "||DATE:" & (time sent of msg as string) & "|||"
+                repeat with f in allFolders
+                    try
+                        set folderName to name of f
+                        if folderName is "收件箱" or folderName is "Inbox" then
+                            set unreadMsgs to (messages of f whose is read is false)
+                            set msgCount to count of unreadMsgs
+                            if msgCount > 0 then
+                                set maxCount to msgCount
+                                if maxCount > 5 then set maxCount to 5
+                                repeat with i from 1 to maxCount
+                                    set msg to item i of unreadMsgs
+                                    set senderAddr to ""
+                                    try
+                                        set senderAddr to address of sender of msg
+                                    end try
+                                    set output to output & "SUBJECT:" & subject of msg & "||FROM:" & senderAddr & "||DATE:" & (time sent of msg as string) & "|||"
+                                end repeat
+                            end if
+                        end if
+                    end try
                 end repeat
+                if output is "" then return ""
                 return output
             end tell
         "#;
 
         let raw = applescript::run(script).await?;
-        Ok(parse_emails(&raw))
+
+        if raw == "__NOT_RUNNING__" {
+            info!("Email poll: Outlook not running, skipping");
+            return Ok(Vec::new());
+        }
+
+        let emails = parse_emails(&raw);
+        if !emails.is_empty() {
+            info!("Email poll: {} unread emails found", emails.len());
+        }
+        Ok(emails)
     }
 }
 

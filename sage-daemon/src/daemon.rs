@@ -19,6 +19,23 @@ use crate::router::Router;
 /// 每个事件最多重试次数（超过后当日不再尝试）
 const MAX_RETRIES: u8 = 2;
 
+/// 合并去重状态，用单一 Mutex 包装避免双锁死锁
+struct EventState {
+    handled: HashSet<String>,
+    retries: HashMap<String, u8>,
+    last_reset: String,
+}
+
+impl EventState {
+    fn new() -> Self {
+        Self {
+            handled: HashSet::new(),
+            retries: HashMap::new(),
+            last_reset: String::new(),
+        }
+    }
+}
+
 pub struct Daemon {
     config: Config,
     router: Router,
@@ -27,10 +44,8 @@ pub struct Daemon {
     hooks: Option<HooksChannel>,
     wechat: Option<WechatChannel>,
     heartbeat_interval: Duration,
-    /// 已成功处理的事件 key（当日不再重复）
-    handled_keys: Mutex<HashSet<String>>,
-    /// 失败事件的重试计数
-    retry_counts: Mutex<HashMap<String, u8>>,
+    /// 合并的事件状态（已处理 key + 重试计数），单锁消除死锁风险
+    event_state: Mutex<EventState>,
 }
 
 impl Daemon {
@@ -70,8 +85,7 @@ impl Daemon {
             hooks,
             wechat,
             heartbeat_interval,
-            handled_keys: Mutex::new(HashSet::new()),
-            retry_counts: Mutex::new(HashMap::new()),
+            event_state: Mutex::new(EventState::new()),
         })
     }
 
@@ -154,21 +168,32 @@ impl Daemon {
             let key = format!("{}:{}", event.source, event.title);
             match self.router.route(event).await {
                 Ok(()) => {
-                    self.handled_keys.lock().unwrap().insert(key);
+                    self.event_state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .handled
+                        .insert(key);
                 }
                 Err(e) => {
-                    let mut retries = self.retry_counts.lock().unwrap();
-                    let count = retries.entry(key.clone()).or_insert(0);
-                    *count += 1;
-                    if *count >= MAX_RETRIES {
-                        drop(retries);
-                        self.handled_keys.lock().unwrap().insert(key.clone());
-                        error!("Route failed, giving up after {MAX_RETRIES} retries: {key}: {e}");
-                    } else {
-                        warn!("Route failed ({count}/{MAX_RETRIES}), will retry: {key}: {e}");
+                    let is_transient = is_transient_error(&e);
+                    {
+                        let mut state = self
+                            .event_state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        let count = state.retries.entry(key.clone()).or_insert(0);
+                        *count += 1;
+                        if *count >= MAX_RETRIES {
+                            state.handled.insert(key.clone());
+                            error!(
+                                "Route failed, giving up after {MAX_RETRIES} retries: {key}: {e}"
+                            );
+                        } else {
+                            warn!("Route failed ({count}/{MAX_RETRIES}), will retry: {key}: {e}");
+                        }
                     }
                     // 网络类错误：跳过本 tick 剩余事件
-                    if is_transient_error(&e) {
+                    if is_transient {
                         warn!("Transient error, skipping remaining events this tick");
                         break;
                     }
@@ -218,20 +243,19 @@ impl Daemon {
     }
 
     /// 对事件去重：过滤已成功处理或超过重试上限的事件
-    #[allow(clippy::significant_drop_in_scrutinee)]
     fn dedup_events(&self, events: Vec<Event>) -> Vec<Event> {
-        let mut handled = self.handled_keys.lock().unwrap();
+        let mut state = self
+            .event_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
-        // 每日重置
-        let reset_key = format!("__date:{today}");
-        if !handled.contains(&reset_key) {
-            handled.clear();
-            handled.insert(reset_key);
-            self.retry_counts.lock().unwrap().clear();
+        // 每日重置（在同一锁内操作，无需第二把锁）
+        if state.last_reset != today {
+            state.handled.clear();
+            state.retries.clear();
+            state.last_reset = today;
         }
-
-        let retries = self.retry_counts.lock().unwrap();
 
         events
             .into_iter()
@@ -242,11 +266,11 @@ impl Daemon {
                 }
                 let key = format!("{}:{}", event.source, event.title);
                 // 已成功处理 → 过滤
-                if handled.contains(&key) {
+                if state.handled.contains(&key) {
                     return false;
                 }
                 // 超过重试上限 → 过滤
-                if retries.get(&key).copied().unwrap_or(0) >= MAX_RETRIES {
+                if state.retries.get(&key).copied().unwrap_or(0) >= MAX_RETRIES {
                     return false;
                 }
                 true

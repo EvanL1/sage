@@ -1,9 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::process::Command;
 use tracing::{debug, info};
+
+static CODEX_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// CLI 调用超时（防止网络故障时长时间挂起）
 const CLI_TIMEOUT: Duration = Duration::from_secs(90);
@@ -74,7 +77,8 @@ impl LlmProvider for ClaudeProvider {
         cmd.env_remove("CLAUDECODE");
 
         info!("Invoking Claude (model: {})", self.model);
-        debug!("Prompt: {}", &prompt[..prompt.len().min(100)]);
+        let preview: String = prompt.chars().take(100).collect();
+        debug!("Prompt: {preview}");
 
         let output = tokio::time::timeout(CLI_TIMEOUT, cmd.output())
             .await
@@ -126,7 +130,12 @@ impl LlmProvider for CodexProvider {
             None => prompt.to_string(),
         };
 
-        let tmp_out = format!("/tmp/sage-codex-{}.txt", std::process::id());
+        let seq = CODEX_SEQ.fetch_add(1, Ordering::Relaxed);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp_out = format!("/tmp/sage-codex-{ts}-{seq}.txt");
 
         let mut cmd = Command::new(&self.binary);
         cmd.arg("exec")
@@ -140,7 +149,8 @@ impl LlmProvider for CodexProvider {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         info!("Invoking Codex (model: {})", self.model);
-        debug!("Prompt: {}", &full_prompt[..full_prompt.len().min(100)]);
+        let preview: String = full_prompt.chars().take(100).collect();
+        debug!("Prompt: {preview}");
 
         let output = tokio::time::timeout(CLI_TIMEOUT, cmd.output())
             .await
@@ -208,7 +218,8 @@ impl LlmProvider for GeminiProvider {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         info!("Invoking Gemini (model: {})", self.model);
-        debug!("Prompt: {}", &full_prompt[..full_prompt.len().min(100)]);
+        let preview: String = full_prompt.chars().take(100).collect();
+        debug!("Prompt: {preview}");
 
         let output = tokio::time::timeout(CLI_TIMEOUT, cmd.output())
             .await
