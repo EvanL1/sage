@@ -59,6 +59,7 @@ fn main() {
             commands::get_provider_configs,
             commands::test_provider,
             commands::chat,
+            commands::list_chat_sessions,
             commands::get_chat_history,
             commands::get_memories,
             commands::extract_memories,

@@ -567,6 +567,21 @@ pub async fn chat(
 }
 
 #[tauri::command]
+pub async fn list_chat_sessions(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<Value>, String> {
+    let sessions = state
+        .store
+        .list_sessions(limit.unwrap_or(30))
+        .map_err(map_err)?;
+    sessions
+        .into_iter()
+        .map(|s| serde_json::to_value(&s).map_err(map_err))
+        .collect()
+}
+
+#[tauri::command]
 pub async fn get_chat_history(
     state: State<'_, AppState>,
     session_id: Option<String>,

@@ -256,6 +256,16 @@ pub struct ChatMessage {
     pub created_at: String,
 }
 
+/// 聊天会话概览（从 chat_messages 聚合）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub session_id: String,
+    pub preview: String,
+    pub message_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 记忆/洞察
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {

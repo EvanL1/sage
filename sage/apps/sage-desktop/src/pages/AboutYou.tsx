@@ -109,13 +109,31 @@ function AboutYou() {
     setMemories((prev) => prev.filter((m) => m.id !== id));
   }, []);
 
+  const copyToClipboard = async (text: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback for Tauri webview where clipboard API may be restricted
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    }
+  };
+
   const handleExport = async () => {
     setExporting(true);
     setExportMsg("");
     try {
       const md = await invoke<string>("export_memories");
-      await navigator.clipboard.writeText(md);
-      setExportMsg("Copied to clipboard");
+      const ok = await copyToClipboard(md);
+      setExportMsg(ok ? "Copied to clipboard" : "Export failed");
       setTimeout(() => setExportMsg(""), 3000);
     } catch (err) {
       console.error("Export failed:", err);
@@ -125,9 +143,17 @@ function AboutYou() {
     }
   };
 
+  const readFromClipboard = async (): Promise<string> => {
+    try {
+      return await navigator.clipboard.readText();
+    } catch {
+      return window.prompt("Paste your content here:") || "";
+    }
+  };
+
   const handleImportFromClipboard = async () => {
     try {
-      const text = await navigator.clipboard.readText();
+      const text = await readFromClipboard();
       // Try to parse as JSON array
       let entries: { category: string; content: string; confidence?: number; source?: string }[];
       try {

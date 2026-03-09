@@ -590,6 +590,39 @@ impl Store {
         Ok(messages)
     }
 
+    /// 列出所有聊天 session 概览（按最新消息时间倒序）
+    pub fn list_sessions(&self, limit: usize) -> Result<Vec<sage_types::ChatSession>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT
+                session_id,
+                MIN(CASE WHEN role = 'user' THEN content END) AS first_user_msg,
+                COUNT(*) AS msg_count,
+                MIN(created_at) AS created_at,
+                MAX(created_at) AS updated_at
+             FROM chat_messages
+             GROUP BY session_id
+             ORDER BY MAX(created_at) DESC
+             LIMIT ?1",
+        ).context("准备 list_sessions 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+            let preview: Option<String> = row.get(1)?;
+            Ok(sage_types::ChatSession {
+                session_id: row.get(0)?,
+                preview: preview
+                    .map(|s| {
+                        let truncated: String = s.chars().take(60).collect();
+                        if truncated.len() < s.len() { format!("{truncated}…") } else { s }
+                    })
+                    .unwrap_or_default(),
+                message_count: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     // ─── 统一记忆上下文方法（替代 memory.rs Markdown 文件） ──────────────────────────────
 
     /// 从 memories 表构建 LLM 上下文字符串，按 category 分组，截断到 max_bytes（UTF-8 安全）
