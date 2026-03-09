@@ -8,6 +8,7 @@ use sage_types::{Event, EventType};
 use crate::agent::Agent;
 use crate::applescript;
 use crate::coach;
+use crate::context_gatherer;
 use crate::mirror;
 use crate::questioner;
 use crate::store::Store;
@@ -88,20 +89,38 @@ impl Router {
     async fn handle_scheduled(&self, event: Event) -> Result<()> {
         let system = self.full_system_prompt();
 
+        // 确定报告类型，收集上下文
+        let report_type = match event.title.as_str() {
+            "Morning Brief" => Some(context_gatherer::ReportType::MorningBrief),
+            "Evening Review" => Some(context_gatherer::ReportType::EveningReview),
+            "Weekly Report" => Some(context_gatherer::ReportType::WeeklyReport),
+            "Week Start" => Some(context_gatherer::ReportType::WeekStart),
+            _ => None,
+        };
+
+        let context = report_type.as_ref()
+            .map(|rt| context_gatherer::gather(rt, &self.store))
+            .unwrap_or_default();
+
+        let ctx_section = if context.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n## 可用数据\n{context}\n")
+        };
+
         let prompt = match event.title.as_str() {
             "Morning Brief" => format!(
-                "现在是早间 briefing 时间。{}\n\n生成今日 morning brief，包括：\n1. 需要关注的邮件\n2. 今日会议安排\n3. 建议的优先事项",
-                event.body
+                "现在是早间 briefing 时间。{ctx_section}\n生成今日 Morning Brief：\n1. 今日重点关注事项\n2. 待决策/待跟进事项\n3. 建议优先级排序\n\n用 Markdown 格式，简洁有结构。"
             ),
-            "Evening Review" => {
-                "现在是晚间回顾时间。根据你的记忆，总结今天的工作：\n1. 完成了什么\n2. 发现了什么模式\n3. 明天需要关注什么".into()
-            }
-            "Weekly Report" => {
-                "现在是周报时间。根据你的记忆，生成本周工作周报草稿：\n1. 本周完成的重要事项\n2. 进行中的工作\n3. 下周计划\n4. 需要上级关注的问题".into()
-            }
-            "Week Start" => {
-                "新的一周开始了。根据你的记忆，提醒：\n1. 本周重点事项\n2. 需要跟进的待办\n3. 预期的挑战".into()
-            }
+            "Evening Review" => format!(
+                "现在是晚间回顾时间。{ctx_section}\n总结今天的工作：\n1. 完成了什么\n2. 发现了什么模式\n3. 明天需要关注什么\n\n用 Markdown 格式。"
+            ),
+            "Weekly Report" => format!(
+                "现在是周报时间。{ctx_section}\n生成本周工作周报草稿：\n1. 本周完成的重要事项\n2. 进行中的工作\n3. 下周计划\n4. 需要上级关注的问题\n\n用 Markdown 格式，专业简洁。"
+            ),
+            "Week Start" => format!(
+                "新的一周开始了。{ctx_section}\n提醒本周重点：\n1. 本周重点事项\n2. 需要跟进的待办\n3. 预期的挑战\n\n用 Markdown 格式。"
+            ),
             _ => format!("处理定时任务：{}\n{}", event.title, event.body),
         };
 
@@ -115,6 +134,19 @@ impl Router {
 
         if let Err(e) = self.store.record_suggestion(&event.source, &prompt, &resp.text) {
             error!("Failed to persist suggestion: {e}");
+        }
+
+        // 保存到 reports 表（结构化报告存储，供 Desktop 展示）
+        if let Some(rt) = &report_type {
+            let type_str = match rt {
+                context_gatherer::ReportType::MorningBrief => "morning",
+                context_gatherer::ReportType::EveningReview => "evening",
+                context_gatherer::ReportType::WeeklyReport => "weekly",
+                context_gatherer::ReportType::WeekStart => "week_start",
+            };
+            if let Err(e) = self.store.save_report(type_str, &resp.text) {
+                error!("Failed to save report: {e}");
+            }
         }
 
         let notify_text = if resp.text.len() > 200 {
