@@ -89,8 +89,17 @@ pub fn select_best_provider(
     None
 }
 
-/// 用 `which` 检测 CLI 是否存在
+/// 检测 CLI 是否存在（直接检查已知路径，不依赖 which，因为 .app bundle 的 PATH 不含 homebrew）
 fn check_cli_available(binary: &str) -> bool {
+    let candidates = [
+        format!("/opt/homebrew/bin/{binary}"),
+        format!("/usr/local/bin/{binary}"),
+        format!("/usr/bin/{binary}"),
+    ];
+    if candidates.iter().any(|p| std::path::Path::new(p).exists()) {
+        return true;
+    }
+    // fallback: try which (works in terminal context)
     std::process::Command::new("which")
         .arg(binary)
         .output()
