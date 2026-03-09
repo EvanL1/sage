@@ -8,7 +8,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use tracing::debug;
+use tracing::{debug, info};
+
+use crate::store::Store;
 
 /// 单次 Claude Code 会话的提炼摘要
 #[derive(Debug, Clone, Default)]
@@ -240,6 +242,185 @@ fn truncate_str(s: &str, max_chars: usize) -> &str {
     &s[..byte_pos]
 }
 
+// ─── Session Ingestion Pipeline ───────────────────────────────────────────────
+
+/// 扫描 `~/.claude/projects/` 下的 JSONL session 文件，分析并保存到 Store。
+///
+/// - `claude_dir`: Claude Code 数据目录（通常为 `~/.claude`）
+/// - `hours`: 只处理最近 N 小时内修改过的文件
+/// - 返回新 ingest 的 session 数量
+///
+/// 每个 session 以 `source = "claude-session:{file_stem}"` 存储，
+/// 重复调用时会 upsert（删旧插新），保证内容是最新的。
+pub fn ingest_sessions(claude_dir: &Path, store: &Store, hours: i64) -> Result<usize> {
+    let projects_dir = claude_dir.join("projects");
+    if !projects_dir.exists() {
+        debug!("Claude projects dir not found: {}", projects_dir.display());
+        return Ok(0);
+    }
+
+    let cutoff = std::time::SystemTime::now()
+        - std::time::Duration::from_secs(hours as u64 * 3600);
+    let mut ingested = 0;
+
+    // 遍历每个项目目录
+    for project_entry in std::fs::read_dir(&projects_dir)?.flatten() {
+        let project_path = project_entry.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+
+        let project_name = project_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(prettify_project_name)
+            .unwrap_or_else(|| "unknown".into());
+
+        // 遍历项目目录下的 .jsonl 文件
+        for entry in std::fs::read_dir(&project_path)?.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            // 只处理最近 N 小时内修改过的文件
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(mtime) = meta.modified() {
+                    if mtime < cutoff {
+                        continue;
+                    }
+                }
+            }
+
+            let file_stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            let source_key = format!("claude-session:{file_stem}");
+
+            match analyze_session(&path) {
+                Ok(summary) if summary.message_count > 0 => {
+                    let content = format_session_summary(&summary, &project_name);
+                    // Upsert: 删旧 → 插新
+                    let _ = store.delete_memory_by_source(&source_key);
+                    store.save_memory("session", &content, &source_key, 0.8)?;
+                    ingested += 1;
+                    debug!(
+                        "Ingested session {} ({} msgs, {} files)",
+                        file_stem,
+                        summary.message_count,
+                        summary.files_modified.len()
+                    );
+                }
+                Ok(_) => {} // 空 session，跳过
+                Err(e) => {
+                    debug!("Failed to analyze {}: {}", path.display(), e);
+                }
+            }
+        }
+    }
+
+    if ingested > 0 {
+        info!("Ingested {ingested} Claude Code sessions");
+    }
+    Ok(ingested)
+}
+
+/// 返回默认的 Claude Code 数据目录
+pub fn default_claude_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(home).join(".claude")
+}
+
+/// 将 SessionSummary 格式化为适合存储的单行摘要
+fn format_session_summary(s: &SessionSummary, project: &str) -> String {
+    let mut parts = Vec::new();
+
+    // [项目名] 用户消息预览
+    parts.push(format!("[{project}] {}", s.summary_hint));
+
+    // 消息统计
+    parts.push(format!("{} msgs", s.message_count));
+
+    // 修改的文件（最多显示 5 个，取短路径）
+    if !s.files_modified.is_empty() {
+        let file_list: Vec<String> = s
+            .files_modified
+            .iter()
+            .take(5)
+            .map(|f| shorten_path(f))
+            .collect();
+        let more = if s.files_modified.len() > 5 {
+            format!(" +{}", s.files_modified.len() - 5)
+        } else {
+            String::new()
+        };
+        parts.push(format!("files: {}{more}", file_list.join(", ")));
+    }
+
+    // 工具使用 Top 5
+    if !s.tools_used.is_empty() {
+        let mut tools: Vec<_> = s.tools_used.iter().collect();
+        tools.sort_by(|a, b| b.1.cmp(a.1));
+        let top: Vec<String> = tools
+            .into_iter()
+            .take(5)
+            .map(|(k, v)| format!("{k}×{v}"))
+            .collect();
+        parts.push(format!("tools: {}", top.join(" ")));
+    }
+
+    // 时间范围
+    if !s.started_at.is_empty() && !s.ended_at.is_empty() {
+        // 只取时间部分 (HH:MM)
+        let start = extract_time(&s.started_at);
+        let end = extract_time(&s.ended_at);
+        if !start.is_empty() {
+            parts.push(format!("{start}~{end}"));
+        }
+    }
+
+    parts.join(" — ")
+}
+
+/// 从 ISO 8601 时间戳中提取 HH:MM
+fn extract_time(ts: &str) -> String {
+    // "2024-01-01T08:30:00Z" or "2024-01-01T08:30:00+08:00"
+    if let Some(t_pos) = ts.find('T') {
+        let time_part = &ts[t_pos + 1..];
+        // 取 HH:MM
+        if time_part.len() >= 5 {
+            return time_part[..5].to_string();
+        }
+    }
+    String::new()
+}
+
+/// 缩短文件路径：取最后 2 个组件
+fn shorten_path(path: &str) -> String {
+    let parts: Vec<&str> = path.rsplit('/').take(2).collect();
+    parts.into_iter().rev().collect::<Vec<_>>().join("/")
+}
+
+/// 将 Claude Code 项目目录名转换为可读的项目名
+///
+/// 格式：`-Users-lyf-dev-digital-twin` → `digital-twin`
+fn prettify_project_name(dir_name: &str) -> String {
+    let stripped = dir_name.trim_start_matches('-');
+    let parts: Vec<&str> = stripped.split('-').collect();
+
+    // 找到 "dev" 后面的部分作为项目名
+    if let Some(dev_pos) = parts.iter().position(|&p| p == "dev") {
+        let project_parts = &parts[dev_pos + 1..];
+        if !project_parts.is_empty() {
+            return project_parts.join("-");
+        }
+    }
+
+    // fallback: 取最后一个部分
+    parts.last().unwrap_or(&"unknown").to_string()
+}
+
 // ─── 单元测试 ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -447,5 +628,143 @@ mod tests {
         // 结果必须是合法 UTF-8，且长度不超过 10 个字符
         assert!(result.chars().count() <= 10);
         assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    // ── 测试 prettify_project_name ────────────────────────────────────────────
+
+    #[test]
+    fn test_prettify_project_name() {
+        assert_eq!(prettify_project_name("-Users-lyf-dev-digital-twin"), "digital-twin");
+        assert_eq!(prettify_project_name("-Users-lyf-dev-VoltageEMS"), "VoltageEMS");
+        assert_eq!(prettify_project_name("-Users-lyf-dev-my-cool-project"), "my-cool-project");
+        // fallback: 没有 "dev" 时取最后一个部分
+        assert_eq!(prettify_project_name("-some-path-project"), "project");
+    }
+
+    // ── 测试 format_session_summary ───────────────────────────────────────────
+
+    #[test]
+    fn test_format_session_summary() {
+        let summary = SessionSummary {
+            session_id: "sess-fmt".into(),
+            started_at: "2024-01-01T08:00:00Z".into(),
+            ended_at: "2024-01-01T09:30:00Z".into(),
+            user_messages: vec!["fix a bug".into(), "add tests".into()],
+            files_modified: vec!["src/lib.rs".into(), "/Users/lyf/dev/project/src/main.rs".into()],
+            commands_run: vec!["cargo test".into()],
+            tools_used: {
+                let mut m = HashMap::new();
+                m.insert("Edit".into(), 5);
+                m.insert("Read".into(), 3);
+                m.insert("Bash".into(), 1);
+                m
+            },
+            message_count: 10,
+            summary_hint: "fix a bug | add tests".into(),
+        };
+        let formatted = format_session_summary(&summary, "digital-twin");
+        assert!(formatted.contains("[digital-twin]"));
+        assert!(formatted.contains("10 msgs"));
+        assert!(formatted.contains("08:00~09:30"));
+        assert!(formatted.contains("files:"));
+        assert!(formatted.contains("tools:"));
+    }
+
+    // ── 测试 extract_time ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_time() {
+        assert_eq!(extract_time("2024-01-01T08:30:00Z"), "08:30");
+        assert_eq!(extract_time("2024-01-01T14:05:00+08:00"), "14:05");
+        assert_eq!(extract_time("invalid"), "");
+    }
+
+    // ── 测试 shorten_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_shorten_path() {
+        assert_eq!(shorten_path("/Users/lyf/dev/project/src/main.rs"), "src/main.rs");
+        assert_eq!(shorten_path("src/lib.rs"), "src/lib.rs");
+        assert_eq!(shorten_path("file.rs"), "file.rs");
+    }
+
+    // ── 测试 ingest_sessions（集成测试） ──────────────────────────────────────
+
+    #[test]
+    fn test_ingest_sessions_with_temp_dir() {
+        let store = Store::open_in_memory().unwrap();
+
+        // 创建模拟的 Claude Code 目录结构
+        let tmp = tempfile::tempdir().unwrap();
+        let projects_dir = tmp.path().join("projects");
+        let project_dir = projects_dir.join("-Users-lyf-dev-test-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        // 写入一个 session JSONL 文件
+        let session_file = project_dir.join("sess-test-123.jsonl");
+        let lines = vec![
+            user_line("sess-test-123", "2024-01-01T08:00:00Z", "实现一个新功能"),
+            assistant_tool_line(
+                "sess-test-123",
+                "2024-01-01T08:01:00Z",
+                "Edit",
+                serde_json::json!({"file_path": "src/lib.rs", "old_string": "a", "new_string": "b"}),
+            ),
+            user_line("sess-test-123", "2024-01-01T08:02:00Z", "加个测试"),
+        ];
+        {
+            let mut f = std::fs::File::create(&session_file).unwrap();
+            for line in &lines {
+                writeln!(f, "{}", line).unwrap();
+            }
+        }
+
+        // 执行 ingestion
+        let count = ingest_sessions(tmp.path(), &store, 24 * 365).unwrap();
+        assert_eq!(count, 1);
+
+        // 验证 session memory 已写入 store
+        let sessions = store
+            .get_session_summaries_since("2000-01-01T00:00:00+00:00")
+            .unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].content.contains("test-project"));
+        assert!(sessions[0].content.contains("3 msgs"));
+        assert!(sessions[0].source.contains("claude-session:"));
+
+        // 再次 ingest 不应重复（upsert 逻辑）
+        let count2 = ingest_sessions(tmp.path(), &store, 24 * 365).unwrap();
+        assert_eq!(count2, 1); // upsert: 旧的被删再插
+        let sessions2 = store
+            .get_session_summaries_since("2000-01-01T00:00:00+00:00")
+            .unwrap();
+        assert_eq!(sessions2.len(), 1); // 仍然只有 1 条
+    }
+
+    // ── 测试 ingest_sessions 空目录不报错 ─────────────────────────────────────
+
+    #[test]
+    fn test_ingest_sessions_empty_dir() {
+        let store = Store::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let count = ingest_sessions(tmp.path(), &store, 24).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // ── 测试 ingest_sessions 跳过空 session ──────────────────────────────────
+
+    #[test]
+    fn test_ingest_sessions_skips_empty_session() {
+        let store = Store::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let projects_dir = tmp.path().join("projects");
+        let project_dir = projects_dir.join("-Users-lyf-dev-empty");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        // 写入空 session 文件
+        std::fs::write(project_dir.join("empty-sess.jsonl"), "").unwrap();
+
+        let count = ingest_sessions(tmp.path(), &store, 24 * 365).unwrap();
+        assert_eq!(count, 0);
     }
 }

@@ -3,6 +3,7 @@
 //! 在 LLM 调用前，根据报告类型从 SQLite 和文件系统收集结构化数据，
 //! 返回格式化的 Markdown 文本块供 prompt 注入使用。
 
+use crate::session_analyzer;
 use crate::store::Store;
 
 pub enum ReportType {
@@ -55,6 +56,9 @@ fn gather_morning(store: &Store) -> String {
 
 /// Evening Review：今日 session memories + 今日 observations 数量 + 今日 coach insights
 fn gather_evening(store: &Store) -> String {
+    // 在收集上下文前，先从 Claude Code JSONL 文件中 ingest 最新的 session 数据
+    ingest_recent_sessions(store, 24);
+
     let mut sections = Vec::new();
 
     let since = days_ago(1);
@@ -85,6 +89,9 @@ fn gather_evening(store: &Store) -> String {
 
 /// Weekly Report：本周所有 memories + sessions + coach insights + 项目/团队文件
 fn gather_weekly(store: &Store) -> String {
+    // 在收集上下文前，先 ingest 最新的 session 数据（覆盖一周）
+    ingest_recent_sessions(store, 24 * 7);
+
     let mut sections = Vec::new();
 
     let since = days_ago(7);
@@ -150,6 +157,14 @@ fn gather_week_start(store: &Store) -> String {
         return String::new();
     }
     sections.join("\n\n")
+}
+
+/// 从 Claude Code 的 JSONL session 文件中 ingest 最新数据到 Store
+fn ingest_recent_sessions(store: &Store, hours: i64) {
+    let claude_dir = session_analyzer::default_claude_dir();
+    if let Err(e) = session_analyzer::ingest_sessions(&claude_dir, store, hours) {
+        tracing::warn!("Failed to ingest Claude Code sessions: {e}");
+    }
 }
 
 /// 读取 .context/<filename>，路径从 SAGE_PROJECT_DIR 获取，默认 ~/dev/digital-twin

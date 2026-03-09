@@ -71,6 +71,7 @@ fn main() {
             commands::get_reports,
             commands::get_latest_reports,
             commands::trigger_test_report,
+            commands::ingest_sessions,
         ])
         .setup(|app| {
             tray::setup_tray(app)?;

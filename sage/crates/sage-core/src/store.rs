@@ -850,6 +850,16 @@ impl Store {
         Ok(conn.last_insert_rowid())
     }
 
+    /// 按 source 删除记忆（用于 session ingestion 的 upsert 场景）
+    pub fn delete_memory_by_source(&self, source: &str) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let deleted = conn.execute(
+            "DELETE FROM memories WHERE source = ?1",
+            rusqlite::params![source],
+        ).context("按 source 删除 memory 失败")?;
+        Ok(deleted)
+    }
+
     /// 更新记忆的内容和置信度
     pub fn update_memory(&self, id: i64, content: &str, confidence: f64) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;

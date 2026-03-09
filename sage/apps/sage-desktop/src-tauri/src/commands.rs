@@ -920,3 +920,14 @@ pub async fn trigger_test_report(
     state.store.save_report(&report_type, &content).map_err(map_err)?;
     Ok(format!("Test report '{report_type}' generated"))
 }
+
+#[tauri::command]
+pub async fn ingest_sessions(
+    state: State<'_, AppState>,
+    hours: Option<i64>,
+) -> Result<usize, String> {
+    let hours = hours.unwrap_or(24);
+    let claude_dir = sage_core::session_analyzer::default_claude_dir();
+    sage_core::session_analyzer::ingest_sessions(&claude_dir, &state.store, hours)
+        .map_err(map_err)
+}
