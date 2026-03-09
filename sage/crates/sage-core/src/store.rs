@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
-use sage_types::{ChatMessage, FeedbackAction, Memory, ProviderConfig, Suggestion, UserProfile};
+use sage_types::{ChatMessage, FeedbackAction, Memory, ProviderConfig, Report, Suggestion, UserProfile};
 
 /// 未处理的 observation 行（含 id，供学习教练归档用）
 #[derive(Debug, Clone)]
@@ -136,6 +136,20 @@ impl Store {
                  PRAGMA user_version = 5;",
             )
             .context("数据库迁移 v5（embedding 列）失败")?;
+        }
+
+        if version < 6 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_reports_type_date ON reports(report_type, created_at DESC);
+                PRAGMA user_version = 6;",
+            )
+            .context("数据库迁移 v6（reports 表）失败")?;
         }
 
         Ok(())
@@ -916,6 +930,134 @@ impl Store {
             .context("删除 memory 失败")?;
         Ok(())
     }
+
+    // ─── Report 方法 ──────────────────────────────
+
+    /// 保存报告，返回自增 id
+    pub fn save_report(&self, report_type: &str, content: &str) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO reports (report_type, content, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![report_type, content, now],
+        )
+        .context("保存 report 失败")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 获取指定类型的最新一条报告
+    pub fn get_latest_report(&self, report_type: &str) -> Result<Option<Report>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.query_row(
+            "SELECT id, report_type, content, created_at FROM reports WHERE report_type = ?1 ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![report_type],
+            |row| Ok(Report {
+                id: row.get(0)?,
+                report_type: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+            }),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// 获取指定类型的最近 N 条报告（按时间倒序）
+    pub fn get_reports(&self, report_type: &str, limit: usize) -> Result<Vec<Report>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, report_type, content, created_at FROM reports WHERE report_type = ?1 ORDER BY created_at DESC LIMIT ?2",
+        ).context("准备 get_reports 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![report_type, limit as i64], |row| {
+            Ok(Report {
+                id: row.get(0)?,
+                report_type: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取所有类型的最近 N 条报告（按时间倒序）
+    pub fn get_all_reports(&self, limit: usize) -> Result<Vec<Report>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, report_type, content, created_at FROM reports ORDER BY created_at DESC LIMIT ?1",
+        ).context("准备 get_all_reports 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+            Ok(Report {
+                id: row.get(0)?,
+                report_type: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取某个日期之后创建的 memories（用于报告上下文收集）
+    pub fn get_memories_since(&self, since: &str) -> Result<Vec<Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, created_at, updated_at FROM memories WHERE created_at >= ?1 ORDER BY created_at DESC",
+        ).context("准备 get_memories_since 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![since], |row| {
+            Ok(Memory {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                content: row.get(2)?,
+                source: row.get(3)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取某个日期之后的 observations 数量
+    pub fn count_observations_since(&self, since: &str) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM observations WHERE created_at >= ?1",
+            rusqlite::params![since],
+            |row| row.get(0),
+        ).context("统计 observations 数量失败")?;
+        Ok(count as usize)
+    }
+
+    /// 获取某个日期之后的 session 类 memories
+    pub fn get_session_summaries_since(&self, since: &str) -> Result<Vec<Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, created_at, updated_at FROM memories WHERE category = 'session' AND created_at >= ?1 ORDER BY created_at DESC",
+        ).context("准备 get_session_summaries_since 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![since], |row| {
+            Ok(Memory {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                content: row.get(2)?,
+                source: row.get(3)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取某个日期之后的 coach insights 内容列表
+    pub fn get_coach_insights_since(&self, since: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT content FROM memories WHERE category = 'coach_insight' AND created_at >= ?1 ORDER BY created_at DESC",
+        ).context("准备 get_coach_insights_since 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![since], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }
 
 /// UTF-8 安全截断：在 max_bytes 处找最近的字符边界
@@ -1597,5 +1739,91 @@ mod tests {
         assert!(result.contains("new"));
         assert!(!result.contains("old"));
         assert!(result.contains("More content."));
+    }
+
+    // ─── Report 测试 ──────────────────────────────
+
+    #[test]
+    fn test_save_and_load_report() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_report("weekly", "本周报告内容").unwrap();
+        store.save_report("weekly", "更新的周报").unwrap();
+        store.save_report("morning", "早间 brief").unwrap();
+
+        let latest = store.get_latest_report("weekly").unwrap();
+        assert!(latest.is_some());
+        assert_eq!(latest.unwrap().content, "更新的周报");
+
+        let all = store.get_reports("weekly", 10).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_get_latest_report_empty() {
+        let store = Store::open_in_memory().unwrap();
+        let result = store.get_latest_report("morning").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_all_reports() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_report("morning", "早间报告").unwrap();
+        store.save_report("evening", "晚间回顾").unwrap();
+        store.save_report("weekly", "周报").unwrap();
+
+        let all = store.get_all_reports(10).unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_get_memories_since() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("decision", "chose Rust", "chat", 0.8).unwrap();
+        store.save_memory("identity", "Evan is a team lead", "chat", 0.9).unwrap();
+
+        // since 设为过去很久以前，应该能取到全部
+        let memories = store.get_memories_since("2000-01-01T00:00:00+00:00").unwrap();
+        assert_eq!(memories.len(), 2);
+
+        // since 设为未来，应该取不到
+        let empty = store.get_memories_since("2099-01-01T00:00:00+00:00").unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_count_observations_since() {
+        let store = Store::open_in_memory().unwrap();
+        store.record_observation("pattern", "obs1", None).unwrap();
+        store.record_observation("habit", "obs2", None).unwrap();
+
+        let count = store.count_observations_since("2000-01-01T00:00:00+00:00").unwrap();
+        assert_eq!(count, 2);
+
+        let zero = store.count_observations_since("2099-01-01T00:00:00+00:00").unwrap();
+        assert_eq!(zero, 0);
+    }
+
+    #[test]
+    fn test_get_session_summaries_since() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("session", "[session] fix bugs — 50 msgs", "claude-code", 0.8).unwrap();
+        store.save_memory("decision", "chose async", "chat", 0.7).unwrap();
+
+        let sessions = store.get_session_summaries_since("2000-01-01T00:00:00+00:00").unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].category, "session");
+    }
+
+    #[test]
+    fn test_get_coach_insights_since() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("coach_insight", "Evan 偏系统思考", "coach", 0.8).unwrap();
+        store.save_memory("coach_insight", "喜欢类比解释", "coach", 0.7).unwrap();
+        store.save_memory("decision", "not a coach insight", "chat", 0.5).unwrap();
+
+        let insights = store.get_coach_insights_since("2000-01-01T00:00:00+00:00").unwrap();
+        assert_eq!(insights.len(), 2);
+        assert!(insights.iter().all(|s| !s.is_empty()));
     }
 }

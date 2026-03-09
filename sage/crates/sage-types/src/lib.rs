@@ -278,6 +278,16 @@ pub struct Memory {
     pub updated_at: String,
 }
 
+// ─── Report 模型（定时报告记录）────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Report {
+    pub id: i64,
+    pub report_type: String,
+    pub content: String,
+    pub created_at: String,
+}
+
 // ─── Provider 模型 ──────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
