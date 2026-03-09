@@ -19,6 +19,7 @@ pub mod questioner;
 pub mod reliable_provider;
 pub mod router;
 pub mod scrub;
+pub mod session_analyzer;
 pub mod store;
 
 pub use daemon::Daemon;

@@ -715,13 +715,13 @@ impl Store {
     /// 生成同步区块内容
     fn generate_sync_block(&self) -> Result<String> {
         let memories = self.load_memories()?;
-        let mut lines = Vec::new();
-
-        lines.push("<!-- SAGE_SYNC_START -->".into());
-        lines.push("## Sage Shared Memory".into());
-        lines.push(String::new());
-        lines.push("> Auto-synced from Sage SQLite. Do NOT edit manually — changes will be overwritten.".into());
-        lines.push(String::new());
+        let mut lines: Vec<String> = vec![
+            "<!-- SAGE_SYNC_START -->".into(),
+            "## Sage Shared Memory".into(),
+            String::new(),
+            "> Auto-synced from Sage SQLite. Do NOT edit manually — changes will be overwritten.".into(),
+            String::new(),
+        ];
 
         // 按 category 分组输出（按价值排序）
         let category_order = [

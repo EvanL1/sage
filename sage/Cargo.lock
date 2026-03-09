@@ -3351,6 +3351,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sage-ingest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "sage-core",
+ "sage-types",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sage-types"
 version = "0.1.0"
 dependencies = [

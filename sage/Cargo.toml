@@ -4,6 +4,7 @@ members = [
     "crates/sage-types",
     "crates/sage-core",
     "crates/sage-daemon",
+    "crates/sage-ingest",
     "apps/sage-desktop/src-tauri",
 ]
 
