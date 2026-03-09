@@ -685,6 +685,121 @@ impl Store {
         }
     }
 
+    // ─── Claude Code 共享记忆同步 ──────────────────────────────
+
+    /// 将 SQLite 记忆同步到 Claude Code 的 MEMORY.md
+    ///
+    /// 在 `<!-- SAGE_SYNC_START -->` / `<!-- SAGE_SYNC_END -->` 标记之间写入，
+    /// 保留手动维护的内容不被覆盖。如果标记不存在则追加。
+    pub fn sync_to_claude_memory(&self, memory_dir: &std::path::Path) -> Result<()> {
+        let memory_file = memory_dir.join("MEMORY.md");
+
+        // 生成 Sage 同步区块
+        let sync_block = self.generate_sync_block()?;
+
+        let content = if memory_file.exists() {
+            let existing = std::fs::read_to_string(&memory_file)
+                .context("读取 MEMORY.md 失败")?;
+            Self::replace_sync_section(&existing, &sync_block)
+        } else {
+            // 文件不存在，创建新的
+            std::fs::create_dir_all(memory_dir)?;
+            format!("# Project Memory\n\n{sync_block}\n")
+        };
+
+        std::fs::write(&memory_file, &content).context("写入 MEMORY.md 失败")?;
+        tracing::info!("已同步 Sage 记忆到 {:?}", memory_file);
+        Ok(())
+    }
+
+    /// 生成同步区块内容
+    fn generate_sync_block(&self) -> Result<String> {
+        let memories = self.load_memories()?;
+        let mut lines = Vec::new();
+
+        lines.push("<!-- SAGE_SYNC_START -->".into());
+        lines.push("## Sage Shared Memory".into());
+        lines.push(String::new());
+        lines.push("> Auto-synced from Sage SQLite. Do NOT edit manually — changes will be overwritten.".into());
+        lines.push(String::new());
+
+        // 按 category 分组输出（按价值排序）
+        let category_order = [
+            ("identity", "Identity"),
+            ("personality", "Personality"),
+            ("values", "Values"),
+            ("behavior", "Behavior Patterns"),
+            ("thinking", "Thinking Style"),
+            ("emotion", "Emotional Cues"),
+            ("growth", "Growth Areas"),
+            ("decision", "Recent Decisions"),
+            ("pattern", "Observed Patterns"),
+            ("coach_insight", "Coach Insights"),
+        ];
+
+        let known_cats: std::collections::HashSet<&str> =
+            category_order.iter().map(|(c, _)| *c).collect();
+
+        for (cat, label) in &category_order {
+            let items: Vec<_> = memories
+                .iter()
+                .filter(|m| m.category == *cat)
+                .collect();
+            if items.is_empty() {
+                continue;
+            }
+            lines.push(format!("### {label}"));
+            for m in &items {
+                // 截断过长内容，保持 MEMORY.md 简洁
+                let content: String = m.content.chars().take(200).collect();
+                lines.push(format!("- {content}"));
+            }
+            lines.push(String::new());
+        }
+
+        // 未列举的 category
+        let mut extra: Vec<_> = memories
+            .iter()
+            .filter(|m| !known_cats.contains(m.category.as_str()))
+            .collect();
+        if !extra.is_empty() {
+            extra.sort_by(|a, b| a.category.cmp(&b.category));
+            lines.push("### Other".into());
+            for m in &extra {
+                let content: String = m.content.chars().take(200).collect();
+                lines.push(format!("- [{}] {content}", m.category));
+            }
+            lines.push(String::new());
+        }
+
+        // 统计摘要
+        let session_count = self.count_distinct_sessions().unwrap_or(0);
+        lines.push(format!(
+            "_Sage stats: {} memories, {} chat sessions_",
+            memories.len(),
+            session_count
+        ));
+        lines.push("<!-- SAGE_SYNC_END -->".into());
+
+        Ok(lines.join("\n"))
+    }
+
+    /// 替换 MEMORY.md 中 SAGE_SYNC 标记之间的内容
+    fn replace_sync_section(existing: &str, new_block: &str) -> String {
+        const START: &str = "<!-- SAGE_SYNC_START -->";
+        const END: &str = "<!-- SAGE_SYNC_END -->";
+
+        if let (Some(start_pos), Some(end_pos)) = (existing.find(START), existing.find(END)) {
+            let before = &existing[..start_pos];
+            let after = &existing[end_pos + END.len()..];
+            format!("{before}{new_block}{after}")
+        } else {
+            // 标记不存在，追加到末尾
+            let trimmed = existing.trim_end();
+            format!("{trimmed}\n\n{new_block}\n")
+        }
+    }
+
     /// 保存行为模式记忆（category="pattern"），返回新记录 id
     pub fn append_pattern(&self, category: &str, observation: &str) -> Result<i64> {
         let content = format!("[{category}] {observation}");
@@ -1416,5 +1531,71 @@ mod tests {
 
         let messages = store.get_recent_messages_for_prompt(sid, 20).unwrap();
         assert_eq!(messages.len(), 5, "消息总数少于 limit 时应返回全部");
+    }
+
+    // ─── Shared Memory Sync Tests ──────────────────────────
+
+    #[test]
+    fn test_sync_to_claude_memory_creates_file() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("identity", "Software team lead", "test", 0.9).unwrap();
+        store.save_memory("values", "Team growth over individual performance", "test", 0.8).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        store.sync_to_claude_memory(dir.path()).unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("MEMORY.md")).unwrap();
+        assert!(content.contains("SAGE_SYNC_START"));
+        assert!(content.contains("SAGE_SYNC_END"));
+        assert!(content.contains("Software team lead"));
+        assert!(content.contains("Team growth"));
+        assert!(content.contains("Sage Shared Memory"));
+    }
+
+    #[test]
+    fn test_sync_preserves_existing_content() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("identity", "Test user", "test", 0.9).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let memory_file = dir.path().join("MEMORY.md");
+        std::fs::write(&memory_file, "# My Project\n\nManual notes here.\n").unwrap();
+
+        store.sync_to_claude_memory(dir.path()).unwrap();
+
+        let content = std::fs::read_to_string(&memory_file).unwrap();
+        assert!(content.contains("# My Project"), "manual content preserved");
+        assert!(content.contains("Manual notes here"), "manual content preserved");
+        assert!(content.contains("Test user"), "sync content added");
+    }
+
+    #[test]
+    fn test_sync_replaces_existing_sync_section() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("identity", "Updated info", "test", 0.9).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let memory_file = dir.path().join("MEMORY.md");
+        std::fs::write(
+            &memory_file,
+            "# Project\n\n<!-- SAGE_SYNC_START -->\nold data\n<!-- SAGE_SYNC_END -->\n\n# Footer\n",
+        ).unwrap();
+
+        store.sync_to_claude_memory(dir.path()).unwrap();
+
+        let content = std::fs::read_to_string(&memory_file).unwrap();
+        assert!(!content.contains("old data"), "old sync section replaced");
+        assert!(content.contains("Updated info"), "new sync content present");
+        assert!(content.contains("# Footer"), "content after sync preserved");
+    }
+
+    #[test]
+    fn test_replace_sync_section_static() {
+        let existing = "# Header\n\nSome content.\n\n<!-- SAGE_SYNC_START -->\nold\n<!-- SAGE_SYNC_END -->\n\nMore content.\n";
+        let result = Store::replace_sync_section(existing, "<!-- SAGE_SYNC_START -->\nnew\n<!-- SAGE_SYNC_END -->");
+        assert!(result.contains("# Header"));
+        assert!(result.contains("new"));
+        assert!(!result.contains("old"));
+        assert!(result.contains("More content."));
     }
 }

@@ -201,6 +201,21 @@ function AboutYou() {
           <button className="about-action-btn" onClick={handleImportFromClipboard}>
             Import from clipboard
           </button>
+          <button
+            className="about-action-btn"
+            onClick={async () => {
+              try {
+                const result = await invoke<string>("sync_memory");
+                setExportMsg(result);
+                setTimeout(() => setExportMsg(""), 3000);
+              } catch (err) {
+                setExportMsg("Sync failed: " + String(err));
+                setTimeout(() => setExportMsg(""), 3000);
+              }
+            }}
+          >
+            Sync to Claude Code
+          </button>
           {exportMsg && <span className="about-action-msg">{exportMsg}</span>}
         </div>
       </div>

@@ -15,6 +15,28 @@ fn map_err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// 获取 Claude Code 的记忆目录路径
+/// ~/.claude/projects/-{project_path_encoded}/memory/
+fn claude_memory_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    // 项目目录 → 编码：/Users/lyf/dev/digital-twin → -Users-lyf-dev-digital-twin
+    let project_dir = format!("{home}/dev/digital-twin");
+    let encoded = project_dir.replace('/', "-");
+    let dir = std::path::PathBuf::from(format!(
+        "{home}/.claude/projects/{encoded}/memory"
+    ));
+    if dir.exists() { Some(dir) } else { None }
+}
+
+/// 触发 Sage → Claude Code 记忆同步（静默失败，不影响主流程）
+fn trigger_memory_sync(store: &sage_core::store::Store) {
+    if let Some(dir) = claude_memory_dir() {
+        if let Err(e) = store.sync_to_claude_memory(&dir) {
+            tracing::warn!("Memory sync to Claude Code failed: {e}");
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn get_profile(state: State<'_, AppState>) -> Result<Option<Value>, String> {
     let profile = state.store.load_profile().map_err(map_err)?;
@@ -732,7 +754,20 @@ pub async fn extract_memories(
         }
     }
 
+    if !saved.is_empty() {
+        trigger_memory_sync(&state.store);
+    }
     Ok(saved)
+}
+
+#[tauri::command]
+pub async fn sync_memory(state: State<'_, AppState>) -> Result<String, String> {
+    let dir = claude_memory_dir().ok_or("Claude Code memory directory not found")?;
+    state
+        .store
+        .sync_to_claude_memory(&dir)
+        .map_err(map_err)?;
+    Ok(format!("Synced to {}", dir.display()))
 }
 
 #[tauri::command]
@@ -740,7 +775,9 @@ pub async fn delete_memory(
     state: State<'_, AppState>,
     memory_id: i64,
 ) -> Result<(), String> {
-    state.store.delete_memory(memory_id).map_err(map_err)
+    state.store.delete_memory(memory_id).map_err(map_err)?;
+    trigger_memory_sync(&state.store);
+    Ok(())
 }
 
 #[tauri::command]
@@ -759,6 +796,7 @@ pub async fn save_assessment(
                 .map_err(map_err)?;
         }
     }
+    trigger_memory_sync(&state.store);
     Ok(())
 }
 
@@ -845,6 +883,9 @@ pub async fn import_memories(
                 .map_err(map_err)?;
             count += 1;
         }
+    }
+    if count > 0 {
+        trigger_memory_sync(&state.store);
     }
     Ok(count)
 }

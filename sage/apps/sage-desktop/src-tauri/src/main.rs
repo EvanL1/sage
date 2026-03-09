@@ -63,6 +63,7 @@ fn main() {
             commands::get_chat_history,
             commands::get_memories,
             commands::extract_memories,
+            commands::sync_memory,
             commands::delete_memory,
             commands::export_memories,
             commands::import_memories,
