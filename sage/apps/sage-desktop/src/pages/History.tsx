@@ -17,9 +17,9 @@ function formatDate(ts: string): string {
     const today = new Date();
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === today.toDateString()) return "今天";
-    if (d.toDateString() === yesterday.toDateString()) return "昨天";
-    return d.toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+    if (d.toDateString() === today.toDateString()) return "Today";
+    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+    return d.toLocaleDateString("en-US", { month: "long", day: "numeric" });
   } catch {
     return ts;
   }
@@ -27,14 +27,14 @@ function formatDate(ts: string): string {
 
 function formatTime(ts: string): string {
   try {
-    return new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
   } catch {
     return "";
   }
 }
 
 function sourceLabel(source: string): string {
-  const map: Record<string, string> = { email: "邮件", calendar: "日历", heartbeat: "定时", hook: "Hook" };
+  const map: Record<string, string> = { email: "Email", calendar: "Calendar", heartbeat: "Scheduled", hook: "Hook" };
   return map[source] ?? source;
 }
 
@@ -78,8 +78,8 @@ function History() {
   return (
     <div className="page">
       <div className="page-header">
-        <h1>建议历史</h1>
-        <p>查看和管理 Sage 的所有建议</p>
+        <h1>Suggestion history</h1>
+        <p>View and manage all of Sage's suggestions</p>
       </div>
 
       <div className="search-bar">
@@ -87,14 +87,14 @@ function History() {
           <circle cx="11" cy="11" r="8" />
           <line x1="21" y1="21" x2="16.65" y2="16.65" />
         </svg>
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索建议内容..." />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search suggestions..." />
       </div>
 
       {filtered.length === 0 ? (
         <div className="card">
           <div className="empty-state">
-            <h3>{search ? "未找到匹配结果" : "暂无历史记录"}</h3>
-            <p>{search ? "尝试其他关键词" : "Sage 的建议将显示在这里"}</p>
+            <h3>{search ? "No matching results" : "No history yet"}</h3>
+            <p>{search ? "Try different keywords" : "Sage's suggestions will appear here"}</p>
           </div>
         </div>
       ) : (

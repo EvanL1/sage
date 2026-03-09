@@ -4,7 +4,7 @@ import { useTheme } from "../contexts/ThemeContext";
 const pageTitles: Record<string, string> = {
   "/": "Dashboard",
   "/chat": "Chat",
-  "/about": "关于你",
+  "/about": "About You",
   "/history": "History",
   "/settings": "Settings",
 };
@@ -29,7 +29,7 @@ function Layout() {
           </div>
 
           <nav className="sidebar-nav">
-            <NavLink to="/" end className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="仪表板">
+            <NavLink to="/" end className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="Dashboard">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="7" height="7" rx="1" />
                 <rect x="14" y="3" width="7" height="7" rx="1" />
@@ -38,27 +38,27 @@ function Layout() {
               </svg>
             </NavLink>
 
-            <NavLink to="/chat" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="对话">
+            <NavLink to="/chat" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="Chat">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
               </svg>
             </NavLink>
 
-            <NavLink to="/about" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="关于你">
+            <NavLink to="/about" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="About You">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
                 <circle cx="12" cy="7" r="4" />
               </svg>
             </NavLink>
 
-            <NavLink to="/history" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="历史">
+            <NavLink to="/history" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="History">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10" />
                 <polyline points="12 6 12 12 16 14" />
               </svg>
             </NavLink>
 
-            <NavLink to="/settings" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="设置">
+            <NavLink to="/settings" className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`} title="Settings">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
@@ -68,7 +68,7 @@ function Layout() {
         </div>
 
         <div className="sidebar-bottom">
-          <button className="sidebar-link theme-toggle" onClick={toggle} title={theme === "light" ? "切换深色模式" : "切换浅色模式"}>
+          <button className="sidebar-link theme-toggle" onClick={toggle} title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}>
             {theme === "light" ? (
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" />

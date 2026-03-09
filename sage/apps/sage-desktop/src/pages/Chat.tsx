@@ -19,19 +19,19 @@ function Chat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // 滚动到底部
+  // Scroll to bottom
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
 
-  // 聚焦输入框
+  // Focus input
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  // 加载历史消息
+  // Load chat history
   useEffect(() => {
     invoke<Message[]>("get_chat_history", { limit: 50 })
       .then((history) => {
@@ -99,7 +99,7 @@ function Chat() {
       };
       setMessages((prev) => [...prev, sageMsg]);
 
-      // 每 4 条消息（2 轮对话）触发一次记忆提取
+      // Trigger memory extraction every 4 messages (2 rounds)
       const totalMsgs = messages.length + 2;
       if (totalMsgs > 0 && totalMsgs % 4 === 0) {
         triggerMemoryExtraction(result.session_id);
@@ -111,8 +111,8 @@ function Chat() {
         id: Date.now() + 1,
         role: "sage",
         content: isProviderError
-          ? "我还没有连接到思考能力。请到**设置**页面配置 AI 服务，然后回来找我聊天。"
-          : "抱歉，我暂时无法回应。请稍后再试。",
+          ? "I'm not connected to an AI provider yet. Go to **Settings** to configure one, then come back and chat."
+          : "Sorry, I'm unable to respond right now. Please try again later.",
         session_id: sessionId || "",
         created_at: new Date().toISOString(),
       };
@@ -136,21 +136,21 @@ function Chat() {
       <div className="chat-header">
         {messages.length > 0 && (
           <button className="btn btn-ghost btn-sm" onClick={startNewSession}>
-            新对话
+            New chat
           </button>
         )}
         {reflecting && (
-          <span className="chat-reflecting">Sage 正在反思这段对话...</span>
+          <span className="chat-reflecting">Sage is reflecting on this conversation...</span>
         )}
       </div>
 
       <div className="chat-messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="chat-empty">
-            <p className="chat-empty-title">和 Sage 聊聊</p>
+            <p className="chat-empty-title">Chat with Sage</p>
             <p className="chat-empty-hint">
-              每一次对话都会让我更了解你。<br />
-              问我任何事 — 工作决策、自我探索、或只是聊聊天。
+              Every conversation helps me understand you better.<br />
+              Ask me anything — work decisions, self-reflection, or just talk.
             </p>
           </div>
         )}
@@ -181,7 +181,7 @@ function Chat() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="说点什么..."
+          placeholder="Say something..."
           rows={1}
           disabled={loading}
         />

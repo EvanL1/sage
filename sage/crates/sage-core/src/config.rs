@@ -125,7 +125,7 @@ impl Default for AgentConfig {
 impl Default for PollChannelConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             poll_interval_secs: 300,
         }
     }
@@ -138,9 +138,12 @@ impl Default for Config {
             memory: MemoryConfig::default(),
             agent: AgentConfig::default(),
             channels: ChannelsConfig {
-                email: PollChannelConfig::default(),
+                email: PollChannelConfig {
+                    enabled: false,
+                    poll_interval_secs: 300,
+                },
                 calendar: PollChannelConfig {
-                    enabled: true,
+                    enabled: false,
                     poll_interval_secs: 900,
                 },
                 wechat: WechatConfig {

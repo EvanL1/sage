@@ -12,13 +12,13 @@ interface Memory {
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  personality: "人格特质",
-  identity: "身份认同",
-  values: "价值观",
-  behavior: "行为模式",
-  thinking: "思维方式",
-  emotion: "情绪线索",
-  growth: "成长方向",
+  personality: "Personality",
+  identity: "Identity",
+  values: "Values",
+  behavior: "Behavior",
+  thinking: "Thinking style",
+  emotion: "Emotional cues",
+  growth: "Growth direction",
 };
 
 const CATEGORY_ORDER = ["personality", "identity", "values", "behavior", "thinking", "emotion", "growth"];
@@ -32,15 +32,15 @@ function MemoryItem({ memory, onDelete }: { memory: Memory; onDelete: (id: numbe
       await invoke("delete_memory", { memoryId: memory.id });
       onDelete(memory.id);
     } catch (err) {
-      console.error("删除记忆失败:", err);
+      console.error("Failed to delete memory:", err);
       setDeleting(false);
     }
   };
 
-  const sourceLabel = memory.source === "chat" ? "对话"
-    : memory.source === "assessment" ? "测评"
-    : memory.source === "import" ? "导入"
-    : "观察";
+  const sourceLabel = memory.source === "chat" ? "Chat"
+    : memory.source === "assessment" ? "Assessment"
+    : memory.source === "import" ? "Import"
+    : "Observation";
 
   return (
     <div className={`about-memory${deleting ? " about-memory-deleting" : ""}`}>
@@ -60,8 +60,8 @@ function MemoryItem({ memory, onDelete }: { memory: Memory; onDelete: (id: numbe
         className="about-delete"
         onClick={handleDelete}
         disabled={deleting}
-        title="删除这条记忆"
-        aria-label="删除"
+        title="Delete this memory"
+        aria-label="Delete"
       >
         ×
       </button>
@@ -80,12 +80,12 @@ function AboutYou() {
       const result = await invoke<Memory[]>("get_memories");
       setMemories(result);
     } catch (err) {
-      console.error("加载记忆失败:", err);
+      console.error("Failed to load memories:", err);
     } finally {
       setLoading(false);
     }
 
-    // 后台静默提取新记忆
+    // Silently extract new memories in the background
     try {
       const history = await invoke<{ id: number; session_id: string }[]>("get_chat_history", { limit: 1 });
       if (history.length > 0) {
@@ -115,11 +115,11 @@ function AboutYou() {
     try {
       const md = await invoke<string>("export_memories");
       await navigator.clipboard.writeText(md);
-      setExportMsg("已复制到剪贴板");
+      setExportMsg("Copied to clipboard");
       setTimeout(() => setExportMsg(""), 3000);
     } catch (err) {
-      console.error("导出失败:", err);
-      setExportMsg("导出失败");
+      console.error("Export failed:", err);
+      setExportMsg("Export failed");
     } finally {
       setExporting(false);
     }
@@ -141,12 +141,12 @@ function AboutYou() {
       if (count > 0) {
         const refreshed = await invoke<Memory[]>("get_memories");
         setMemories(refreshed);
-        setExportMsg(`已导入 ${count} 条记忆`);
+        setExportMsg(`Imported ${count} memories`);
         setTimeout(() => setExportMsg(""), 3000);
       }
     } catch (err) {
-      console.error("导入失败:", err);
-      setExportMsg("导入失败 — 请先复制内容到剪贴板");
+      console.error("Import failed:", err);
+      setExportMsg("Import failed — please copy content to clipboard first");
       setTimeout(() => setExportMsg(""), 3000);
     }
   };
@@ -164,16 +164,16 @@ function AboutYou() {
   return (
     <div className="about-page">
       <div className="about-header">
-        <h1 className="about-title">Sage 对你的了解</h1>
+        <h1 className="about-title">What Sage knows about you</h1>
         <p className="about-subtitle">
-          这些是通过我们的对话和日常观察积累的认识。你可以修正或删除任何不准确的部分。
+          These are observations accumulated through our conversations and daily interactions. You can correct or delete anything that's inaccurate.
         </p>
         <div className="about-actions">
           <button className="about-action-btn" onClick={handleExport} disabled={exporting}>
-            {exporting ? "导出中..." : "导出记忆"}
+            {exporting ? "Exporting..." : "Export memories"}
           </button>
           <button className="about-action-btn" onClick={handleImportFromClipboard}>
-            从剪贴板导入
+            Import from clipboard
           </button>
           {exportMsg && <span className="about-action-msg">{exportMsg}</span>}
         </div>
@@ -181,14 +181,13 @@ function AboutYou() {
 
       {loading ? (
         <div className="about-empty">
-          <p>Sage 正在整理对你的了解...</p>
+          <p>Sage is organizing what it knows about you...</p>
         </div>
       ) : memories.length === 0 ? (
         <div className="about-empty">
           <p>
-            还没有足够的了解。
-            <br />
-            多和我聊聊，我会慢慢认识你的。
+            Not enough to go on yet.<br />
+            Chat with me more and I'll get to know you.
           </p>
         </div>
       ) : (
@@ -206,7 +205,7 @@ function AboutYou() {
 
           {unknownItems.length > 0 && (
             <div className="about-category">
-              <div className="about-category-title">其他</div>
+              <div className="about-category-title">Other</div>
               {unknownItems.map((memory) => (
                 <MemoryItem key={memory.id} memory={memory} onDelete={handleDelete} />
               ))}
@@ -216,7 +215,7 @@ function AboutYou() {
       )}
 
       <div className="about-footer">
-        这些观察可能不完全准确 — 人是复杂的。随时删除你觉得不对的，帮我更好地了解你。
+        These observations may not be fully accurate — people are complex. Delete anything that doesn't feel right to help me understand you better.
       </div>
     </div>
   );

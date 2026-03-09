@@ -3,41 +3,41 @@ import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 
 const STEPS = [
-  { key: "BasicInfo", label: "基本信息", desc: "让 Sage 了解你的角色" },
-  { key: "ReportingLine", label: "汇报关系", desc: "你的汇报线结构" },
-  { key: "Projects", label: "项目", desc: "当前负责的项目" },
-  { key: "Schedule", label: "日程", desc: "工作时间偏好" },
-  { key: "CommunicationStyle", label: "沟通风格", desc: "你的表达方式" },
-  { key: "Stakeholders", label: "利益相关者", desc: "关键合作方" },
-  { key: "Review", label: "确认", desc: "检查并提交" },
+  { key: "BasicInfo", label: "Basic info", desc: "Let Sage know your role" },
+  { key: "ReportingLine", label: "Reporting line", desc: "Your reporting structure" },
+  { key: "Projects", label: "Projects", desc: "Projects you're currently working on" },
+  { key: "Schedule", label: "Schedule", desc: "Work hours and preferences" },
+  { key: "CommunicationStyle", label: "Communication style", desc: "How you prefer to communicate" },
+  { key: "Stakeholders", label: "Stakeholders", desc: "Key collaborators" },
+  { key: "Review", label: "Review", desc: "Check and submit" },
 ];
 
 const FIELD_LABELS: Record<string, string> = {
-  name: "姓名",
-  role: "职位",
-  primary_language: "主要语言",
-  secondary_language: "次要语言",
-  reporting_line: "汇报线",
-  projects: "项目",
-  morning_hour: "早间简报时间",
-  evening_hour: "晚间回顾时间",
-  weekly_report_day: "周报日",
-  weekly_report_hour: "周报时间",
-  work_start_hour: "上班时间",
-  work_end_hour: "下班时间",
-  comm_style: "沟通风格",
-  notification_max_chars: "通知最大字数",
-  stakeholders: "利益相关者",
+  name: "Name",
+  role: "Role",
+  primary_language: "Primary language",
+  secondary_language: "Secondary language",
+  reporting_line: "Reporting line",
+  projects: "Projects",
+  morning_hour: "Morning brief time",
+  evening_hour: "Evening review time",
+  weekly_report_day: "Weekly report day",
+  weekly_report_hour: "Weekly report time",
+  work_start_hour: "Work start",
+  work_end_hour: "Work end",
+  comm_style: "Communication style",
+  notification_max_chars: "Max notification length",
+  stakeholders: "Stakeholders",
 };
 
 const WEEKDAY_OPTIONS = [
-  { value: "Mon", label: "周一" },
-  { value: "Tue", label: "周二" },
-  { value: "Wed", label: "周三" },
-  { value: "Thu", label: "周四" },
-  { value: "Fri", label: "周五" },
-  { value: "Sat", label: "周六" },
-  { value: "Sun", label: "周日" },
+  { value: "Mon", label: "Monday" },
+  { value: "Tue", label: "Tuesday" },
+  { value: "Wed", label: "Wednesday" },
+  { value: "Thu", label: "Thursday" },
+  { value: "Fri", label: "Friday" },
+  { value: "Sat", label: "Saturday" },
+  { value: "Sun", label: "Sunday" },
 ];
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -89,9 +89,9 @@ function transformForStep(stepKey: string, data: Record<string, string>): Record
           .map((line) => {
             const idx = line.indexOf(" - ");
             if (idx !== -1) {
-              return { name: line.slice(0, idx).trim(), role: line.slice(idx + 3).trim(), relationship: "同事" };
+              return { name: line.slice(0, idx).trim(), role: line.slice(idx + 3).trim(), relationship: "Colleague" };
             }
-            return { name: line.trim(), role: "", relationship: "同事" };
+            return { name: line.trim(), role: "", relationship: "Colleague" };
           }),
       };
     case "Review":
@@ -152,21 +152,21 @@ function Onboarding() {
         return (
           <>
             <div className="form-group">
-              <label className="form-label">姓名</label>
-              <input className="form-input" value={formData.name ?? ""} onChange={(e) => updateField("name", e.target.value)} placeholder="你的名字" />
+              <label className="form-label">Name</label>
+              <input className="form-input" value={formData.name ?? ""} onChange={(e) => updateField("name", e.target.value)} placeholder="Your name" />
             </div>
             <div className="form-group">
-              <label className="form-label">职位</label>
-              <input className="form-input" value={formData.role ?? ""} onChange={(e) => updateField("role", e.target.value)} placeholder="如：Team Lead" />
+              <label className="form-label">Role</label>
+              <input className="form-input" value={formData.role ?? ""} onChange={(e) => updateField("role", e.target.value)} placeholder="e.g. Team Lead" />
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">主要语言</label>
-                <input className="form-input" value={formData.primary_language ?? ""} onChange={(e) => updateField("primary_language", e.target.value)} placeholder="如：中文" />
+                <label className="form-label">Primary language</label>
+                <input className="form-input" value={formData.primary_language ?? ""} onChange={(e) => updateField("primary_language", e.target.value)} placeholder="e.g. English" />
               </div>
               <div className="form-group">
-                <label className="form-label">次要语言</label>
-                <input className="form-input" value={formData.secondary_language ?? ""} onChange={(e) => updateField("secondary_language", e.target.value)} placeholder="如：English" />
+                <label className="form-label">Secondary language</label>
+                <input className="form-input" value={formData.secondary_language ?? ""} onChange={(e) => updateField("secondary_language", e.target.value)} placeholder="e.g. Chinese" />
               </div>
             </div>
           </>
@@ -174,17 +174,17 @@ function Onboarding() {
       case "ReportingLine":
         return (
           <div className="form-group">
-            <label className="form-label">汇报线</label>
-            <textarea className="form-textarea" value={formData.reporting_line ?? ""} onChange={(e) => updateField("reporting_line", e.target.value)} placeholder={"你的名字\n直属上级\n上级的上级"} />
-            <div className="form-hint">每行一个，从你开始往上排列</div>
+            <label className="form-label">Reporting line</label>
+            <textarea className="form-textarea" value={formData.reporting_line ?? ""} onChange={(e) => updateField("reporting_line", e.target.value)} placeholder={"Your name\nDirect manager\nManager's manager"} />
+            <div className="form-hint">One per line, starting from you upward</div>
           </div>
         );
       case "Projects":
         return (
           <div className="form-group">
-            <label className="form-label">当前项目</label>
-            <textarea className="form-textarea" value={formData.projects ?? ""} onChange={(e) => updateField("projects", e.target.value)} placeholder={"项目A - 简要描述\n项目B - 简要描述"} />
-            <div className="form-hint">每行一个，格式：项目名 - 描述</div>
+            <label className="form-label">Current projects</label>
+            <textarea className="form-textarea" value={formData.projects ?? ""} onChange={(e) => updateField("projects", e.target.value)} placeholder={"Project A - Brief description\nProject B - Brief description"} />
+            <div className="form-hint">One per line, format: Project name - description</div>
           </div>
         );
       case "Schedule":
@@ -192,29 +192,29 @@ function Onboarding() {
           <>
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">早间简报时间</label>
+                <label className="form-label">Morning brief time</label>
                 <input className="form-input" type="number" value={formData.morning_hour ?? "8"} onChange={(e) => updateField("morning_hour", e.target.value)} min="0" max="23" />
               </div>
               <div className="form-group">
-                <label className="form-label">晚间回顾时间</label>
+                <label className="form-label">Evening review time</label>
                 <input className="form-input" type="number" value={formData.evening_hour ?? "18"} onChange={(e) => updateField("evening_hour", e.target.value)} min="0" max="23" />
               </div>
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">上班时间</label>
+                <label className="form-label">Work start</label>
                 <input className="form-input" type="number" value={formData.work_start_hour ?? "8"} onChange={(e) => updateField("work_start_hour", e.target.value)} min="0" max="23" />
-                <div className="form-hint">0-23 小时制</div>
+                <div className="form-hint">24-hour format</div>
               </div>
               <div className="form-group">
-                <label className="form-label">下班时间</label>
+                <label className="form-label">Work end</label>
                 <input className="form-input" type="number" value={formData.work_end_hour ?? "19"} onChange={(e) => updateField("work_end_hour", e.target.value)} min="0" max="23" />
-                <div className="form-hint">0-23 小时制</div>
+                <div className="form-hint">24-hour format</div>
               </div>
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">周报日</label>
+                <label className="form-label">Weekly report day</label>
                 <select className="form-select" value={formData.weekly_report_day ?? "Fri"} onChange={(e) => updateField("weekly_report_day", e.target.value)}>
                   {WEEKDAY_OPTIONS.map((w) => (
                     <option key={w.value} value={w.value}>{w.label}</option>
@@ -222,9 +222,9 @@ function Onboarding() {
                 </select>
               </div>
               <div className="form-group">
-                <label className="form-label">周报时间</label>
+                <label className="form-label">Weekly report time</label>
                 <input className="form-input" type="number" value={formData.weekly_report_hour ?? "16"} onChange={(e) => updateField("weekly_report_hour", e.target.value)} min="0" max="23" />
-                <div className="form-hint">0-23 小时制</div>
+                <div className="form-hint">24-hour format</div>
               </div>
             </div>
           </>
@@ -233,33 +233,33 @@ function Onboarding() {
         return (
           <>
             <div className="form-group">
-              <label className="form-label">沟通风格偏好</label>
+              <label className="form-label">Communication style preference</label>
               <select className="form-select" value={formData.comm_style ?? "Direct"} onChange={(e) => updateField("comm_style", e.target.value)}>
-                <option value="Direct">直接 — 简短有力，直奔主题</option>
-                <option value="Formal">正式 — 结构化、专业措辞</option>
-                <option value="Casual">随意 — 轻松自然的表达</option>
+                <option value="Direct">Direct — concise and straight to the point</option>
+                <option value="Formal">Formal — structured and professional</option>
+                <option value="Casual">Casual — relaxed and natural</option>
               </select>
             </div>
             <div className="form-group">
-              <label className="form-label">通知最大字数</label>
+              <label className="form-label">Max notification length</label>
               <input className="form-input" type="number" value={formData.notification_max_chars ?? "200"} onChange={(e) => updateField("notification_max_chars", e.target.value)} min="50" max="500" />
-              <div className="form-hint">Sage 建议通知的最大字符数（50-500）</div>
+              <div className="form-hint">Maximum characters for Sage's suggestion notifications (50–500)</div>
             </div>
           </>
         );
       case "Stakeholders":
         return (
           <div className="form-group">
-            <label className="form-label">关键利益相关者</label>
-            <textarea className="form-textarea" value={formData.stakeholders ?? ""} onChange={(e) => updateField("stakeholders", e.target.value)} placeholder={"张三 - 产品经理\n李四 - 客户"} />
-            <div className="form-hint">每行一个，格式：姓名 - 角色</div>
+            <label className="form-label">Key stakeholders</label>
+            <textarea className="form-textarea" value={formData.stakeholders ?? ""} onChange={(e) => updateField("stakeholders", e.target.value)} placeholder={"Alice - Product Manager\nBob - Client"} />
+            <div className="form-hint">One per line, format: Name - role</div>
           </div>
         );
       case "Review":
         return (
           <div>
             <p style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 20 }}>
-              请确认以下信息。提交后 Sage 将生成个性化 SOP。
+              Please review the information below. Sage will generate a personalized SOP after you submit.
             </p>
             {Object.entries(formData).filter(([, v]) => v).map(([k, v]) => (
               <div key={k} className="review-section">
@@ -269,7 +269,7 @@ function Onboarding() {
             ))}
             {sopPreview && (
               <div style={{ marginTop: 20 }}>
-                <div className="review-label">SOP 预览</div>
+                <div className="review-label">SOP preview</div>
                 <div className="sop-preview">{sopPreview}</div>
               </div>
             )}
@@ -289,7 +289,7 @@ function Onboarding() {
       </div>
 
       <div className="onboarding-header">
-        <div className="step-count">步骤 {currentStep + 1} / {STEPS.length}</div>
+        <div className="step-count">Step {currentStep + 1} / {STEPS.length}</div>
         <h2>{step.label}</h2>
         <p>{step.desc}</p>
       </div>
@@ -300,12 +300,12 @@ function Onboarding() {
 
       <div className="onboarding-actions">
         {currentStep > 0 ? (
-          <button className="btn btn-secondary" onClick={handleBack}>上一步</button>
+          <button className="btn btn-secondary" onClick={handleBack}>Back</button>
         ) : (
           <div className="spacer" />
         )}
         <button className="btn btn-primary" onClick={handleNext} disabled={submitting}>
-          {submitting ? "提交中..." : currentStep === STEPS.length - 1 ? "完成设置" : "下一步"}
+          {submitting ? "Submitting..." : currentStep === STEPS.length - 1 ? "Finish setup" : "Next"}
         </button>
       </div>
     </div>

@@ -22,7 +22,7 @@ interface Suggestion {
 function formatTime(ts: string): string {
   try {
     const d = new Date(ts);
-    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
   } catch {
     return ts;
   }
@@ -30,9 +30,9 @@ function formatTime(ts: string): string {
 
 function sourceLabel(source: string): string {
   const map: Record<string, string> = {
-    email: "邮件",
-    calendar: "日历",
-    heartbeat: "定时",
+    email: "Email",
+    calendar: "Calendar",
+    heartbeat: "Scheduled",
     hook: "Hook",
   };
   return map[source] ?? source;
@@ -43,7 +43,7 @@ function Dashboard() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
-  // Status: 只 mount 时加载
+  // Status: load only on mount
   useEffect(() => {
     invoke<SystemStatus>("get_system_status")
       .then((s) => {
@@ -55,7 +55,7 @@ function Dashboard() {
       .catch(() => navigate("/welcome", { replace: true }));
   }, [navigate]);
 
-  // Suggestions: mount + 每 30 秒轮询
+  // Suggestions: mount + poll every 30s
   useEffect(() => {
     const fetchSuggestions = () => {
       invoke<Suggestion[]>("get_suggestions", { limit: 5 })
@@ -74,33 +74,33 @@ function Dashboard() {
     );
   };
 
-  // 等待 status 加载，避免 Dashboard → Welcome 闪烁
+  // Wait for status to load to avoid Dashboard → Welcome flicker
   if (!status) return null;
 
   const statusText = status.status === "ready"
-    ? "运行中"
+    ? "Running"
     : status.status === "needs_onboarding"
-      ? "待设置"
-      : status.status ?? "加载中";
+      ? "Setup required"
+      : status.status ?? "Loading";
   const isOnline = status.status === "ready";
 
   return (
     <div className="page">
       <div className="page-header">
-        <h1>仪表板</h1>
-        <p>Sage 个人参谋系统</p>
+        <h1>Dashboard</h1>
+        <p>Sage personal advisor system</p>
       </div>
 
       <div className="dashboard-grid">
         <div className="stat-card">
-          <div className="stat-label">系统状态</div>
+          <div className="stat-label">System status</div>
           <div className={`status-badge ${isOnline ? "online" : "idle"}`}>
             <span className="status-dot" />
             {statusText}
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">SOP 版本</div>
+          <div className="stat-label">SOP version</div>
           <div className="stat-value">{status ? `v${status.sop_version}` : "—"}</div>
         </div>
       </div>
@@ -115,17 +115,17 @@ function Dashboard() {
                 <path d="M2 12l10 5 10-5" />
               </svg>
             </div>
-            <h3>开始使用 Sage</h3>
-            <p>完成初始设置后，Sage 将根据你的角色和工作节奏提供个性化建议。</p>
-            <Link to="/welcome" className="btn btn-primary">开始设置</Link>
+            <h3>Get started with Sage</h3>
+            <p>Complete the initial setup and Sage will provide personalized suggestions based on your role and work rhythm.</p>
+            <Link to="/welcome" className="btn btn-primary">Start setup</Link>
           </div>
         </div>
       )}
 
       <div style={{ marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span className="card-title" style={{ margin: 0 }}>最近建议</span>
+        <span className="card-title" style={{ margin: 0 }}>Recent suggestions</span>
         {suggestions.length > 0 && (
-          <Link to="/history" className="btn btn-ghost btn-sm">查看全部</Link>
+          <Link to="/history" className="btn btn-ghost btn-sm">View all</Link>
         )}
       </div>
 
@@ -140,14 +140,14 @@ function Dashboard() {
                 <line x1="15" y1="9" x2="15.01" y2="9" />
               </svg>
             </div>
-            <h3>还没有建议，慢慢来</h3>
+            <h3>No suggestions yet — take your time</h3>
             <p style={{ marginBottom: 8 }}>
-              Sage 会根据你的工作节奏自动生成建议 — 早间简报、邮件摘要、晚间回顾。
+              Sage automatically generates suggestions based on your work rhythm — morning brief, email summaries, evening review.
             </p>
             <p style={{ marginBottom: 16, opacity: 0.7, fontSize: "0.9em" }}>
-              不想等？随时可以找我聊聊。
+              Don't want to wait? Feel free to chat with me anytime.
             </p>
-            <Link to="/chat" className="btn btn-primary">和 Sage 聊天</Link>
+            <Link to="/chat" className="btn btn-primary">Chat with Sage</Link>
           </div>
         </div>
       ) : (

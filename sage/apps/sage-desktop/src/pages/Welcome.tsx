@@ -29,33 +29,33 @@ interface DimensionSpec {
 const TOTAL_SCREENS = 5;
 
 const IDENTITY_TAGS = [
-  "创造者", "思考者", "领导者", "学习者",
-  "探索者", "实干家", "连接者", "守护者",
-  "艺术家", "观察者", "沟通者", "分析者",
+  "Creator", "Thinker", "Leader", "Learner",
+  "Explorer", "Doer", "Connector", "Guardian",
+  "Artist", "Observer", "Communicator", "Analyst",
 ];
 
 const QUESTIONS: ScenarioQuestion[] = [
-  { id: 0, text: "周五下班后，你更可能...", optionA: "找个安静的地方独处充电", optionB: "约朋友出去放松", dimension: 0 },
-  { id: 1, text: "遇到棘手问题时...", optionA: "独自深入思考找答案", optionB: "找人讨论碰撞想法", dimension: 0 },
-  { id: 2, text: "做一个项目，你更在意...", optionA: "每个细节都经得起推敲", optionB: "整体方向和战略正确", dimension: 1 },
-  { id: 3, text: "看一份长报告...", optionA: "从头到尾仔细看数据", optionB: "先看结论，需要时再看细节", dimension: 1 },
-  { id: 4, text: "面临重要决策...", optionA: "数据和逻辑是最终依据", optionB: "对人的影响同样重要", dimension: 2 },
-  { id: 5, text: "团队成员犯了错...", optionA: "直接指出问题和改进方向", optionB: "先了解原因，再一起找方案", dimension: 2 },
-  { id: 6, text: "面对一次旅行...", optionA: "喜欢提前规划好每一站", optionB: "更喜欢走到哪算哪", dimension: 3 },
-  { id: 7, text: "项目计划突然变了...", optionA: "有点不安，想回到原计划", optionB: "觉得新方向可能更有趣", dimension: 3 },
-  { id: 8, text: "有了一个新想法...", optionA: "先想清楚可行性再动手", optionB: "先动手试试，边做边调", dimension: 4 },
-  { id: 9, text: "面对紧急状况...", optionA: "冷静分析，理清思路再行动", optionB: "立刻着手处理最紧迫的事", dimension: 4 },
-  { id: 10, text: "你更享受...", optionA: "把一件事做到极致", optionB: "探索很多不同的领域", dimension: 5 },
-  { id: 11, text: "学习新东西...", optionA: "一定要深入到精通", optionB: "了解核心就好，好奇心带我去下一个", dimension: 5 },
+  { id: 0, text: "After work on Friday, you're more likely to...", optionA: "Find a quiet place to recharge alone", optionB: "Meet up with friends to unwind", dimension: 0 },
+  { id: 1, text: "When facing a tough problem...", optionA: "Think deeply on your own to find the answer", optionB: "Discuss it with others to spark ideas", dimension: 0 },
+  { id: 2, text: "Working on a project, you care more about...", optionA: "Every detail holding up to scrutiny", optionB: "Getting the overall direction and strategy right", dimension: 1 },
+  { id: 3, text: "Reading a long report...", optionA: "Go through all the data carefully from start to finish", optionB: "Check the conclusion first, dig into details as needed", dimension: 1 },
+  { id: 4, text: "Facing an important decision...", optionA: "Data and logic are the final basis", optionB: "Impact on people matters just as much", dimension: 2 },
+  { id: 5, text: "A team member makes a mistake...", optionA: "Point out the problem and improvement direction directly", optionB: "First understand why, then find a solution together", dimension: 2 },
+  { id: 6, text: "Planning a trip...", optionA: "Plan every stop in advance", optionB: "Prefer to figure it out as you go", dimension: 3 },
+  { id: 7, text: "The project plan suddenly changes...", optionA: "A bit unsettled, want to get back to the original plan", optionB: "Think the new direction might be more interesting", dimension: 3 },
+  { id: 8, text: "You have a new idea...", optionA: "Think through the feasibility before acting", optionB: "Try it first, adjust as you go", dimension: 4 },
+  { id: 9, text: "Facing an urgent situation...", optionA: "Calmly analyze and clarify thoughts before acting", optionB: "Immediately tackle the most pressing thing", dimension: 4 },
+  { id: 10, text: "You enjoy more...", optionA: "Taking one thing to mastery", optionB: "Exploring many different areas", dimension: 5 },
+  { id: 11, text: "Learning something new...", optionA: "Must go deep until I've mastered it", optionB: "Grasp the core is enough, curiosity takes me to the next thing", dimension: 5 },
 ];
 
 const DIMENSIONS: DimensionSpec[] = [
-  { left: "独处", right: "社交", leftDesc: "从独处中获取能量，偏好深度思考", rightDesc: "从社交中获取能量，善于协作共创", balancedDesc: "在独处与社交间灵活切换" },
-  { left: "细节", right: "全局", leftDesc: "注重细节，追求精确完美", rightDesc: "着眼全局，把握大方向", balancedDesc: "兼顾细节与全局" },
-  { left: "理性", right: "共情", leftDesc: "以数据和逻辑驱动决策", rightDesc: "重视人的感受和关系", balancedDesc: "理性分析与共情理解并重" },
-  { left: "计划", right: "灵活", leftDesc: "喜欢有序规划，按计划行事", rightDesc: "拥抱变化，享受不确定性", balancedDesc: "有计划但保持灵活" },
-  { left: "冷静", right: "行动", leftDesc: "深思熟虑，三思而后行", rightDesc: "快速行动，实践出真知", balancedDesc: "思考与行动平衡" },
-  { left: "匠心", right: "广域", leftDesc: "专注深耕，追求极致", rightDesc: "广泛探索，兴趣多元", balancedDesc: "深度与广度兼备" },
+  { left: "Solitary", right: "Social", leftDesc: "Energized by alone time, prefers deep thinking", rightDesc: "Energized by socializing, strong collaborator", balancedDesc: "Flexibly switches between solitude and social" },
+  { left: "Detail", right: "Big picture", leftDesc: "Meticulous, pursues precision and perfection", rightDesc: "Focuses on the big picture and direction", balancedDesc: "Balances detail and big picture" },
+  { left: "Rational", right: "Empathetic", leftDesc: "Data and logic drive decisions", rightDesc: "Values people's feelings and relationships", balancedDesc: "Balances rational analysis and empathy" },
+  { left: "Planned", right: "Flexible", leftDesc: "Likes orderly planning, follows plans", rightDesc: "Embraces change, enjoys uncertainty", balancedDesc: "Planned but stays flexible" },
+  { left: "Deliberate", right: "Action-oriented", leftDesc: "Thinks things through carefully before acting", rightDesc: "Acts fast, learns through practice", balancedDesc: "Balances thinking and action" },
+  { left: "Deep", right: "Broad", leftDesc: "Focused depth, pursues mastery", rightDesc: "Wide exploration, diverse interests", balancedDesc: "Both deep and broad" },
 ];
 
 function Welcome() {
@@ -120,7 +120,7 @@ function Welcome() {
       const score = finalScores[i];
       const desc = score <= 0.25 ? dim.leftDesc : score >= 0.75 ? dim.rightDesc : dim.balancedDesc;
       return {
-        content: `${dim.left} ↔ ${dim.right}：${desc}`,
+        content: `${dim.left} ↔ ${dim.right}: ${desc}`,
         confidence: Math.abs(score - 0.5) * 2 + 0.5,
       };
     });
@@ -173,7 +173,7 @@ function Welcome() {
     setError("");
     setSubmitting(true);
     try {
-      const role = identityTags.length > 0 ? identityTags.join("、") : undefined;
+      const role = identityTags.length > 0 ? identityTags.join(", ") : undefined;
       await invoke("quick_setup", {
         name,
         role,
@@ -183,7 +183,7 @@ function Welcome() {
       navigate("/");
     } catch (err) {
       console.error(err);
-      setError("出了点问题，再试一次？");
+      setError("Something went wrong, try again?");
     } finally {
       setSubmitting(false);
     }
@@ -195,14 +195,14 @@ function Welcome() {
         return (
           <div className="welcome-screen">
             <p className="welcome-greeting">
-              你好。<br /><br />
-              我是 Sage —<br />
-              不只是工具，更是帮你认识自己的一面镜子。<br /><br />
-              接下来，我会通过几个简单的场景，<br />
-              帮你看到自己的<strong>思维光谱</strong>。
+              Hello.<br /><br />
+              I'm Sage —<br />
+              not just a tool, but a mirror to help you know yourself better.<br /><br />
+              In the next few steps, I'll walk you through some simple scenarios<br />
+              to reveal your <strong>thinking spectrum</strong>.
             </p>
             <div className="welcome-actions">
-              <button className="btn btn-primary" onClick={() => goTo(1)}>开始</button>
+              <button className="btn btn-primary" onClick={() => goTo(1)}>Get started</button>
             </div>
           </div>
         );
@@ -211,7 +211,7 @@ function Welcome() {
         return (
           <div className="welcome-screen">
             <p className="welcome-greeting">
-              先告诉我 —<br />你的名字？
+              First —<br />what's your name?
             </p>
             <div className="welcome-card">
               <div className="form-group">
@@ -220,12 +220,12 @@ function Welcome() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) goTo(2); }}
-                  placeholder="你的名字"
+                  placeholder="Your name"
                   autoFocus
                 />
               </div>
               <p style={{ fontSize: "0.9rem", color: "var(--text-secondary)", margin: "16px 0 8px" }}>
-                你觉得自己是...
+                How would you describe yourself?
               </p>
               <div className="tag-group">
                 {IDENTITY_TAGS.map((tag) => (
@@ -243,10 +243,10 @@ function Welcome() {
             </div>
             <div className="welcome-actions">
               <button className="btn btn-primary" onClick={() => goTo(2)} disabled={!name.trim()}>
-                继续
+                Continue
               </button>
               <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginTop: "10px", textAlign: "center" }}>
-                标签是可选的，随时可以跳过
+                Tags are optional, feel free to skip
               </p>
             </div>
           </div>
@@ -282,13 +282,13 @@ function Welcome() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
               {questionIndex > 0 ? (
                 <button className="welcome-skip" onClick={() => setQuestionIndex((prev) => prev - 1)}>
-                  ← 上一题
+                  ← Previous
                 </button>
               ) : (
                 <span />
               )}
               <button className="welcome-skip" onClick={() => goTo(4)}>
-                跳过测评 →
+                Skip assessment →
               </button>
             </div>
           </div>
@@ -298,7 +298,7 @@ function Welcome() {
         return (
           <div className="welcome-screen">
             <p className="welcome-greeting">
-              {name}，这是你的思维光谱 —
+              {name}, here's your thinking spectrum —
             </p>
             <div className="welcome-card spectrum-card">
               {DIMENSIONS.map((dim, i) => (
@@ -314,12 +314,12 @@ function Welcome() {
                 </div>
               ))}
               <p className="spectrum-note">
-                每个人都是独一无二的组合。<br />
-                这不是标签 — 是认识自己的起点。
+                Everyone is a unique combination.<br />
+                This isn't a label — it's a starting point for self-understanding.
               </p>
             </div>
             <div className="welcome-actions">
-              <button className="btn btn-primary" onClick={() => goTo(4)}>继续</button>
+              <button className="btn btn-primary" onClick={() => goTo(4)}>Continue</button>
             </div>
           </div>
         );
@@ -328,8 +328,8 @@ function Welcome() {
         return (
           <div className="welcome-screen">
             <p className="welcome-greeting">
-              好的。我记住了。<br /><br />
-              最后一步，让我连接思考的能力 —
+              Got it. I'll remember that.<br /><br />
+              One last step — let me connect to my thinking capabilities —
             </p>
             <div className="welcome-card">
               {readyProviders.length > 0 ? (
@@ -337,12 +337,12 @@ function Welcome() {
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
-                  <span>已检测到 {readyProviders[0].display_name}，直接可用</span>
+                  <span>Detected {readyProviders[0].display_name} — ready to use</span>
                 </div>
               ) : (
                 <>
                   <div className="form-group">
-                    <label className="form-label">AI 服务</label>
+                    <label className="form-label">AI Provider</label>
                     <select
                       className="form-select"
                       value={selectedProvider}
@@ -351,7 +351,7 @@ function Welcome() {
                         setTestResult("idle");
                       }}
                     >
-                      <option value="">选择 AI 服务...</option>
+                      <option value="">Select an AI provider...</option>
                       {apiProviders.map((p) => (
                         <option key={p.id} value={p.id}>{p.display_name}</option>
                       ))}
@@ -376,13 +376,13 @@ function Welcome() {
                       onClick={handleTestConnection}
                       disabled={!selectedProvider || !apiKey || testResult === "testing"}
                     >
-                      {testResult === "testing" ? "测试中..." : "测试连接"}
+                      {testResult === "testing" ? "Testing..." : "Test connection"}
                     </button>
                     {testResult === "ok" && (
-                      <span className="provider-status ready">连接成功</span>
+                      <span className="provider-status ready">Connection successful</span>
                     )}
                     {testResult === "fail" && (
-                      <span className="provider-status error">出了点问题，再试一次？</span>
+                      <span className="provider-status error">Something went wrong, try again?</span>
                     )}
                   </div>
                 </>
@@ -390,7 +390,7 @@ function Welcome() {
             </div>
             <div className="welcome-actions">
               <button className="btn btn-primary" onClick={handleComplete} disabled={submitting}>
-                {submitting ? "准备中..." : "开始我们的旅程"}
+                {submitting ? "Setting up..." : "Begin our journey"}
               </button>
               {error && <p className="welcome-error">{error}</p>}
             </div>

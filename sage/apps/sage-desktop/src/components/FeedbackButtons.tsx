@@ -13,10 +13,10 @@ interface Props {
 }
 
 function feedbackLabel(fb: FeedbackValue): string {
-  if (fb === "Useful") return "✓ 有用";
-  if (fb === "NotUseful") return "✗ 没用";
-  if (typeof fb === "object" && "NeverDoThis" in fb) return "⛔ 已标记";
-  return "✏️ 已修正";
+  if (fb === "Useful") return "✓ Helpful";
+  if (fb === "NotUseful") return "✗ Not helpful";
+  if (typeof fb === "object" && "NeverDoThis" in fb) return "⛔ Flagged";
+  return "✏️ Corrected";
 }
 
 function feedbackType(fb: FeedbackValue): "positive" | "negative" {
@@ -68,40 +68,40 @@ export default function FeedbackButtons({ suggestionId, feedback, onSubmit }: Pr
     <>
       <div className="suggestion-footer">
         <button className="fb-btn" onClick={() => submit("useful")} disabled={loading}>
-          ✓ 有用
+          ✓ Helpful
         </button>
         <button className="fb-btn" onClick={() => submit("not_useful")} disabled={loading}>
-          ✗ 没用
+          ✗ Not helpful
         </button>
         <button className="fb-btn" onClick={() => setModal("never")} disabled={loading}>
-          ⛔ 永远不要
+          ⛔ Don't do this
         </button>
         <button className="fb-btn" onClick={() => setModal("correction")} disabled={loading}>
-          ✏️ 修正
+          ✏️ Correct
         </button>
       </div>
 
       {modal && (
         <div className="modal-overlay" onClick={() => setModal(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>{modal === "never" ? "为什么不要这类建议？" : "请提供修正内容"}</h3>
+            <h3>{modal === "never" ? "Why don't you want this type of suggestion?" : "Please provide a correction"}</h3>
             <textarea
               className="form-textarea"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder={modal === "never" ? "告诉 Sage 原因..." : "正确的做法是..."}
+              placeholder={modal === "never" ? "Tell Sage why..." : "The correct approach is..."}
               autoFocus
             />
             <div className="modal-actions">
               <button className="btn btn-secondary" onClick={() => setModal(null)}>
-                取消
+                Cancel
               </button>
               <button
                 className="btn btn-primary"
                 onClick={submitModal}
                 disabled={!inputText.trim()}
               >
-                提交
+                Submit
               </button>
             </div>
           </div>

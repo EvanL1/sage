@@ -55,11 +55,11 @@ interface ProviderConfig {
 type TestState = "idle" | "testing" | "ok" | "fail";
 
 const WEEKDAY_LABELS: Record<string, string> = {
-  Mon: "周一", Tue: "周二", Wed: "周三", Thu: "周四",
-  Fri: "周五", Sat: "周六", Sun: "周日",
+  Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday", Thu: "Thursday",
+  Fri: "Friday", Sat: "Saturday", Sun: "Sunday",
 };
 
-// Parse "名称 - 描述" lines into structured objects
+// Parse "Name - Description" lines into structured objects
 function parseProjectLines(text: string) {
   return text
     .split("\n")
@@ -81,8 +81,8 @@ function parseStakeholderLines(text: string) {
     .map((line) => {
       const idx = line.indexOf(" - ");
       return idx !== -1
-        ? { name: line.slice(0, idx).trim(), role: line.slice(idx + 3).trim(), relationship: "同事" }
-        : { name: line, role: "", relationship: "同事" };
+        ? { name: line.slice(0, idx).trim(), role: line.slice(idx + 3).trim(), relationship: "Colleague" }
+        : { name: line, role: "", relationship: "Colleague" };
     });
 }
 
@@ -185,10 +185,10 @@ function Settings() {
       };
       await invoke("save_profile", { profile: merged });
       setProfile(merged);
-      showToast("success", "设置已保存");
+      showToast("success", "Settings saved");
     } catch (err) {
       console.error(err);
-      showToast("error", "出了点问题，再试一次？");
+      showToast("error", "Something went wrong, try again?");
     } finally {
       setSaving(false);
     }
@@ -227,8 +227,8 @@ function Settings() {
   if (loading) {
     return (
       <div className="page">
-        <div className="page-header"><h1>设置</h1></div>
-        <div className="card"><p style={{ color: "var(--text-secondary)" }}>加载中...</p></div>
+        <div className="page-header"><h1>Settings</h1></div>
+        <div className="card"><p style={{ color: "var(--text-secondary)" }}>Loading...</p></div>
       </div>
     );
   }
@@ -237,14 +237,14 @@ function Settings() {
     return (
       <div className="page">
         <div className="page-header">
-          <h1>设置</h1>
-          <p>管理你的个人资料和偏好</p>
+          <h1>Settings</h1>
+          <p>Manage your profile and preferences</p>
         </div>
         <div className="card">
           <div className="empty-state">
-            <h3>尚未创建个人资料</h3>
-            <p>请先完成初始设置</p>
-            <Link to="/welcome" className="btn btn-primary">开始设置</Link>
+            <h3>No profile yet</h3>
+            <p>Please complete the initial setup first</p>
+            <Link to="/welcome" className="btn btn-primary">Start setup</Link>
           </div>
         </div>
       </div>
@@ -257,32 +257,32 @@ function Settings() {
   return (
     <div className="page">
       <div className="page-header">
-        <h1>设置</h1>
-        <p>管理你的个人资料和偏好</p>
+        <h1>Settings</h1>
+        <p>Manage your profile and preferences</p>
       </div>
 
-      {/* ── AI 服务配置 ── */}
+      {/* ── AI Providers ── */}
       <div className="settings-section">
-        <div className="settings-section-title">AI 服务配置</div>
+        <div className="settings-section-title">AI Providers</div>
         <div className="card">
           {providersLoading ? (
-            <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>检测中...</p>
+            <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>Detecting...</p>
           ) : (
             <>
               {cliProviders.length > 0 && (
                 <div style={{ marginBottom: apiProviders.length > 0 ? 16 : 0 }}>
-                  <div className="form-label" style={{ marginBottom: 8 }}>本地 CLI</div>
+                  <div className="form-label" style={{ marginBottom: 8 }}>Local CLI</div>
                   {cliProviders.map((p) => (
                     <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--border-subtle)" }}>
                       <span style={{ fontSize: 13, color: "var(--text)" }}>{p.display_name}</span>
                       {p.status === "Ready" ? (
                         <span style={{ fontSize: 12, color: "var(--success-text)", background: "var(--success-light)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
                           <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />
-                          可用
+                          Available
                         </span>
                       ) : (
                         <span style={{ fontSize: 12, color: "var(--text-tertiary)", background: "var(--border-subtle)", padding: "2px 8px", borderRadius: 999 }}>
-                          未安装
+                          Not installed
                         </span>
                       )}
                     </div>
@@ -292,7 +292,7 @@ function Settings() {
 
               {apiProviders.length > 0 && (
                 <div>
-                  {cliProviders.length > 0 && <div className="form-label" style={{ marginBottom: 8, marginTop: 4 }}>API 服务</div>}
+                  {cliProviders.length > 0 && <div className="form-label" style={{ marginBottom: 8, marginTop: 4 }}>API Services</div>}
                   {apiProviders.map((p) => {
                     const testState = testStates[p.id] ?? "idle";
                     const key = apiKeys[p.id] ?? "";
@@ -303,11 +303,11 @@ function Settings() {
                           {p.status === "Ready" ? (
                             <span style={{ fontSize: 12, color: "var(--success-text)", background: "var(--success-light)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
                               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />
-                              已配置
+                              Configured
                             </span>
                           ) : (
                             <span style={{ fontSize: 12, color: "var(--warning-text)", background: "var(--warning-light)", padding: "2px 8px", borderRadius: 999 }}>
-                              需要配置
+                              Needs setup
                             </span>
                           )}
                         </div>
@@ -317,7 +317,7 @@ function Settings() {
                             type="password"
                             value={key}
                             onChange={(e) => handleApiKeyChange(p.id, e.target.value)}
-                            placeholder="输入 API Key..."
+                            placeholder="Enter API key..."
                             style={{ flex: 1 }}
                           />
                           <button
@@ -326,17 +326,17 @@ function Settings() {
                             disabled={!key || testState === "testing"}
                             style={{ flexShrink: 0 }}
                           >
-                            {testState === "testing" ? "测试中..." : "测试连接"}
+                            {testState === "testing" ? "Testing..." : "Test connection"}
                           </button>
                         </div>
                         {testState === "ok" && (
                           <div className="form-hint" style={{ color: "var(--success-text)", marginTop: 4 }}>
-                            连接成功
+                            Connection successful
                           </div>
                         )}
                         {testState === "fail" && (
                           <div className="form-hint" style={{ color: "var(--error-text)", marginTop: 4 }}>
-                            出了点问题，再试一次？
+                            Something went wrong, try again?
                           </div>
                         )}
                       </div>
@@ -346,65 +346,65 @@ function Settings() {
               )}
 
               {providers.length === 0 && (
-                <p style={{ fontSize: 13, color: "var(--text-tertiary)" }}>未检测到可用 AI 服务</p>
+                <p style={{ fontSize: 13, color: "var(--text-tertiary)" }}>No AI providers detected</p>
               )}
             </>
           )}
         </div>
       </div>
 
-      {/* ── 个人资料 ── */}
+      {/* ── Profile ── */}
       <div className="settings-section">
-        <div className="settings-section-title">个人资料</div>
+        <div className="settings-section-title">Profile</div>
         <div className="card">
           <div className="form-group">
-            <label className="form-label">姓名</label>
+            <label className="form-label">Name</label>
             <input className="form-input" value={profile.identity.name} onChange={(e) => updateIdentity({ name: e.target.value })} />
           </div>
           <div className="form-group">
-            <label className="form-label">职位</label>
+            <label className="form-label">Role</label>
             <input className="form-input" value={profile.identity.role} onChange={(e) => updateIdentity({ role: e.target.value })} />
           </div>
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">主要语言</label>
+              <label className="form-label">Primary language</label>
               <input className="form-input" value={profile.identity.primary_language} onChange={(e) => updateIdentity({ primary_language: e.target.value })} />
             </div>
             <div className="form-group">
-              <label className="form-label">次要语言</label>
+              <label className="form-label">Secondary language</label>
               <input className="form-input" value={profile.identity.secondary_language} onChange={(e) => updateIdentity({ secondary_language: e.target.value })} />
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── 日程偏好 ── */}
+      {/* ── Schedule Preferences ── */}
       <div className="settings-section">
-        <div className="settings-section-title">日程偏好</div>
+        <div className="settings-section-title">Schedule preferences</div>
         <div className="card">
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">早间简报</label>
+              <label className="form-label">Morning brief</label>
               <input className="form-input" type="number" value={profile.schedule.morning_brief_hour} onChange={(e) => updateSchedule({ morning_brief_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
             </div>
             <div className="form-group">
-              <label className="form-label">晚间回顾</label>
+              <label className="form-label">Evening review</label>
               <input className="form-input" type="number" value={profile.schedule.evening_review_hour} onChange={(e) => updateSchedule({ evening_review_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
             </div>
           </div>
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">上班时间</label>
+              <label className="form-label">Work start</label>
               <input className="form-input" type="number" value={profile.schedule.work_start_hour} onChange={(e) => updateSchedule({ work_start_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
             </div>
             <div className="form-group">
-              <label className="form-label">下班时间</label>
+              <label className="form-label">Work end</label>
               <input className="form-input" type="number" value={profile.schedule.work_end_hour} onChange={(e) => updateSchedule({ work_end_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
             </div>
           </div>
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">周报日</label>
+              <label className="form-label">Weekly report day</label>
               <select className="form-select" value={profile.schedule.weekly_report_day} onChange={(e) => updateSchedule({ weekly_report_day: e.target.value })}>
                 {Object.entries(WEEKDAY_LABELS).map(([val, label]) => (
                   <option key={val} value={val}>{label}</option>
@@ -412,78 +412,78 @@ function Settings() {
               </select>
             </div>
             <div className="form-group">
-              <label className="form-label">周报时间</label>
+              <label className="form-label">Weekly report time</label>
               <input className="form-input" type="number" value={profile.schedule.weekly_report_hour} onChange={(e) => updateSchedule({ weekly_report_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
             </div>
           </div>
-          <div className="form-hint">所有时间均为 0-23 小时制</div>
+          <div className="form-hint">All times use 24-hour format (0–23)</div>
         </div>
       </div>
 
-      {/* ── 沟通偏好 ── */}
+      {/* ── Communication Preferences ── */}
       <div className="settings-section">
-        <div className="settings-section-title">沟通偏好</div>
+        <div className="settings-section-title">Communication preferences</div>
         <div className="card">
           <div className="form-group">
-            <label className="form-label">沟通风格</label>
+            <label className="form-label">Communication style</label>
             <select className="form-select" value={profile.communication.style} onChange={(e) => updateComm({ style: e.target.value })}>
-              <option value="Direct">直接 — 简短有力</option>
-              <option value="Formal">正式 — 结构化专业</option>
-              <option value="Casual">随意 — 轻松自然</option>
+              <option value="Direct">Direct — concise and to the point</option>
+              <option value="Formal">Formal — structured and professional</option>
+              <option value="Casual">Casual — relaxed and natural</option>
             </select>
           </div>
           <div className="form-group">
-            <label className="form-label">通知最大字数</label>
+            <label className="form-label">Max notification length</label>
             <input className="form-input" type="number" value={profile.communication.notification_max_chars} onChange={(e) => updateComm({ notification_max_chars: parseInt(e.target.value, 10) || 200 })} min="50" max="500" />
-            <div className="form-hint">建议通知的最大字符数（50-500）</div>
+            <div className="form-hint">Maximum characters for suggestion notifications (50–500)</div>
           </div>
         </div>
       </div>
 
-      {/* ── 工作上下文 ── */}
+      {/* ── Work Context ── */}
       <div className="settings-section">
-        <div className="settings-section-title">工作上下文</div>
+        <div className="settings-section-title">Work context</div>
         <div className="card">
           <div className="form-group">
-            <label className="form-label">汇报线</label>
+            <label className="form-label">Reporting line</label>
             <textarea
               className="form-textarea"
               value={reportingLineText}
               onChange={(e) => setReportingLineText(e.target.value)}
-              placeholder={"你的名字\n直属上级\n上级的上级"}
+              placeholder={"Your name\nDirect manager\nManager's manager"}
               rows={3}
             />
-            <div className="form-hint">每行一个，从你开始往上排列</div>
+            <div className="form-hint">One per line, starting from you upward</div>
           </div>
           <div className="form-group">
-            <label className="form-label">当前项目</label>
+            <label className="form-label">Current projects</label>
             <textarea
               className="form-textarea"
               value={projectsText}
               onChange={(e) => setProjectsText(e.target.value)}
-              placeholder={"项目A - 简要描述\n项目B - 简要描述"}
+              placeholder={"Project A - Brief description\nProject B - Brief description"}
               rows={4}
             />
-            <div className="form-hint">每行一个，格式：项目名 - 描述</div>
+            <div className="form-hint">One per line, format: Project name - description</div>
           </div>
           <div className="form-group">
-            <label className="form-label">利益相关者</label>
+            <label className="form-label">Stakeholders</label>
             <textarea
               className="form-textarea"
               value={stakeholdersText}
               onChange={(e) => setStakeholdersText(e.target.value)}
-              placeholder={"张三 - 产品经理\n李四 - 客户"}
+              placeholder={"Alice - Product Manager\nBob - Client"}
               rows={4}
             />
-            <div className="form-hint">每行一个，格式：姓名 - 角色</div>
+            <div className="form-hint">One per line, format: Name - role</div>
           </div>
         </div>
       </div>
 
       <div className="form-actions">
-        <Link to="/welcome" className="btn btn-secondary">重新设置</Link>
+        <Link to="/welcome" className="btn btn-secondary">Redo setup</Link>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-          {saving ? "保存中..." : "保存"}
+          {saving ? "Saving..." : "Save"}
         </button>
       </div>
 
