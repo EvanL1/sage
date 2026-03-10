@@ -275,13 +275,24 @@ function Dashboard() {
           }}>
             {dailyQuestion.response}
           </p>
-          <span style={{
-            fontSize: 11,
-            color: "var(--text-tertiary)",
-            display: "block",
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
           }}>
-            Sage's daily question · {formatTime(dailyQuestion.timestamp)}
-          </span>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              Sage's daily question · {formatTime(dailyQuestion.timestamp)}
+            </span>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => navigate("/chat", {
+                state: { initialMessage: `关于你的问题「${dailyQuestion.response}」——我想聊聊这个。` },
+              })}
+              style={{ fontSize: 12 }}
+            >
+              聊聊这个 →
+            </button>
+          </div>
         </div>
       )}
 

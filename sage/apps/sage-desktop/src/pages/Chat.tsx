@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -34,6 +35,7 @@ function formatSessionDate(ts: string): string {
 }
 
 function Chat() {
+  const location = useLocation();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -43,6 +45,7 @@ function Chat() {
   const [showSessions, setShowSessions] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const initialMessageHandled = useRef(false);
 
   // Scroll to bottom
   useEffect(() => {
@@ -110,8 +113,8 @@ function Chat() {
     loadSessions();
   };
 
-  const sendMessage = async () => {
-    const text = input.trim();
+  const sendMessage = async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || loading) return;
 
     const tempUserMsg: Message = {
@@ -170,6 +173,19 @@ function Chat() {
       inputRef.current?.focus();
     }
   };
+
+  // 从 Dashboard 今日思考卡片跳转过来时，自动发送问题开始对话
+  useEffect(() => {
+    const state = location.state as { initialMessage?: string } | null;
+    if (state?.initialMessage && !initialMessageHandled.current) {
+      initialMessageHandled.current = true;
+      // 开新 session 再发送
+      setSessionId(null);
+      setMessages([]);
+      sendMessage(state.initialMessage);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -279,7 +295,7 @@ function Chat() {
             />
             <button
               className="chat-send-btn"
-              onClick={sendMessage}
+              onClick={() => sendMessage()}
               disabled={!input.trim() || loading}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
