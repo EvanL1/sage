@@ -17,6 +17,10 @@ struct Cli {
     /// Run heartbeat once and exit
     #[arg(long)]
     heartbeat_once: bool,
+
+    /// Trigger a specific report type (morning/evening/weekly/week_start) and exit
+    #[arg(long)]
+    trigger: Option<String>,
 }
 
 #[tokio::main]
@@ -29,6 +33,14 @@ async fn main() -> Result<()> {
 
     let config = sage_core::config::Config::load(&cli.config)?;
     info!("Sage Daemon v{}", env!("CARGO_PKG_VERSION"));
+
+    if let Some(report_type) = cli.trigger {
+        info!("Triggering report: {report_type}");
+        let daemon = sage_core::Daemon::new(config)?;
+        let result = daemon.trigger_report(&report_type).await?;
+        println!("{result}");
+        return Ok(());
+    }
 
     if cli.heartbeat_once {
         info!("Running single heartbeat...");

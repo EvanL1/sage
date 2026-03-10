@@ -143,6 +143,33 @@ impl Daemon {
         self.tick().await
     }
 
+    /// 直接触发指定类型的定时报告（绕过心跳时间窗口检查）
+    pub async fn trigger_report(&self, report_type: &str) -> Result<String> {
+        let title = match report_type {
+            "morning" => "Morning Brief",
+            "evening" => "Evening Review",
+            "weekly" => "Weekly Report",
+            "week_start" => "Week Start",
+            _ => anyhow::bail!("未知报告类型: {report_type}"),
+        };
+        let event = Event {
+            source: "heartbeat".into(),
+            event_type: EventType::ScheduledTask,
+            title: title.into(),
+            body: String::new(),
+            metadata: Default::default(),
+            timestamp: chrono::Local::now(),
+        };
+        info!("手动触发报告: {title}");
+        self.router.lock().await.route(event).await?;
+        // 返回最新生成的报告内容
+        if let Ok(Some(report)) = self.store.get_latest_report(report_type) {
+            Ok(report.content)
+        } else {
+            Ok("报告已触发但未在 DB 中找到".into())
+        }
+    }
+
     async fn tick(&self) -> Result<()> {
         // 热重载 profile：schedule + SOP（Settings 修改后无需重启 daemon）
         if let Ok(Some(profile)) = self.store.load_profile() {
