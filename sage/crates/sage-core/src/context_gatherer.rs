@@ -14,21 +14,30 @@ pub enum ReportType {
 }
 
 /// 为指定报告类型收集上下文，返回格式化的 Markdown 文本块
-pub fn gather(report_type: &ReportType, store: &Store) -> String {
+pub async fn gather(report_type: &ReportType, store: &Store) -> String {
     match report_type {
-        ReportType::MorningBrief => gather_morning(store),
+        ReportType::MorningBrief => gather_morning(store).await,
         ReportType::EveningReview => gather_evening(store),
         ReportType::WeeklyReport => gather_weekly(store),
         ReportType::WeekStart => gather_week_start(store),
     }
 }
 
-/// Morning Brief：工作上下文 + 近期 sessions + 决策 + 晚间回顾
-fn gather_morning(store: &Store) -> String {
+/// Morning Brief：邮件摘要 + 工作 session + Claude 记忆 + 决策 + 晚间回顾
+async fn gather_morning(store: &Store) -> String {
     // 先 ingest 最近 24h 的 Claude Code session
     ingest_recent_sessions(store, 24);
 
     let mut sections = Vec::new();
+
+    // 扫描下班到上班之间所有邮件（不管已读未读，最多 14 小时）
+    match crate::channels::email::scan_recent_emails(14).await {
+        Ok(digest) if !digest.is_empty() => {
+            sections.push(format!("## 近期邮件（含已读未细看的）\n{digest}"));
+        }
+        Err(e) => tracing::debug!("扫描邮件失败: {e}"),
+        _ => {}
+    }
 
     // 昨日/近期 Claude Code 工作 session（LLM 可从中提取今日待办）
     let since_1d = days_ago(1);
@@ -255,52 +264,50 @@ mod tests {
         Store::open_in_memory().unwrap()
     }
 
-    #[test]
-    fn test_gather_morning_brief_returns_structured_context() {
+    #[tokio::test]
+    async fn test_gather_morning_brief_returns_structured_context() {
         let store = make_test_store();
-        // 插入一些测试 memories
         store.save_memory("decision", "chose Rust for EMS", "chat", 0.8).unwrap();
         store.save_memory("coach_insight", "Evan 偏系统思考", "coach", 0.8).unwrap();
 
-        let ctx = gather(&ReportType::MorningBrief, &store);
+        let ctx = gather(&ReportType::MorningBrief, &store).await;
         assert!(ctx.contains("决策") || ctx.contains("chose Rust"), "应包含近期决策内容，实际: {ctx}");
     }
 
-    #[test]
-    fn test_gather_weekly_includes_sessions() {
+    #[tokio::test]
+    async fn test_gather_weekly_includes_sessions() {
         let store = make_test_store();
         store.save_memory("session", "[session] fix bugs — 50 msgs", "claude-code", 0.8).unwrap();
 
-        let ctx = gather(&ReportType::WeeklyReport, &store);
+        let ctx = gather(&ReportType::WeeklyReport, &store).await;
         assert!(ctx.contains("session") || ctx.contains("Session"), "应包含 session 信息，实际: {ctx}");
     }
 
-    #[test]
-    fn test_gather_evening_review_has_stats() {
+    #[tokio::test]
+    async fn test_gather_evening_review_has_stats() {
         let store = make_test_store();
         store.record_observation("pattern", "focused work", None).unwrap();
 
-        let ctx = gather(&ReportType::EveningReview, &store);
-        // 至少包含统计部分
+        let ctx = gather(&ReportType::EveningReview, &store).await;
         assert!(ctx.contains("统计") || ctx.contains("活动"), "应包含活动统计，实际: {ctx}");
     }
 
-    #[test]
-    fn test_gather_week_start_includes_last_weekly_report() {
+    #[tokio::test]
+    async fn test_gather_week_start_includes_last_weekly_report() {
         let store = make_test_store();
         store.save_report("weekly", "上周完成了 PULSE 模块开发").unwrap();
 
-        let ctx = gather(&ReportType::WeekStart, &store);
+        let ctx = gather(&ReportType::WeekStart, &store).await;
         assert!(ctx.contains("上周"), "应包含上周周报，实际: {ctx}");
     }
 
-    #[test]
-    fn test_gather_empty_store_returns_empty_or_partial() {
+    #[tokio::test]
+    async fn test_gather_empty_store_returns_empty_or_partial() {
         let store = make_test_store();
         // 空 store 时各类型不崩溃
-        let _ = gather(&ReportType::MorningBrief, &store);
-        let _ = gather(&ReportType::EveningReview, &store);
-        let _ = gather(&ReportType::WeeklyReport, &store);
-        let _ = gather(&ReportType::WeekStart, &store);
+        let _ = gather(&ReportType::MorningBrief, &store).await;
+        let _ = gather(&ReportType::EveningReview, &store).await;
+        let _ = gather(&ReportType::WeeklyReport, &store).await;
+        let _ = gather(&ReportType::WeekStart, &store).await;
     }
 }

@@ -98,9 +98,10 @@ impl Router {
             _ => None,
         };
 
-        let context = report_type.as_ref()
-            .map(|rt| context_gatherer::gather(rt, &self.store))
-            .unwrap_or_default();
+        let context = match report_type.as_ref() {
+            Some(rt) => context_gatherer::gather(rt, &self.store).await,
+            None => String::new(),
+        };
 
         let ctx_section = if context.is_empty() {
             String::new()
