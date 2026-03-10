@@ -39,7 +39,16 @@ impl InputChannel for EmailChannel {
                                     try
                                         set senderAddr to address of sender of msg
                                     end try
-                                    set output to output & "SUBJECT:" & subject of msg & "||FROM:" & senderAddr & "||DATE:" & (time sent of msg as string) & "|||"
+                                    set bodyPreview to ""
+                                    try
+                                        set bodyText to plain text content of msg
+                                        if (count of bodyText) > 500 then
+                                            set bodyPreview to text 1 thru 500 of bodyText
+                                        else
+                                            set bodyPreview to bodyText
+                                        end if
+                                    end try
+                                    set output to output & "SUBJECT:" & subject of msg & "||FROM:" & senderAddr & "||DATE:" & (time sent of msg as string) & "||BODY:" & bodyPreview & "|||"
                                 end repeat
                             end if
                         end if
@@ -71,12 +80,15 @@ fn parse_emails(raw: &str) -> Vec<Event> {
         .filter_map(|entry| {
             let mut subject = String::new();
             let mut from = String::new();
+            let mut body_preview = String::new();
 
             for field in entry.split("||") {
                 if let Some(val) = field.strip_prefix("SUBJECT:") {
                     subject = val.to_string();
                 } else if let Some(val) = field.strip_prefix("FROM:") {
                     from = val.to_string();
+                } else if let Some(val) = field.strip_prefix("BODY:") {
+                    body_preview = val.trim().to_string();
                 }
             }
 
@@ -84,11 +96,17 @@ fn parse_emails(raw: &str) -> Vec<Event> {
                 return None;
             }
 
+            let body = if body_preview.is_empty() {
+                format!("From: {from}")
+            } else {
+                format!("From: {from}\n\n{body_preview}")
+            };
+
             Some(Event {
                 source: "email".into(),
                 event_type: EventType::NewEmail,
                 title: subject,
-                body: format!("From: {from}"),
+                body,
                 metadata: [("from".into(), from)].into_iter().collect(),
                 timestamp: chrono::Local::now(),
             })
@@ -112,6 +130,17 @@ mod tests {
         let result = parse_emails(raw);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Hello World");
+        assert_eq!(result[0].body, "From: sender@example.com");
+    }
+
+    #[test]
+    fn test_parse_emails_with_body() {
+        let raw = "SUBJECT:Meeting||FROM:bob@test.com||DATE:2026-03-10||BODY:Hi team, let's meet at 3pm to discuss the project.|||";
+        let result = parse_emails(raw);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "Meeting");
+        assert!(result[0].body.contains("Hi team, let's meet at 3pm"));
+        assert!(result[0].body.starts_with("From: bob@test.com"));
     }
 
     #[test]

@@ -8,6 +8,22 @@ use tracing::{debug, info};
 
 static CODEX_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// .app bundle 不继承 shell 环境变量，CLI 需要 proxy 才能连接（中国网络）
+const PROXY_ENVS: &[(&str, &str)] = &[
+    ("http_proxy", "http://127.0.0.1:7890"),
+    ("https_proxy", "http://127.0.0.1:7890"),
+    ("all_proxy", "socks5://127.0.0.1:7890"),
+];
+
+/// 为 CLI Command 注入 proxy 环境变量（仅当环境中不存在时）
+fn inject_proxy(cmd: &mut Command) {
+    for &(key, default_val) in PROXY_ENVS {
+        if std::env::var(key).is_err() {
+            cmd.env(key, default_val);
+        }
+    }
+}
+
 use crate::config::AgentConfig;
 use sage_types::{ProviderConfig, ProviderInfo, ProviderKind};
 
@@ -73,6 +89,7 @@ impl LlmProvider for ClaudeProvider {
         cmd.arg(prompt);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.env_remove("CLAUDECODE");
+        inject_proxy(&mut cmd);
 
         info!("Invoking Claude (model: {})", self.model);
         let preview: String = prompt.chars().take(100).collect();
@@ -142,6 +159,7 @@ impl LlmProvider for CodexProvider {
             .arg(&full_prompt);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        inject_proxy(&mut cmd);
 
         info!("Invoking Codex (model: {})", self.model);
         let preview: String = full_prompt.chars().take(100).collect();
@@ -207,6 +225,7 @@ impl LlmProvider for GeminiProvider {
             .arg("--yolo");
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        inject_proxy(&mut cmd);
 
         info!("Invoking Gemini (model: {})", self.model);
         let preview: String = full_prompt.chars().take(100).collect();
@@ -241,12 +260,25 @@ struct AnthropicHttpProvider {
 
 impl AnthropicHttpProvider {
     fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
+        // .app bundle 不继承 shell 环境变量，需要显式配置 proxy
+        let client = Self::build_client();
         Self {
             api_key,
             model: model.unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.into()),
             base_url: base_url.unwrap_or_else(|| ANTHROPIC_API_URL.into()),
-            client: reqwest::Client::new(),
+            client,
         }
+    }
+
+    fn build_client() -> reqwest::Client {
+        let mut builder = reqwest::Client::builder();
+        // 如果环境中没有 proxy 变量，使用默认值（中国网络需要）
+        if std::env::var("https_proxy").is_err() && std::env::var("HTTPS_PROXY").is_err() {
+            if let Ok(proxy) = reqwest::Proxy::all("http://127.0.0.1:7890") {
+                builder = builder.proxy(proxy);
+            }
+        }
+        builder.build().unwrap_or_else(|_| reqwest::Client::new())
     }
 }
 
