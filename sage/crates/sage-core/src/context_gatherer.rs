@@ -17,7 +17,7 @@ pub enum ReportType {
 pub async fn gather(report_type: &ReportType, store: &Store) -> String {
     match report_type {
         ReportType::MorningBrief => gather_morning(store).await,
-        ReportType::EveningReview => gather_evening(store),
+        ReportType::EveningReview => gather_evening(store).await,
         ReportType::WeeklyReport => gather_weekly(store),
         ReportType::WeekStart => gather_week_start(store),
     }
@@ -29,6 +29,15 @@ async fn gather_morning(store: &Store) -> String {
     ingest_recent_sessions(store, 24);
 
     let mut sections = Vec::new();
+
+    // 今日日历事件（会议安排）
+    match crate::channels::calendar::scan_today_events().await {
+        Ok(digest) if !digest.is_empty() => {
+            sections.push(format!("## 今日日程\n{digest}"));
+        }
+        Err(e) => tracing::debug!("扫描日历失败: {e}"),
+        _ => {}
+    }
 
     // 扫描下班到上班之间所有邮件（不管已读未读，最多 14 小时）
     match crate::channels::email::scan_recent_emails(14).await {
@@ -85,11 +94,20 @@ async fn gather_morning(store: &Store) -> String {
 }
 
 /// Evening Review：今日 session memories + 今日 observations 数量 + 今日 coach insights
-fn gather_evening(store: &Store) -> String {
+async fn gather_evening(store: &Store) -> String {
     // 在收集上下文前，先从 Claude Code JSONL 文件中 ingest 最新的 session 数据
     ingest_recent_sessions(store, 24);
 
     let mut sections = Vec::new();
+
+    // 今日日历事件（回顾会议情况）
+    match crate::channels::calendar::scan_today_events().await {
+        Ok(digest) if !digest.is_empty() => {
+            sections.push(format!("## 今日会议\n{digest}"));
+        }
+        Err(e) => tracing::debug!("扫描日历失败: {e}"),
+        _ => {}
+    }
 
     let since = days_ago(1);
 

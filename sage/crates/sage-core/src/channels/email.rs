@@ -42,13 +42,19 @@ impl InputChannel for EmailChannel {
                                     set bodyPreview to ""
                                     try
                                         set bodyText to plain text content of msg
-                                        if (count of bodyText) > 500 then
-                                            set bodyPreview to text 1 thru 500 of bodyText
+                                        if (count of bodyText) > 2000 then
+                                            set bodyPreview to text 1 thru 2000 of bodyText
                                         else
                                             set bodyPreview to bodyText
                                         end if
                                     end try
-                                    set output to output & "SUBJECT:" & subject of msg & "||FROM:" & senderAddr & "||DATE:" & (time sent of msg as string) & "||BODY:" & bodyPreview & "|||"
+                                    set msgPriority to "normal"
+                                    try
+                                        set p to priority of msg
+                                        if p is priority high then set msgPriority to "high"
+                                        if p is priority low then set msgPriority to "low"
+                                    end try
+                                    set output to output & "SUBJECT:" & subject of msg & "||FROM:" & senderAddr & "||DATE:" & (time sent of msg as string) & "||PRIORITY:" & msgPriority & "||BODY:" & bodyPreview & "|||"
                                 end repeat
                             end if
                         end if
@@ -108,8 +114,8 @@ pub async fn scan_recent_emails(hours: u32) -> Result<String> {
                                 set bodyPreview to ""
                                 try
                                     set bodyText to plain text content of msg
-                                    if (count of bodyText) > 500 then
-                                        set bodyPreview to text 1 thru 500 of bodyText
+                                    if (count of bodyText) > 2000 then
+                                        set bodyPreview to text 1 thru 2000 of bodyText
                                     else
                                         set bodyPreview to bodyText
                                     end if
@@ -189,6 +195,7 @@ fn parse_emails(raw: &str) -> Vec<Event> {
         .filter_map(|entry| {
             let mut subject = String::new();
             let mut from = String::new();
+            let mut priority = String::from("normal");
             let mut body_preview = String::new();
 
             for field in entry.split("||") {
@@ -196,6 +203,8 @@ fn parse_emails(raw: &str) -> Vec<Event> {
                     subject = val.to_string();
                 } else if let Some(val) = field.strip_prefix("FROM:") {
                     from = val.to_string();
+                } else if let Some(val) = field.strip_prefix("PRIORITY:") {
+                    priority = val.to_string();
                 } else if let Some(val) = field.strip_prefix("BODY:") {
                     body_preview = val.trim().to_string();
                 }
@@ -216,11 +225,53 @@ fn parse_emails(raw: &str) -> Vec<Event> {
                 event_type: EventType::NewEmail,
                 title: subject,
                 body,
-                metadata: [("from".into(), from)].into_iter().collect(),
+                metadata: [
+                    ("from".into(), from),
+                    ("priority".into(), priority),
+                ]
+                .into_iter()
+                .collect(),
                 timestamp: chrono::Local::now(),
             })
         })
         .collect()
+}
+
+/// 判断邮件是否应升级为紧急
+/// 基于：优先级标记、发件人域名、主题关键词
+pub fn should_upgrade_to_urgent(
+    event: &Event,
+    vip_domains: &[String],
+    urgent_keywords: &[String],
+) -> bool {
+    // 1. Outlook priority = high
+    if event
+        .metadata
+        .get("priority")
+        .map(|p| p == "high")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // 2. 发件人域名匹配 VIP 列表
+    let from = event
+        .metadata
+        .get("from")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    for domain in vip_domains {
+        if from.contains(domain.as_str()) {
+            return true;
+        }
+    }
+    // 3. 主题包含紧急关键词
+    let title_lower = event.title.to_lowercase();
+    for kw in urgent_keywords {
+        if title_lower.contains(&kw.to_lowercase()) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -244,6 +295,7 @@ mod tests {
 
     #[test]
     fn test_parse_emails_with_body() {
+        // body truncation limit is 2000 chars (enforced in AppleScript; parse_emails handles any length)
         let raw = "SUBJECT:Meeting||FROM:bob@test.com||DATE:2026-03-10||BODY:Hi team, let's meet at 3pm to discuss the project.|||";
         let result = parse_emails(raw);
         assert_eq!(result.len(), 1);
@@ -285,5 +337,97 @@ mod tests {
     #[test]
     fn test_format_email_digest_empty() {
         assert!(format_email_digest("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_emails_with_priority() {
+        let raw = "SUBJECT:Urgent Fix||FROM:boss@voltageenergy.com||DATE:2026-03-10||PRIORITY:high||BODY:Need fix ASAP|||";
+        let result = parse_emails(raw);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].metadata.get("priority").unwrap(), "high");
+    }
+
+    #[test]
+    fn test_should_upgrade_to_urgent_by_priority() {
+        let event = Event {
+            source: "email".into(),
+            event_type: sage_types::EventType::NewEmail,
+            title: "Normal subject".into(),
+            body: String::new(),
+            metadata: [
+                ("from".into(), "someone@random.com".into()),
+                ("priority".into(), "high".into()),
+            ]
+            .into_iter()
+            .collect(),
+            timestamp: chrono::Local::now(),
+        };
+        assert!(should_upgrade_to_urgent(&event, &[], &[]));
+    }
+
+    #[test]
+    fn test_should_upgrade_to_urgent_by_domain() {
+        let event = Event {
+            source: "email".into(),
+            event_type: sage_types::EventType::NewEmail,
+            title: "Regular update".into(),
+            body: String::new(),
+            metadata: [
+                ("from".into(), "bob@voltageenergy.com".into()),
+                ("priority".into(), "normal".into()),
+            ]
+            .into_iter()
+            .collect(),
+            timestamp: chrono::Local::now(),
+        };
+        assert!(should_upgrade_to_urgent(
+            &event,
+            &["voltageenergy.com".into()],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_should_upgrade_to_urgent_by_keyword() {
+        let event = Event {
+            source: "email".into(),
+            event_type: sage_types::EventType::NewEmail,
+            title: "URGENT: Server down".into(),
+            body: String::new(),
+            metadata: [
+                ("from".into(), "ops@random.com".into()),
+                ("priority".into(), "normal".into()),
+            ]
+            .into_iter()
+            .collect(),
+            timestamp: chrono::Local::now(),
+        };
+        assert!(should_upgrade_to_urgent(
+            &event,
+            &[],
+            &["urgent".into()]
+        ));
+    }
+
+    #[test]
+    fn test_should_not_upgrade_normal_email() {
+        let event = Event {
+            source: "email".into(),
+            event_type: sage_types::EventType::NewEmail,
+            title: "Weekly newsletter".into(),
+            body: String::new(),
+            metadata: [
+                ("from".into(), "news@random.com".into()),
+                ("priority".into(), "normal".into()),
+            ]
+            .into_iter()
+            .collect(),
+            timestamp: chrono::Local::now(),
+        };
+        assert!(!should_upgrade_to_urgent(
+            &event,
+            &["voltageenergy.com".into()],
+            &["urgent".into()]
+        ));
     }
 }

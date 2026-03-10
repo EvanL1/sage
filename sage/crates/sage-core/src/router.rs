@@ -7,6 +7,7 @@ use sage_types::{Event, EventType};
 
 use crate::agent::Agent;
 use crate::applescript;
+use crate::channels;
 use crate::coach;
 use crate::context_gatherer;
 use crate::mirror;
@@ -65,12 +66,41 @@ impl Router {
     }
 
     pub async fn route(&self, event: Event) -> Result<()> {
+        let event = self.maybe_upgrade_email(event);
         match classify(&event) {
             Priority::Immediate => self.handle_immediate(event).await,
             Priority::Scheduled => self.handle_scheduled(event).await,
             Priority::Normal => self.handle_normal(event).await,
             Priority::Background => self.handle_background(event).await,
         }
+    }
+
+    /// 根据用户 profile 判断是否升级邮件优先级
+    fn maybe_upgrade_email(&self, mut event: Event) -> Event {
+        if !matches!(event.event_type, EventType::NewEmail) {
+            return event;
+        }
+        // 从 Store 加载 profile，获取 VIP 域名和紧急关键词
+        let profile = self.store.load_profile().ok().flatten();
+        let (vip_domains, urgent_keywords) = match &profile {
+            Some(p) => (
+                p.preferences.important_sender_domains.clone(),
+                p.preferences.urgent_keywords.clone(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        // 加入默认紧急关键词
+        let mut keywords = urgent_keywords;
+        for kw in &["urgent", "紧急", "asap", "critical", "故障", "down"] {
+            if !keywords.iter().any(|k| k.eq_ignore_ascii_case(kw)) {
+                keywords.push(kw.to_string());
+            }
+        }
+        if channels::email::should_upgrade_to_urgent(&event, &vip_domains, &keywords) {
+            event.event_type = EventType::UrgentEmail;
+            info!("Email upgraded to urgent: {}", event.title);
+        }
+        event
     }
 
     /// 构建完整 system prompt = SOP + 记忆上下文（从 SQLite memories 表读取）
@@ -237,14 +267,44 @@ impl Router {
             error!("Failed to append pattern: {e}");
         }
 
-        // Email events: create lightweight suggestion + notification (no Claude needed)
+        // Email events: AI-powered summary + action suggestion
         if event.source == "email" {
-            let summary = format!("📧 {}\n{}", event.title, event.body);
-            if let Err(e) = self.store.record_suggestion(&event.source, &event.title, &summary) {
-                error!("Failed to persist email suggestion: {e}");
+            // 跳过重复
+            if self.store.has_recent_suggestion(&event.source, &event.title) {
+                info!("Skipping duplicate email: {}", event.title);
+                return Ok(());
             }
-            if let Err(e) = applescript::notify("新邮件", &event.title).await {
-                error!("Email notification failed: {e}");
+
+            let system = "你是邮件助手。用一句话总结邮件核心内容，然后判断是否需要回复或采取行动。格式：\n摘要：...\n行动：需要回复 / 仅供了解 / 需要处理";
+            let prompt = format!(
+                "请分析以下邮件：\n\n标题：{}\n{}\n",
+                event.title, event.body
+            );
+
+            match self.agent.invoke(&prompt, Some(system)).await {
+                Ok(resp) => {
+                    let summary = format!("📧 {}\n{}", event.title, resp.text);
+                    if let Err(e) = self.store.record_suggestion(&event.source, &event.title, &summary) {
+                        error!("Failed to persist email suggestion: {e}");
+                    }
+                    // 只通知需要行动的邮件，仅供了解的静默存储
+                    if resp.text.contains("需要回复") || resp.text.contains("需要处理") {
+                        if let Err(e) = applescript::notify("邮件", &format!("{}: {}", event.title, resp.text)).await {
+                            error!("Email notification failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    // AI 调用失败时回退到原来的简单通知
+                    error!("Email AI summary failed: {e}");
+                    let summary = format!("📧 {}\n{}", event.title, event.body);
+                    if let Err(e) = self.store.record_suggestion(&event.source, &event.title, &summary) {
+                        error!("Failed to persist email suggestion: {e}");
+                    }
+                    if let Err(e) = applescript::notify("新邮件", &event.title).await {
+                        error!("Email notification failed: {e}");
+                    }
+                }
             }
         }
 
