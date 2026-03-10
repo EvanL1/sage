@@ -1619,6 +1619,63 @@ body {
   opacity: 0.3;
 }
 
+/* 用户主动输入区 */
+.about-user-input {
+  margin-top: 32px;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.about-user-input-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.about-user-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  transition: border-color 100ms ease;
+}
+
+.about-user-textarea:focus {
+  border-color: var(--accent);
+}
+
+.about-user-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.about-user-input-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.about-user-input-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
 .about-footer {
   text-align: center;
   font-size: 0.85rem;
@@ -1839,4 +1896,10 @@ body {
   font-size: 0.9em;
   line-height: 1.6;
   margin: 4px 0;
+}
+
+/* ─── Spin 动画（触发报告按钮加载状态）─── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }

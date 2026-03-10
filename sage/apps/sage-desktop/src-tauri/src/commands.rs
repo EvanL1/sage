@@ -95,6 +95,79 @@ fn trigger_memory_sync(store: &sage_core::store::Store) {
     }
 }
 
+/// 基于 UserProfile 生成个性化的"第一印象"，存为 insight 记忆，并返回文本
+/// 如果 provider 未配置或调用失败，返回 None（静默跳过）
+async fn generate_first_impression(
+    state: &AppState,
+    profile: &sage_types::UserProfile,
+) -> Option<String> {
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().ok()?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)?;
+
+    let agent_config = default_agent_config();
+    let provider =
+        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let name = if profile.identity.name.is_empty() {
+        "新用户"
+    } else {
+        &profile.identity.name
+    };
+    let role = profile.identity.role.as_str();
+    let projects: Vec<&str> = profile
+        .work_context
+        .projects
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    let stakeholders: Vec<&str> = profile
+        .work_context
+        .stakeholders
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    let reporting_line = profile.identity.reporting_line.join(" → ");
+
+    let profile_summary = format!(
+        "姓名：{name}\n\
+         角色：{role}\n\
+         汇报线：{reporting_line}\n\
+         在推项目：{}\n\
+         关键协作者：{}",
+        projects.join("、"),
+        stakeholders.join("、"),
+    );
+
+    let prompt = format!(
+        "你刚认识了一个新用户。以下是他的人格画像：\n\n{profile_summary}\n\n\
+         请用温暖、真诚的语气写 2-3 句你对这个人的第一印象。\
+         不要泛泛而谈，要具体指向画像中的某个特质。\
+         用中文。不要用任何 Markdown 格式，直接输出纯文字。"
+    );
+
+    let system = "你是 Sage，一个有温度的个人参谋。用简短真诚的语言描述你对这个人的第一印象。";
+
+    match provider.invoke(&prompt, Some(system)).await {
+        Ok(text) => {
+            let trimmed = text.trim().to_string();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let _ = state
+                .store
+                .save_memory("insight", &trimmed, "onboarding", 0.9);
+            trigger_memory_sync(&state.store);
+            tracing::info!("Onboarding first impression 已生成并存储");
+            Some(trimmed)
+        }
+        Err(e) => {
+            tracing::warn!("生成 first impression 失败（跳过）: {e}");
+            None
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn get_profile(state: State<'_, AppState>) -> Result<Option<Value>, String> {
     let profile = state.store.load_profile().map_err(map_err)?;
@@ -139,39 +212,48 @@ pub async fn submit_onboarding_step(
     state: State<'_, AppState>,
     data: Value,
 ) -> Result<Value, String> {
-    let mut guard = state.onboarding.lock().map_err(map_err)?;
+    // 用内层作用域限制 MutexGuard 的生命周期，确保在 .await 之前释放锁
+    let completed_profile: Option<(sage_types::UserProfile, String)> = {
+        let mut guard = state.onboarding.lock().map_err(map_err)?;
 
-    // 首次调用时初始化 OnboardingState
-    if guard.is_none() {
-        *guard = Some(OnboardingState::new());
-    }
+        if guard.is_none() {
+            *guard = Some(OnboardingState::new());
+        }
 
-    let ob = guard.as_mut().unwrap();
-    ob.submit_step(data).map_err(map_err)?;
+        let ob = guard.as_mut().unwrap();
+        ob.submit_step(data).map_err(map_err)?;
 
-    if ob.is_complete() {
-        // 完成：保存 profile 到 Store
-        let final_profile = guard.take().unwrap().into_profile();
-        let sop_preview = profile::generate_sop(&final_profile);
-        state.store.save_profile(&final_profile).map_err(map_err)?;
+        if ob.is_complete() {
+            let final_profile = guard.take().unwrap().into_profile();
+            let sop_preview = profile::generate_sop(&final_profile);
+            state.store.save_profile(&final_profile).map_err(map_err)?;
+            Some((final_profile, sop_preview))
+        } else {
+            let (index, total) = ob.progress();
+            let sop_preview = ob.preview_sop();
+            return Ok(json!({
+                "step": format!("{:?}", ob.current_step()),
+                "index": index,
+                "total": total,
+                "sop_preview": sop_preview,
+            }));
+        }
+    };
+
+    // guard 已释放，可以安全 .await
+    if let Some((final_profile, sop_preview)) = completed_profile {
+        let first_impression = generate_first_impression(&state, &final_profile).await;
 
         return Ok(json!({
             "step": "Completed",
             "index": 7,
             "total": 7,
             "sop_preview": sop_preview,
+            "first_impression": first_impression,
         }));
     }
 
-    let (index, total) = ob.progress();
-    let sop_preview = ob.preview_sop();
-
-    Ok(json!({
-        "step": format!("{:?}", ob.current_step()),
-        "index": index,
-        "total": total,
-        "sop_preview": sop_preview,
-    }))
+    Ok(json!({"step": "Unknown"}))
 }
 
 #[tauri::command]
@@ -932,6 +1014,37 @@ pub async fn import_memories(
     Ok(count)
 }
 
+// ─── 用户主动输入记忆 ──────────────────────────
+
+/// 用户主动告诉 Sage 想被记住的内容
+#[tauri::command]
+pub async fn add_user_memory(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<i64, String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("内容不能为空".to_string());
+    }
+    let id = state
+        .store
+        .save_memory("user_input", &content, "user", 1.0)
+        .map_err(map_err)?;
+    trigger_memory_sync(&state.store);
+    Ok(id)
+}
+
+// ─── Questioner 命令 ──────────────────────────
+
+/// 获取最近一条苏格拉底式每日问题（由 Questioner 模块生成）
+#[tauri::command]
+pub async fn get_daily_question(state: State<'_, AppState>) -> Result<Option<Value>, String> {
+    match state.store.get_daily_question().map_err(map_err)? {
+        Some(s) => Ok(Some(serde_json::to_value(&s).map_err(map_err)?)),
+        None => Ok(None),
+    }
+}
+
 // ─── Report 命令 ──────────────────────────────
 
 #[tauri::command]
@@ -989,4 +1102,37 @@ pub async fn ingest_sessions(
     let claude_dir = sage_core::session_analyzer::default_claude_dir();
     sage_core::session_analyzer::ingest_sessions(&claude_dir, &state.store, hours)
         .map_err(map_err)
+}
+
+/// 手动触发报告生成（通过内嵌 Daemon 的 trigger_report 方法）
+/// 若 Daemon 未启动（外部 daemon 已持有锁），则退回到直接生成 context preview
+#[tauri::command]
+pub async fn trigger_report(
+    state: State<'_, AppState>,
+    report_type: String,
+) -> Result<String, String> {
+    // 验证报告类型
+    let valid_types = ["morning", "evening", "weekly", "week_start"];
+    if !valid_types.contains(&report_type.as_str()) {
+        return Err(format!("未知报告类型: {report_type}，支持: morning/evening/weekly/week_start"));
+    }
+
+    // 优先使用内嵌 Daemon（完整 LLM 生成）
+    if let Some(ref daemon) = state.daemon {
+        daemon.trigger_report(&report_type).await.map_err(map_err)
+    } else {
+        // Daemon 未启动，退回到仅生成 context preview（与 trigger_test_report 一致）
+        tracing::warn!("内嵌 daemon 未启动，使用 context preview 替代");
+        let rt = match report_type.as_str() {
+            "morning" => sage_core::context_gatherer::ReportType::MorningBrief,
+            "evening" => sage_core::context_gatherer::ReportType::EveningReview,
+            "weekly" => sage_core::context_gatherer::ReportType::WeeklyReport,
+            "week_start" => sage_core::context_gatherer::ReportType::WeekStart,
+            _ => unreachable!(),
+        };
+        let ctx = sage_core::context_gatherer::gather(&rt, &state.store).await;
+        let content = format!("## Context Preview\n\n{ctx}");
+        state.store.save_report(&report_type, &content).map_err(map_err)?;
+        Ok(format!("Context preview for '{report_type}' generated (daemon not running)"))
+    }
 }

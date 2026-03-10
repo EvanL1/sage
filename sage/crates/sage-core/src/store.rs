@@ -305,6 +305,48 @@ impl Store {
         Ok(suggestions)
     }
 
+    /// 获取最近一条 questioner 生成的每日问题（event_source='questioner', prompt='daily-question'）
+    pub fn get_daily_question(&self) -> Result<Option<Suggestion>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let result = conn.query_row(
+            "SELECT s.id, s.event_source, s.prompt, s.response, s.created_at,
+                    (SELECT f.action FROM feedback f WHERE f.suggestion_id = s.id ORDER BY f.id DESC LIMIT 1)
+             FROM suggestions s
+             WHERE s.event_source = 'questioner' AND s.prompt = 'daily-question'
+             ORDER BY s.created_at DESC
+             LIMIT 1",
+            [],
+            |row| {
+                let id: i64 = row.get(0)?;
+                let event_source: String = row.get(1)?;
+                let prompt: String = row.get(2)?;
+                let response: String = row.get(3)?;
+                let created_at: String = row.get(4)?;
+                let feedback_json: Option<String> = row.get(5)?;
+                Ok((id, event_source, prompt, response, created_at, feedback_json))
+            },
+        ).optional().context("查询每日问题失败")?;
+
+        match result {
+            None => Ok(None),
+            Some((id, event_source, prompt, response, created_at, feedback_json)) => {
+                let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Local))
+                    .unwrap_or_else(|_| chrono::Local::now());
+                let feedback = feedback_json
+                    .and_then(|json| serde_json::from_str::<FeedbackAction>(&json).ok());
+                Ok(Some(Suggestion {
+                    id,
+                    event_source,
+                    prompt,
+                    response,
+                    timestamp,
+                    feedback,
+                }))
+            }
+        }
+    }
+
     // ─── Feedback 方法 ──────────────────────────────
 
     /// 记录反馈

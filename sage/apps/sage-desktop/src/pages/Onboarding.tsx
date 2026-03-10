@@ -107,6 +107,9 @@ function Onboarding() {
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [sopPreview, setSopPreview] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Onboarding 完成后的"第一印象"过渡页状态
+  const [firstImpression, setFirstImpression] = useState<string | null>(null);
+  const [showFirstImpression, setShowFirstImpression] = useState(false);
   const navigate = useNavigate();
 
   const step = STEPS[currentStep];
@@ -123,7 +126,13 @@ function Onboarding() {
     setSubmitting(true);
     try {
       const transformed = transformForStep(step.key, formData);
-      const result = await invoke<{ step: string; index: number; total: number; sop_preview?: string }>(
+      const result = await invoke<{
+        step: string;
+        index: number;
+        total: number;
+        sop_preview?: string;
+        first_impression?: string;
+      }>(
         "submit_onboarding_step",
         { data: transformed }
       );
@@ -132,6 +141,10 @@ function Onboarding() {
       }
       if (currentStep < STEPS.length - 1) {
         setCurrentStep(currentStep + 1);
+      } else if (result.first_impression) {
+        // Onboarding 完成且有 first impression：先展示过渡页，再跳 Dashboard
+        setFirstImpression(result.first_impression);
+        setShowFirstImpression(true);
       } else {
         navigate("/");
       }
@@ -264,7 +277,7 @@ function Onboarding() {
             {Object.entries(formData).filter(([, v]) => v).map(([k, v]) => (
               <div key={k} className="review-section">
                 <div className="review-label">{FIELD_LABELS[k] ?? k}</div>
-                <div className="review-value">{v}</div>
+                <div className="review-value">{String(v)}</div>
               </div>
             ))}
             {sopPreview && (
@@ -279,6 +292,40 @@ function Onboarding() {
         return null;
     }
   };
+
+  // Onboarding 完成后的"第一印象"过渡页
+  if (showFirstImpression) {
+    return (
+      <div className="onboarding-container">
+        <div className="onboarding-header" style={{ textAlign: "center", paddingTop: 48 }}>
+          <div style={{ fontSize: 56, marginBottom: 16 }}>✦</div>
+          <h2 style={{ marginBottom: 8 }}>Nice to meet you.</h2>
+          <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>Sage's first impression</p>
+        </div>
+
+        <div className="onboarding-card" style={{ textAlign: "center", padding: "32px 28px" }}>
+          <p style={{
+            fontSize: 16,
+            lineHeight: 1.75,
+            color: "var(--text-primary)",
+            whiteSpace: "pre-wrap",
+          }}>
+            {firstImpression}
+          </p>
+        </div>
+
+        <div className="onboarding-actions" style={{ justifyContent: "center" }}>
+          <button
+            className="btn btn-primary"
+            onClick={() => navigate("/")}
+            style={{ minWidth: 160 }}
+          >
+            Let's begin →
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="onboarding-container">

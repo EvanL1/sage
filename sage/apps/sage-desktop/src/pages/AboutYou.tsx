@@ -19,9 +19,11 @@ const CATEGORY_LABELS: Record<string, string> = {
   thinking: "Thinking style",
   emotion: "Emotional cues",
   growth: "Growth direction",
+  // 用户主动告诉 Sage 的内容
+  user_input: "From you",
 };
 
-const CATEGORY_ORDER = ["personality", "identity", "values", "behavior", "thinking", "emotion", "growth"];
+const CATEGORY_ORDER = ["personality", "identity", "values", "behavior", "thinking", "emotion", "growth", "user_input"];
 
 function MemoryItem({ memory, onDelete }: { memory: Memory; onDelete: (id: number) => void }) {
   const [deleting, setDeleting] = useState(false);
@@ -40,6 +42,7 @@ function MemoryItem({ memory, onDelete }: { memory: Memory; onDelete: (id: numbe
   const sourceLabel = memory.source === "chat" ? "Chat"
     : memory.source === "assessment" ? "Assessment"
     : memory.source === "import" ? "Import"
+    : memory.source === "user" ? "You"
     : "Observation";
 
   return (
@@ -74,6 +77,9 @@ function AboutYou() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState("");
+  // 用户主动输入状态
+  const [userInput, setUserInput] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const fetchMemories = useCallback(async () => {
     try {
@@ -108,6 +114,28 @@ function AboutYou() {
   const handleDelete = useCallback((id: number) => {
     setMemories((prev) => prev.filter((m) => m.id !== id));
   }, []);
+
+  // 保存用户主动输入的记忆
+  const handleSaveUserInput = async () => {
+    const text = userInput.trim();
+    if (!text) return;
+    setSaving(true);
+    try {
+      await invoke("add_user_memory", { content: text });
+      setUserInput("");
+      // 刷新记忆列表，让新条目即时显示
+      const refreshed = await invoke<Memory[]>("get_memories");
+      setMemories(refreshed);
+      setExportMsg("Saved");
+      setTimeout(() => setExportMsg(""), 2000);
+    } catch (err) {
+      console.error("Failed to save user memory:", err);
+      setExportMsg("Save failed");
+      setTimeout(() => setExportMsg(""), 2000);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const copyToClipboard = async (text: string): Promise<boolean> => {
     try {
@@ -254,6 +282,36 @@ function AboutYou() {
           )}
         </>
       )}
+
+      {/* 用户主动输入区：让用户告诉 Sage 想被记住的内容 */}
+      <div className="about-user-input">
+        <div className="about-user-input-label">Tell Sage something about yourself</div>
+        <textarea
+          className="about-user-textarea"
+          placeholder="Tell Sage something about yourself..."
+          value={userInput}
+          onChange={(e) => setUserInput(e.target.value)}
+          onKeyDown={(e) => {
+            // Ctrl/Cmd + Enter 快捷提交
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              handleSaveUserInput();
+            }
+          }}
+          rows={3}
+          disabled={saving}
+        />
+        <div className="about-user-input-actions">
+          <span className="about-user-input-hint">⌘↵ to save</span>
+          <button
+            className="about-action-btn"
+            onClick={handleSaveUserInput}
+            disabled={saving || !userInput.trim()}
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
 
       <div className="about-footer">
         These observations may not be fully accurate — people are complex. Delete anything that doesn't feel right to help me understand you better.

@@ -26,6 +26,14 @@ interface Report {
   created_at: string;
 }
 
+interface DailyQuestion {
+  id: number;
+  event_source: string;
+  prompt: string;
+  response: string;
+  timestamp: string;
+}
+
 const REPORT_LABELS: Record<string, string> = {
   morning: "Morning Brief",
   evening: "Evening Review",
@@ -57,6 +65,9 @@ function Dashboard() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [reports, setReports] = useState<Record<string, Report>>({});
+  const [dailyQuestion, setDailyQuestion] = useState<DailyQuestion | null>(null);
+  // 触发报告的加载状态：key 为报告类型，value 为是否正在加载
+  const [triggeringReport, setTriggeringReport] = useState<Record<string, boolean>>({});
 
   // Status: load only on mount
   useEffect(() => {
@@ -93,6 +104,33 @@ function Dashboard() {
     const timer = setInterval(fetchReports, 60_000);
     return () => clearInterval(timer);
   }, []);
+
+  // 今日思考：mount + poll every 60s
+  useEffect(() => {
+    const fetchDailyQuestion = () => {
+      invoke<DailyQuestion | null>("get_daily_question")
+        .then(setDailyQuestion)
+        .catch(console.error);
+    };
+    fetchDailyQuestion();
+    const timer = setInterval(fetchDailyQuestion, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 手动触发报告生成
+  const handleTriggerReport = async (reportType: string) => {
+    setTriggeringReport((prev) => ({ ...prev, [reportType]: true }));
+    try {
+      await invoke("trigger_report", { reportType });
+      // 触发后立即刷新报告列表
+      const updated = await invoke<Record<string, Report>>("get_latest_reports");
+      setReports(updated);
+    } catch (err) {
+      console.error("触发报告失败:", err);
+    } finally {
+      setTriggeringReport((prev) => ({ ...prev, [reportType]: false }));
+    }
+  };
 
   const handleFeedback = async (id: number, action: string) => {
     await invoke("submit_feedback", { suggestionId: id, action });
@@ -153,6 +191,34 @@ function Dashboard() {
         <div className="reports-section">
           <div style={{ marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span className="card-title" style={{ margin: 0 }}>Reports</span>
+            {/* 手动触发报告按钮组 */}
+            <div style={{ display: "flex", gap: 4 }}>
+              {(["morning", "evening"] as const).map((type) => (
+                <button
+                  key={type}
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => handleTriggerReport(type)}
+                  disabled={triggeringReport[type]}
+                  title={`Generate ${REPORT_LABELS[type]}`}
+                  style={{ display: "flex", alignItems: "center", gap: 4 }}
+                >
+                  {triggeringReport[type] ? (
+                    /* 旋转加载指示器 */
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                      style={{ animation: "spin 1s linear infinite" }}>
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                    </svg>
+                  ) : (
+                    /* 刷新图标 */
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="23 4 23 10 17 10" />
+                      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                    </svg>
+                  )}
+                  {REPORT_LABELS[type]}
+                </button>
+              ))}
+            </div>
           </div>
           {Object.entries(reports).map(([type, report]) => (
             <details
@@ -169,6 +235,53 @@ function Dashboard() {
               </div>
             </details>
           ))}
+        </div>
+      )}
+
+      {/* 今日思考卡片：Questioner 模块生成的苏格拉底式每日问题 */}
+      {dailyQuestion && (
+        <div className="daily-question-card" style={{
+          background: "var(--surface)",
+          border: "1px solid var(--accent)",
+          borderRadius: "var(--radius-lg)",
+          padding: "var(--spacing-lg)",
+          marginBottom: "var(--spacing-lg)",
+          boxShadow: "0 1px 6px rgba(217, 119, 6, 0.1)",
+        }}>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginBottom: 10,
+          }}>
+            {/* 灯泡图标 */}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)"
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="9" y1="18" x2="15" y2="18" />
+              <line x1="10" y1="22" x2="14" y2="22" />
+              <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
+            </svg>
+            <span className="card-title" style={{ margin: 0, color: "var(--accent-text)" }}>
+              今日思考
+            </span>
+          </div>
+          <p style={{
+            fontSize: 14,
+            lineHeight: 1.65,
+            color: "var(--text)",
+            margin: 0,
+            marginBottom: 10,
+            fontStyle: "italic",
+          }}>
+            {dailyQuestion.response}
+          </p>
+          <span style={{
+            fontSize: 11,
+            color: "var(--text-tertiary)",
+            display: "block",
+          }}>
+            Sage's daily question · {formatTime(dailyQuestion.timestamp)}
+          </span>
         </div>
       )}
 

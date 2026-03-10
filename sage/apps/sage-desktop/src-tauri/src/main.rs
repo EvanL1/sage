@@ -117,6 +117,9 @@ fn main() {
             commands::get_latest_reports,
             commands::trigger_test_report,
             commands::ingest_sessions,
+            commands::add_user_memory,
+            commands::get_daily_question,
+            commands::trigger_report,
         ])
         .setup(move |app| {
             tray::setup_tray(app)?;

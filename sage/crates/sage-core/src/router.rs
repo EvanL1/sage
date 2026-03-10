@@ -7,12 +7,10 @@ use sage_types::{Event, EventType};
 
 use crate::agent::Agent;
 use crate::applescript;
-use crate::channels;
 use crate::coach;
 use crate::context_gatherer;
 use crate::mirror;
 use crate::questioner;
-use crate::skills;
 use crate::store::Store;
 
 enum Priority {
@@ -66,41 +64,12 @@ impl Router {
     }
 
     pub async fn route(&self, event: Event) -> Result<()> {
-        let event = self.maybe_upgrade_email(event);
         match classify(&event) {
             Priority::Immediate => self.handle_immediate(event).await,
             Priority::Scheduled => self.handle_scheduled(event).await,
             Priority::Normal => self.handle_normal(event).await,
             Priority::Background => self.handle_background(event).await,
         }
-    }
-
-    /// 根据用户 profile 判断是否升级邮件优先级
-    fn maybe_upgrade_email(&self, mut event: Event) -> Event {
-        if !matches!(event.event_type, EventType::NewEmail) {
-            return event;
-        }
-        // 从 Store 加载 profile，获取 VIP 域名和紧急关键词
-        let profile = self.store.load_profile().ok().flatten();
-        let (vip_domains, urgent_keywords) = match &profile {
-            Some(p) => (
-                p.preferences.important_sender_domains.clone(),
-                p.preferences.urgent_keywords.clone(),
-            ),
-            None => (Vec::new(), Vec::new()),
-        };
-        // 加入默认紧急关键词
-        let mut keywords = urgent_keywords;
-        for kw in &["urgent", "紧急", "asap", "critical", "故障", "down"] {
-            if !keywords.iter().any(|k| k.eq_ignore_ascii_case(kw)) {
-                keywords.push(kw.to_string());
-            }
-        }
-        if channels::email::should_upgrade_to_urgent(&event, &vip_domains, &keywords) {
-            event.event_type = EventType::UrgentEmail;
-            info!("Email upgraded to urgent: {}", event.title);
-        }
-        event
     }
 
     /// 构建完整 system prompt = SOP + 记忆上下文（从 SQLite memories 表读取）
@@ -141,46 +110,18 @@ impl Router {
         };
 
         let prompt = match event.title.as_str() {
-            "Morning Brief" => {
-                let guide = skills::load_section(
-                    "sage-cognitive", "## Daily Rhythm (Suggested)",
-                );
-                format!(
-                    "## 认知框架\n{guide}\n\n---\n\n\
-                     现在是早间 briefing 时间。{ctx_section}\n\
-                     按上述 Morning Brief 框架生成今日 brief，用 Markdown 格式，简洁有结构。"
-                )
-            }
-            "Evening Review" => {
-                let guide = skills::load_section(
-                    "sage-cognitive", "## Daily Rhythm (Suggested)",
-                );
-                format!(
-                    "## 认知框架\n{guide}\n\n---\n\n\
-                     现在是晚间回顾时间。{ctx_section}\n\
-                     按上述 Evening Review 框架总结今天的工作，用 Markdown 格式。"
-                )
-            }
-            "Weekly Report" => {
-                let guide = skills::load_section(
-                    "sage-week-rhythm", "## Week End Review",
-                );
-                format!(
-                    "## 周节奏框架\n{guide}\n\n---\n\n\
-                     现在是周报时间。{ctx_section}\n\
-                     按上述 Week End Review 框架生成本周回顾，用 Markdown 格式，专业简洁。"
-                )
-            }
-            "Week Start" => {
-                let guide = skills::load_section(
-                    "sage-week-rhythm", "## Week Start (Monday)",
-                );
-                format!(
-                    "## 周节奏框架\n{guide}\n\n---\n\n\
-                     新的一周开始了。{ctx_section}\n\
-                     按上述 Week Start 框架生成本周 alignment，用 Markdown 格式。"
-                )
-            }
+            "Morning Brief" => format!(
+                "现在是早间 briefing 时间。{ctx_section}\n生成今日 Morning Brief：\n1. 今日重点关注事项\n2. 待决策/待跟进事项\n3. 建议优先级排序\n\n用 Markdown 格式，简洁有结构。"
+            ),
+            "Evening Review" => format!(
+                "现在是晚间回顾时间。{ctx_section}\n总结今天的工作：\n1. 完成了什么\n2. 发现了什么模式\n3. 明天需要关注什么\n\n用 Markdown 格式。"
+            ),
+            "Weekly Report" => format!(
+                "现在是周报时间。{ctx_section}\n生成本周工作周报草稿：\n1. 本周完成的重要事项\n2. 进行中的工作\n3. 下周计划\n4. 需要上级关注的问题\n\n用 Markdown 格式，专业简洁。"
+            ),
+            "Week Start" => format!(
+                "新的一周开始了。{ctx_section}\n提醒本周重点：\n1. 本周重点事项\n2. 需要跟进的待办\n3. 预期的挑战\n\n用 Markdown 格式。"
+            ),
             _ => format!("处理定时任务：{}\n{}", event.title, event.body),
         };
 
@@ -206,6 +147,33 @@ impl Router {
             };
             if let Err(e) = self.store.save_report(type_str, &resp.text) {
                 error!("Failed to save report: {e}");
+            }
+
+            // 报告 → 记忆反哺：从报告中提取关键洞察存入 memories 表
+            let extract_prompt = format!(
+                "从以下报告中提取2-3条关键洞察或行动项，每条一行，不要编号：\n\n{}",
+                resp.text
+            );
+            let extract_system = "你是记忆提取器。从报告中提取最值得记住的洞察。每条不超过50字。只输出提取结果，不要其他内容。";
+            match self.agent.invoke(&extract_prompt, Some(extract_system)).await {
+                Ok(insights_resp) => {
+                    for line in insights_resp.text
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .take(3)
+                    {
+                        let insight = line.trim().trim_start_matches('-').trim();
+                        if let Err(e) = self.store.save_memory(
+                            "report_insight", insight, type_str, 0.7,
+                        ) {
+                            error!("Failed to save report insight: {e}");
+                        }
+                    }
+                    info!("Extracted insights from {} report", type_str);
+                }
+                Err(e) => {
+                    error!("Failed to extract insights from report: {e}");
+                }
             }
         }
 
@@ -267,44 +235,14 @@ impl Router {
             error!("Failed to append pattern: {e}");
         }
 
-        // Email events: AI-powered summary + action suggestion
+        // Email events: create lightweight suggestion + notification (no Claude needed)
         if event.source == "email" {
-            // 跳过重复
-            if self.store.has_recent_suggestion(&event.source, &event.title) {
-                info!("Skipping duplicate email: {}", event.title);
-                return Ok(());
+            let summary = format!("📧 {}\n{}", event.title, event.body);
+            if let Err(e) = self.store.record_suggestion(&event.source, &event.title, &summary) {
+                error!("Failed to persist email suggestion: {e}");
             }
-
-            let system = "你是邮件助手。用一句话总结邮件核心内容，然后判断是否需要回复或采取行动。格式：\n摘要：...\n行动：需要回复 / 仅供了解 / 需要处理";
-            let prompt = format!(
-                "请分析以下邮件：\n\n标题：{}\n{}\n",
-                event.title, event.body
-            );
-
-            match self.agent.invoke(&prompt, Some(system)).await {
-                Ok(resp) => {
-                    let summary = format!("📧 {}\n{}", event.title, resp.text);
-                    if let Err(e) = self.store.record_suggestion(&event.source, &event.title, &summary) {
-                        error!("Failed to persist email suggestion: {e}");
-                    }
-                    // 只通知需要行动的邮件，仅供了解的静默存储
-                    if resp.text.contains("需要回复") || resp.text.contains("需要处理") {
-                        if let Err(e) = applescript::notify("邮件", &format!("{}: {}", event.title, resp.text)).await {
-                            error!("Email notification failed: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    // AI 调用失败时回退到原来的简单通知
-                    error!("Email AI summary failed: {e}");
-                    let summary = format!("📧 {}\n{}", event.title, event.body);
-                    if let Err(e) = self.store.record_suggestion(&event.source, &event.title, &summary) {
-                        error!("Failed to persist email suggestion: {e}");
-                    }
-                    if let Err(e) = applescript::notify("新邮件", &event.title).await {
-                        error!("Email notification failed: {e}");
-                    }
-                }
+            if let Err(e) = applescript::notify("新邮件", &event.title).await {
+                error!("Email notification failed: {e}");
             }
         }
 
