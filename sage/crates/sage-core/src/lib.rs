@@ -20,6 +20,7 @@ pub mod questioner;
 pub mod reliable_provider;
 pub mod router;
 pub mod scrub;
+pub mod skills;
 pub mod session_analyzer;
 pub mod store;
 

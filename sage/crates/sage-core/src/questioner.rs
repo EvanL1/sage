@@ -2,6 +2,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::agent::Agent;
+use crate::skills;
 use crate::store::Store;
 
 /// 发问者：基于行为模式和近期决策，生成一个苏格拉底式深度问题
@@ -49,8 +50,13 @@ pub async fn ask(agent: &Agent, store: &Store) -> Result<bool> {
          4. 语气温暖、非评判，像一个信任的朋友在问",
     );
 
-    let system = "你是苏格拉底式教练，擅长用一个问题打开自我认知的门。";
-    let resp = agent.invoke(&prompt, Some(system)).await?;
+    let question_guide = skills::load_section("sage-cognitive", "## Phase 3: QUESTION");
+    let system = format!(
+        "{question_guide}\n\n\
+         ## 输出要求\n\
+         只输出一个问题，不要编号、不要解释、不要引导语。"
+    );
+    let resp = agent.invoke(&prompt, Some(&system)).await?;
 
     // 静默存储，不发通知
     store.record_suggestion("questioner", "daily-question", &resp.text)?;

@@ -1,0 +1,196 @@
+//! Skill 加载层 — 支持热插拔
+//!
+//! 优先读取 `~/.sage/skills/{name}/SKILL.md`（用户覆盖），
+//! 找不到则 fallback 到 `include_str!` 编译时内置版本。
+//!
+//! 各模块通过 `load_section()` 获取所需段落注入 LLM prompt。
+
+use std::borrow::Cow;
+use std::path::PathBuf;
+
+/// sage-cognitive: 5 阶段认知循环 (Know/Observe/Reflect/Question/Care)
+pub const COGNITIVE_SKILL: &str =
+    include_str!("../../../skills/sage-cognitive/SKILL.md");
+
+/// sage-week-rhythm: 周节奏框架 (Week Start/Daily Pulse/Week End/Growth)
+pub const WEEK_RHYTHM_SKILL: &str =
+    include_str!("../../../skills/sage-week-rhythm/SKILL.md");
+
+// TODO(skill): sage-voice 和 sage-decision-journal 需要对话通道支持后再接入
+#[allow(dead_code)]
+pub const VOICE_SKILL: &str =
+    include_str!("../../../skills/sage-voice/SKILL.md");
+
+#[allow(dead_code)]
+pub const DECISION_JOURNAL_SKILL: &str =
+    include_str!("../../../skills/sage-decision-journal/SKILL.md");
+
+/// 用户 skill 覆盖目录（支持 SAGE_SKILLS_DIR 环境变量覆盖）
+fn skills_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("SAGE_SKILLS_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".sage/skills"))
+}
+
+/// 加载 skill 全文：优先用户覆盖文件，fallback 到编译时内置
+fn load_skill(name: &str) -> Cow<'static, str> {
+    if let Some(dir) = skills_dir() {
+        let path = dir.join(name).join("SKILL.md");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            tracing::debug!("Skill override loaded: {path:?}");
+            return Cow::Owned(content);
+        }
+    }
+    Cow::Borrowed(bundled_skill(name))
+}
+
+/// 编译时内置 skill 名称映射
+fn bundled_skill(name: &str) -> &'static str {
+    match name {
+        "sage-cognitive" => COGNITIVE_SKILL,
+        "sage-week-rhythm" => WEEK_RHYTHM_SKILL,
+        "sage-voice" => VOICE_SKILL,
+        "sage-decision-journal" => DECISION_JOURNAL_SKILL,
+        _ => "",
+    }
+}
+
+/// 从 skill 中提取指定段落（支持热插拔）
+///
+/// 例: `load_section("sage-cognitive", "## Phase 1: OBSERVE")`
+pub fn load_section(skill_name: &str, heading: &str) -> String {
+    let content = load_skill(skill_name);
+    extract_section(&content, heading).to_string()
+}
+
+/// 从 SKILL.md 文本中提取指定标题到下一个同级标题之间的内容
+pub fn extract_section<'a>(skill: &'a str, heading: &str) -> &'a str {
+    let start = match skill.find(heading) {
+        Some(i) => i,
+        None => return "",
+    };
+    let level = heading.bytes().take_while(|&b| b == b'#').count();
+    let content_start = start + heading.len();
+
+    let mut end = skill.len();
+    let mut pos = content_start;
+    let mut first_line = true;
+
+    for line in skill[content_start..].lines() {
+        if first_line {
+            first_line = false;
+            pos += line.len() + 1;
+            continue;
+        }
+        let h = line.bytes().take_while(|&b| b == b'#').count();
+        if h > 0 && h <= level && line.as_bytes().get(h) == Some(&b' ') {
+            end = pos;
+            break;
+        }
+        pos += line.len() + 1;
+    }
+
+    skill[start..end].trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_include_str_loaded() {
+        assert!(COGNITIVE_SKILL.contains("Phase 1: OBSERVE"));
+        assert!(WEEK_RHYTHM_SKILL.contains("Week Start"));
+        assert!(VOICE_SKILL.contains("sage-voice"));
+        assert!(DECISION_JOURNAL_SKILL.contains("sage-decision-journal"));
+    }
+
+    #[test]
+    fn test_extract_section_basic() {
+        let md = "# Title\n\n## Section A\nContent A\n\n## Section B\nContent B\n";
+        let result = extract_section(md, "## Section A");
+        assert!(result.starts_with("## Section A"));
+        assert!(result.contains("Content A"));
+        assert!(!result.contains("Section B"));
+    }
+
+    #[test]
+    fn test_extract_section_last() {
+        let md = "## First\nAAA\n\n## Last\nBBB\n";
+        let result = extract_section(md, "## Last");
+        assert!(result.contains("BBB"));
+    }
+
+    #[test]
+    fn test_extract_section_not_found() {
+        let md = "## Foo\nBar\n";
+        assert_eq!(extract_section(md, "## Missing"), "");
+    }
+
+    #[test]
+    fn test_extract_cognitive_phase1() {
+        let section = extract_section(COGNITIVE_SKILL, "## Phase 1: OBSERVE");
+        assert!(!section.is_empty());
+        assert!(section.contains("Coach"));
+        assert!(!section.contains("## Phase 2"));
+    }
+
+    #[test]
+    fn test_extract_week_start() {
+        let section = extract_section(WEEK_RHYTHM_SKILL, "## Week Start (Monday)");
+        assert!(!section.is_empty());
+        assert!(section.contains("calibration"));
+        assert!(!section.contains("## Daily Pulse"));
+    }
+
+    #[test]
+    fn test_subsection_not_break_parent() {
+        // ### 子标题不应截断 ## 段落
+        let md = "## Parent\n\n### Child A\nAAA\n\n### Child B\nBBB\n\n## Next\nCCC\n";
+        let result = extract_section(md, "## Parent");
+        assert!(result.contains("Child A"));
+        assert!(result.contains("Child B"));
+        assert!(!result.contains("## Next"));
+    }
+
+    #[test]
+    fn test_bundled_skill_mapping() {
+        assert!(!bundled_skill("sage-cognitive").is_empty());
+        assert!(!bundled_skill("sage-week-rhythm").is_empty());
+        assert!(!bundled_skill("sage-voice").is_empty());
+        assert!(!bundled_skill("sage-decision-journal").is_empty());
+        assert!(bundled_skill("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn test_load_section_fallback_to_bundled() {
+        // 没有覆盖文件时，load_section 应返回编译时内置内容
+        let section = load_section("sage-cognitive", "## Phase 1: OBSERVE");
+        assert!(!section.is_empty());
+        assert!(section.contains("Coach"));
+    }
+
+    #[test]
+    fn test_load_section_unknown_skill() {
+        let section = load_section("nonexistent", "## Foo");
+        assert!(section.is_empty());
+    }
+
+    #[test]
+    fn test_load_skill_override() {
+        // 用 tempdir + SAGE_SKILLS_DIR 验证热加载
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "## Custom\nOverridden content\n").unwrap();
+
+        std::env::set_var("SAGE_SKILLS_DIR", dir.path());
+        let content = load_skill("test-skill");
+        std::env::remove_var("SAGE_SKILLS_DIR");
+
+        assert!(content.contains("Overridden content"));
+    }
+}

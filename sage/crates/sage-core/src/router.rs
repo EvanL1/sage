@@ -11,6 +11,7 @@ use crate::coach;
 use crate::context_gatherer;
 use crate::mirror;
 use crate::questioner;
+use crate::skills;
 use crate::store::Store;
 
 enum Priority {
@@ -110,18 +111,46 @@ impl Router {
         };
 
         let prompt = match event.title.as_str() {
-            "Morning Brief" => format!(
-                "现在是早间 briefing 时间。{ctx_section}\n生成今日 Morning Brief：\n1. 今日重点关注事项\n2. 待决策/待跟进事项\n3. 建议优先级排序\n\n用 Markdown 格式，简洁有结构。"
-            ),
-            "Evening Review" => format!(
-                "现在是晚间回顾时间。{ctx_section}\n总结今天的工作：\n1. 完成了什么\n2. 发现了什么模式\n3. 明天需要关注什么\n\n用 Markdown 格式。"
-            ),
-            "Weekly Report" => format!(
-                "现在是周报时间。{ctx_section}\n生成本周工作周报草稿：\n1. 本周完成的重要事项\n2. 进行中的工作\n3. 下周计划\n4. 需要上级关注的问题\n\n用 Markdown 格式，专业简洁。"
-            ),
-            "Week Start" => format!(
-                "新的一周开始了。{ctx_section}\n提醒本周重点：\n1. 本周重点事项\n2. 需要跟进的待办\n3. 预期的挑战\n\n用 Markdown 格式。"
-            ),
+            "Morning Brief" => {
+                let guide = skills::load_section(
+                    "sage-cognitive", "## Daily Rhythm (Suggested)",
+                );
+                format!(
+                    "## 认知框架\n{guide}\n\n---\n\n\
+                     现在是早间 briefing 时间。{ctx_section}\n\
+                     按上述 Morning Brief 框架生成今日 brief，用 Markdown 格式，简洁有结构。"
+                )
+            }
+            "Evening Review" => {
+                let guide = skills::load_section(
+                    "sage-cognitive", "## Daily Rhythm (Suggested)",
+                );
+                format!(
+                    "## 认知框架\n{guide}\n\n---\n\n\
+                     现在是晚间回顾时间。{ctx_section}\n\
+                     按上述 Evening Review 框架总结今天的工作，用 Markdown 格式。"
+                )
+            }
+            "Weekly Report" => {
+                let guide = skills::load_section(
+                    "sage-week-rhythm", "## Week End Review",
+                );
+                format!(
+                    "## 周节奏框架\n{guide}\n\n---\n\n\
+                     现在是周报时间。{ctx_section}\n\
+                     按上述 Week End Review 框架生成本周回顾，用 Markdown 格式，专业简洁。"
+                )
+            }
+            "Week Start" => {
+                let guide = skills::load_section(
+                    "sage-week-rhythm", "## Week Start (Monday)",
+                );
+                format!(
+                    "## 周节奏框架\n{guide}\n\n---\n\n\
+                     新的一周开始了。{ctx_section}\n\
+                     按上述 Week Start 框架生成本周 alignment，用 Markdown 格式。"
+                )
+            }
             _ => format!("处理定时任务：{}\n{}", event.title, event.body),
         };
 

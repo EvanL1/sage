@@ -2,6 +2,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::agent::Agent;
+use crate::skills;
 use crate::store::Store;
 
 /// 学习教练：读取未处理 observations → Claude 发现模式 → 保存 coach_insight → 归档
@@ -44,8 +45,13 @@ pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
          4. 只输出洞察内容，不要其他解释",
     );
 
-    let system = "你是行为分析专家，擅长从碎片化观察中提炼结构化认知。输出纯文本列表，每行一条洞察。";
-    let resp = agent.invoke(&prompt, Some(system)).await?;
+    let observe_guide = skills::load_section("sage-cognitive", "## Phase 1: OBSERVE");
+    let system = format!(
+        "{observe_guide}\n\n\
+         ## 输出要求\n\
+         纯文本列表，每行一条洞察，以「行为模式：」「决策倾向：」「沟通偏好：」等前缀开头。"
+    );
+    let resp = agent.invoke(&prompt, Some(&system)).await?;
 
     // 将洞察保存到 SQLite memories 表（替代原来写 sage.md）
     let content = resp.text.trim();
