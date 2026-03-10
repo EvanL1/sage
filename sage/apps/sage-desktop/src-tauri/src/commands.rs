@@ -1121,8 +1121,8 @@ pub async fn trigger_report(
     if let Some(ref daemon) = state.daemon {
         daemon.trigger_report(&report_type).await.map_err(map_err)
     } else {
-        // Daemon 未启动，退回到仅生成 context preview（与 trigger_test_report 一致）
-        tracing::warn!("内嵌 daemon 未启动，使用 context preview 替代");
+        // Daemon 未启动（外部 daemon 持有锁），直接用 provider 生成完整报告
+        tracing::info!("内嵌 daemon 未启动，直接用 provider 生成报告");
         let rt = match report_type.as_str() {
             "morning" => sage_core::context_gatherer::ReportType::MorningBrief,
             "evening" => sage_core::context_gatherer::ReportType::EveningReview,
@@ -1131,8 +1131,43 @@ pub async fn trigger_report(
             _ => unreachable!(),
         };
         let ctx = sage_core::context_gatherer::gather(&rt, &state.store).await;
-        let content = format!("## Context Preview\n\n{ctx}");
-        state.store.save_report(&report_type, &content).map_err(map_err)?;
-        Ok(format!("Context preview for '{report_type}' generated (daemon not running)"))
+        let ctx_section = if ctx.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n## 可用数据\n{ctx}\n")
+        };
+
+        let prompt = match report_type.as_str() {
+            "morning" => format!(
+                "现在是早间 briefing 时间。{ctx_section}\n生成今日 Morning Brief：\n1. 今日重点关注事项\n2. 待决策/待跟进事项\n3. 建议优先级排序\n\n用 Markdown 格式，简洁有结构。"
+            ),
+            "evening" => format!(
+                "现在是晚间回顾时间。{ctx_section}\n总结今天的工作：\n1. 完成了什么\n2. 发现了什么模式\n3. 明天需要关注什么\n\n用 Markdown 格式。"
+            ),
+            "weekly" => format!(
+                "现在是周报时间。{ctx_section}\n生成本周工作周报草稿：\n1. 本周完成的重要事项\n2. 进行中的工作\n3. 下周计划\n4. 需要上级关注的问题\n\n用 Markdown 格式，专业简洁。"
+            ),
+            _ => format!(
+                "新的一周开始了。{ctx_section}\n提醒本周重点：\n1. 本周重点事项\n2. 需要跟进的待办\n3. 预期的挑战\n\n用 Markdown 格式。"
+            ),
+        };
+
+        // 创建 provider 调用 Claude
+        let discovered = sage_core::discovery::discover_providers(&state.store);
+        let configs = state.store.load_provider_configs().map_err(map_err)?;
+        let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+            .ok_or("没有可用的 AI 服务。请在设置中配置 API Key。")?;
+        let agent_config = default_agent_config();
+        let provider =
+            sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+        let system = format!(
+            "你是 Sage，用户的个人参谋。{}\n\n---\n\n## 行为指引\n用中文回复，简洁有结构。",
+            state.store.get_memory_context(2000).unwrap_or_default()
+        );
+        let resp = provider.invoke(&prompt, Some(&system)).await.map_err(map_err)?;
+
+        state.store.save_report(&report_type, &resp).map_err(map_err)?;
+        Ok(format!("Report '{report_type}' generated successfully"))
     }
 }
