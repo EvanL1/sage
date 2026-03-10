@@ -15,6 +15,23 @@ const PROXY_ENVS: &[(&str, &str)] = &[
     ("all_proxy", "socks5://127.0.0.1:7890"),
 ];
 
+/// 将短名称（如 "claude"）解析为完整路径（.app bundle 的 PATH 通常不含 /opt/homebrew/bin）
+fn resolve_binary(name: &str) -> String {
+    if name.contains('/') {
+        return name.to_string();
+    }
+    let candidates = [
+        format!("/opt/homebrew/bin/{name}"),
+        format!("/usr/local/bin/{name}"),
+    ];
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return path.clone();
+        }
+    }
+    name.to_string()
+}
+
 /// 为 CLI Command 注入 proxy 环境变量（仅当环境中不存在时）
 fn inject_proxy(cmd: &mut Command) {
     for &(key, default_val) in PROXY_ENVS {
@@ -56,7 +73,7 @@ struct ClaudeProvider {
 impl ClaudeProvider {
     fn new(config: &AgentConfig) -> Self {
         Self {
-            binary: config.claude_binary.clone(),
+            binary: resolve_binary(&config.claude_binary),
             model: config.default_model.clone(),
             project_dir: config.project_dir.clone(),
             max_budget_usd: config.max_budget_usd,

@@ -157,12 +157,13 @@ function Chat() {
     } catch (err) {
       const errStr = String(err);
       const isProviderError = errStr.includes("AI 服务") || errStr.includes("API");
+      const errorContent = isProviderError
+        ? "I'm not connected to an AI provider yet. Go to **Settings** to configure one, then come back and chat."
+        : `Something went wrong: ${errStr}`;
       const errorMsg: Message = {
         id: Date.now() + 1,
         role: "sage",
-        content: isProviderError
-          ? "I'm not connected to an AI provider yet. Go to **Settings** to configure one, then come back and chat."
-          : "Sorry, I'm unable to respond right now. Please try again later.",
+        content: errorContent,
         session_id: sessionId || "",
         created_at: new Date().toISOString(),
       };
