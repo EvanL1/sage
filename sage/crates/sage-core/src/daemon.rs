@@ -100,6 +100,18 @@ impl Daemon {
 
         let heartbeat_interval = Duration::from_secs(config.daemon.heartbeat_interval_secs);
 
+        // 从数据库恢复今天已处理的心跳动作，避免重启后重复触发
+        let mut handled_keys = HashSet::new();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        handled_keys.insert(format!("__date:{today}"));
+        if let Ok(titles) = store.get_today_handled_actions() {
+            for title in &titles {
+                let key = format!("heartbeat:{title}");
+                info!("恢复已处理动作: {key}");
+                handled_keys.insert(key);
+            }
+        }
+
         Ok(Self {
             config,
             router: TokioMutex::new(router),
@@ -111,7 +123,7 @@ impl Daemon {
             hooks,
             wechat,
             heartbeat_interval,
-            handled_keys: Mutex::new(HashSet::new()),
+            handled_keys: Mutex::new(handled_keys),
         })
     }
 

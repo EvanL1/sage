@@ -23,13 +23,34 @@ pub fn gather(report_type: &ReportType, store: &Store) -> String {
     }
 }
 
-/// Morning Brief：近期决策 memories + 上次 evening review 报告
+/// Morning Brief：工作上下文 + 近期 sessions + 决策 + 晚间回顾
 fn gather_morning(store: &Store) -> String {
+    // 先 ingest 最近 24h 的 Claude Code session
+    ingest_recent_sessions(store, 24);
+
     let mut sections = Vec::new();
 
+    // 昨日/近期 Claude Code 工作 session（LLM 可从中提取今日待办）
+    let since_1d = days_ago(1);
+    let sessions = store.get_session_summaries_since(&since_1d).unwrap_or_default();
+    if !sessions.is_empty() {
+        let lines: Vec<String> = sessions.iter().map(|m| format!("- {}", m.content)).collect();
+        sections.push(format!("## 近期工作 Sessions（从中提取今日待办）\n{}", lines.join("\n")));
+    }
+
+    // 读取 Claude Code MEMORY.md（含项目进展和待办）
+    if let Some(content) = read_claude_memory() {
+        sections.push(format!("## Claude Code 记忆\n{content}"));
+    }
+
+    // 读 .context/projects.md（项目状态和优先级）
+    if let Some(content) = read_context_file("projects.md") {
+        sections.push(format!("## 项目状态\n{content}"));
+    }
+
     // 近 7 天的决策记忆
-    let since = days_ago(7);
-    let memories = store.get_memories_since(&since).unwrap_or_default();
+    let since_7d = days_ago(7);
+    let memories = store.get_memories_since(&since_7d).unwrap_or_default();
     let decisions: Vec<_> = memories.iter().filter(|m| m.category == "decision").collect();
     if !decisions.is_empty() {
         let lines: Vec<String> = decisions.iter().map(|m| format!("- {}", m.content)).collect();
@@ -37,7 +58,7 @@ fn gather_morning(store: &Store) -> String {
     }
 
     // 近 7 天的 coach insights
-    let insights = store.get_coach_insights_since(&since).unwrap_or_default();
+    let insights = store.get_coach_insights_since(&since_7d).unwrap_or_default();
     if !insights.is_empty() {
         let lines: Vec<String> = insights.iter().map(|s| format!("- {s}")).collect();
         sections.push(format!("## 教练洞察\n{}", lines.join("\n")));
@@ -165,6 +186,50 @@ fn ingest_recent_sessions(store: &Store, hours: i64) {
     if let Err(e) = session_analyzer::ingest_sessions(&claude_dir, store, hours) {
         tracing::warn!("Failed to ingest Claude Code sessions: {e}");
     }
+}
+
+/// 读取 Claude Code 各项目的 MEMORY.md，合并后截断到 3000 字
+fn read_claude_memory() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let projects_dir = std::path::Path::new(&home).join(".claude/projects");
+
+    let mut parts = Vec::new();
+
+    // 全局 MEMORY.md
+    let global = std::path::Path::new(&home).join(".claude/MEMORY.md");
+    if let Ok(content) = std::fs::read_to_string(&global) {
+        if !content.trim().is_empty() {
+            parts.push(format!("### Global\n{content}"));
+        }
+    }
+
+    // 各项目 MEMORY.md
+    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+        for entry in entries.flatten() {
+            let mem_path = entry.path().join("memory/MEMORY.md");
+            if let Ok(content) = std::fs::read_to_string(&mem_path) {
+                if content.trim().is_empty() {
+                    continue;
+                }
+                let project_name = entry.file_name().to_string_lossy()
+                    .replace('-', "/")
+                    .trim_start_matches('/')
+                    .to_string();
+                // 每个项目截断到 800 字
+                let truncated: String = content.chars().take(800).collect();
+                parts.push(format!("### {project_name}\n{truncated}"));
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    // 合并后总体截断到 3000 字
+    let combined = parts.join("\n\n");
+    let result: String = combined.chars().take(3000).collect();
+    Some(result)
 }
 
 /// 读取 .context/<filename>，路径从 SAGE_PROJECT_DIR 获取，默认 ~/dev/digital-twin

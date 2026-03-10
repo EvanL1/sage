@@ -826,6 +826,31 @@ impl Store {
         self.save_memory("decision", &content, "router", 0.7)
     }
 
+    /// 查询今天已完成的心跳动作标题（用于 daemon 重启后恢复去重状态）
+    pub fn get_today_handled_actions(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut stmt = conn.prepare(
+            "SELECT content FROM memories WHERE category = 'decision' AND source = 'router' AND created_at >= ?1"
+        ).context("准备查询今日动作失败")?;
+
+        let titles: Vec<String> = stmt.query_map(rusqlite::params![today], |row| {
+            let content: String = row.get(0)?;
+            // content 格式: "**Context**: Morning Brief\n**Decision**: ..."
+            // 提取 Context 值作为 title
+            Ok(content
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("**Context**: "))
+                .unwrap_or("")
+                .to_string())
+        })?.filter_map(|r| r.ok())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+        Ok(titles)
+    }
+
     /// 保存教练洞察（category="coach_insight"），返回新记录 id
     pub fn save_coach_insight(&self, insight: &str) -> Result<i64> {
         self.save_memory("coach_insight", insight, "coach", 0.8)
@@ -1587,6 +1612,19 @@ mod tests {
         assert!(results[0].content.contains("Context"));
         assert!(results[0].content.contains("Decision"));
         assert!(results[0].content.contains("架构选型"));
+    }
+
+    #[test]
+    fn test_get_today_handled_actions() {
+        let store = Store::open_in_memory().unwrap();
+
+        store.append_decision("Morning Brief", "今日日程...").unwrap();
+        store.append_decision("Email Check", "2封未读邮件").unwrap();
+
+        let actions = store.get_today_handled_actions().unwrap();
+        assert_eq!(actions.len(), 2);
+        assert!(actions.contains(&"Morning Brief".to_string()));
+        assert!(actions.contains(&"Email Check".to_string()));
     }
 
     #[test]
