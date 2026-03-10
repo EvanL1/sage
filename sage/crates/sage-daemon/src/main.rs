@@ -23,6 +23,27 @@ struct Cli {
     trigger: Option<String>,
 }
 
+/// 尝试获取事件循环排他锁
+fn try_acquire_event_loop_lock() -> Option<std::fs::File> {
+    let lock_path = dirs::home_dir()?.join(".sage/data/event-loop.pid");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    use fs2::FileExt;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            use std::io::Write;
+            let mut f = &file;
+            let _ = f.write_all(format!("{}", std::process::id()).as_bytes());
+            Some(file)
+        }
+        Err(_) => None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -48,6 +69,14 @@ async fn main() -> Result<()> {
         daemon.heartbeat_once().await?;
         return Ok(());
     }
+
+    // 常驻模式：需要获取事件循环锁
+    let _lock_file = match try_acquire_event_loop_lock() {
+        Some(f) => f,
+        None => {
+            anyhow::bail!("其他进程（Desktop 或另一个 daemon）已持有事件循环锁，退出");
+        }
+    };
 
     info!(
         "Starting event loop (heartbeat: {}s)",

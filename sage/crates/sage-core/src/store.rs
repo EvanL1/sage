@@ -152,6 +152,25 @@ impl Store {
             .context("数据库迁移 v6（reports 表）失败")?;
         }
 
+        if version < 7 {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN tier TEXT NOT NULL DEFAULT 'archive';
+                 ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+                 ALTER TABLE memories ADD COLUMN expires_at TEXT;
+                 CREATE INDEX IF NOT EXISTS idx_memories_tier_status ON memories(tier, status);
+                 PRAGMA user_version = 7;",
+            )
+            .context("数据库迁移 v7（记忆分层）失败")?;
+
+            // 按 category 初始化 tier
+            conn.execute_batch(
+                "UPDATE memories SET tier = 'core' WHERE category IN ('identity', 'personality', 'values');
+                 UPDATE memories SET tier = 'working' WHERE category IN ('task', 'decision', 'session');
+                 UPDATE memories SET tier = 'archive' WHERE tier = 'archive';",
+            )
+            .context("初始化记忆层级失败")?;
+        }
+
         Ok(())
     }
 
@@ -639,64 +658,76 @@ impl Store {
 
     // ─── 统一记忆上下文方法（替代 memory.rs Markdown 文件） ──────────────────────────────
 
-    /// 从 memories 表构建 LLM 上下文字符串，按 category 分组，截断到 max_bytes（UTF-8 安全）
+    /// 分层构建 LLM 上下文：core 全量 → working 活跃 → archive 按相关性
     pub fn get_memory_context(&self, max_bytes: usize) -> Result<String> {
-        let memories = self.load_memories()?;
-        if memories.is_empty() {
-            return Ok(String::new());
-        }
-
-        // 按 category 分组，定义显示顺序
-        let categories = ["core", "pattern", "decision", "coach_insight"];
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut sections = Vec::new();
 
-        for cat in &categories {
-            let items: Vec<&sage_types::Memory> =
-                memories.iter().filter(|m| m.category == *cat).collect();
-            if !items.is_empty() {
-                let header = match *cat {
-                    "core" => "## 核心认知",
-                    "pattern" => "## 行为模式",
-                    "decision" => "## 近期决策",
-                    "coach_insight" => "## 教练洞察",
-                    _ => "## 其他",
-                };
-                let lines: Vec<String> = items
-                    .iter()
-                    .map(|m| format!("- {}", m.content))
-                    .collect();
-                sections.push(format!("{}\n{}", header, lines.join("\n")));
-            }
+        // 1. Core 层：全量注入（identity/personality/values）
+        let core_items = Self::query_memories_by(
+            &conn,
+            "tier = 'core' AND status = 'active'",
+            50,
+        )?;
+        if !core_items.is_empty() {
+            let lines: Vec<String> = core_items.iter().map(|m| format!("- [{}] {}", m.category, m.content)).collect();
+            sections.push(format!("## 核心认知\n{}", lines.join("\n")));
         }
 
-        // 处理未列举的 category
-        let known: std::collections::HashSet<&str> =
-            categories.iter().copied().collect();
-        let mut extra_cats: Vec<&str> = memories
-            .iter()
-            .map(|m| m.category.as_str())
-            .filter(|c| !known.contains(c))
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        extra_cats.sort();
-        for cat in extra_cats {
-            let items: Vec<&sage_types::Memory> =
-                memories.iter().filter(|m| m.category == cat).collect();
-            let lines: Vec<String> = items
-                .iter()
-                .map(|m| format!("- {}", m.content))
-                .collect();
-            sections.push(format!("## {}\n{}", cat, lines.join("\n")));
+        // 2. Working 层：活跃任务/决策（未过期 + status=active）
+        let working_items = Self::query_memories_by(
+            &conn,
+            "tier = 'working' AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))",
+            20,
+        )?;
+        if !working_items.is_empty() {
+            let lines: Vec<String> = working_items.iter().map(|m| format!("- [{}] {}", m.category, m.content)).collect();
+            sections.push(format!("## 当前任务与决策\n{}", lines.join("\n")));
+        }
+
+        // 3. Archive 层：最近 + 高 confidence（行为模式、洞察）
+        let archive_items = Self::query_memories_by(
+            &conn,
+            "tier = 'archive' AND status = 'active'",
+            30,
+        )?;
+        if !archive_items.is_empty() {
+            let lines: Vec<String> = archive_items.iter().map(|m| format!("- [{}] {}", m.category, m.content)).collect();
+            sections.push(format!("## 行为洞察\n{}", lines.join("\n")));
         }
 
         let full = sections.join("\n\n");
-        // UTF-8 安全截断
         if full.len() <= max_bytes {
             Ok(full)
         } else {
             Ok(utf8_safe_truncate(&full, max_bytes).to_string())
         }
+    }
+
+    /// 按条件查询记忆（内部方法）
+    fn query_memories_by(
+        conn: &rusqlite::Connection,
+        where_clause: &str,
+        limit: usize,
+    ) -> Result<Vec<sage_types::Memory>> {
+        let sql = format!(
+            "SELECT id, category, content, source, confidence, created_at, updated_at
+             FROM memories WHERE {where_clause}
+             ORDER BY confidence DESC, updated_at DESC LIMIT ?1"
+        );
+        let mut stmt = conn.prepare(&sql).context("查询记忆失败")?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+            Ok(sage_types::Memory {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                content: row.get(2)?,
+                source: row.get(3)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     // ─── Claude Code 共享记忆同步 ──────────────────────────────
@@ -858,7 +889,26 @@ impl Store {
 
     // ─── Memory 方法 ──────────────────────────────
 
-    /// 保存记忆
+    /// 根据 category 推断记忆层级
+    fn infer_tier(category: &str) -> &'static str {
+        match category {
+            "identity" | "personality" | "values" => "core",
+            "task" | "decision" | "session" | "reminder" => "working",
+            _ => "archive",
+        }
+    }
+
+    /// working 层默认 TTL（天）
+    fn default_ttl_days(category: &str) -> Option<i64> {
+        match category {
+            "task" | "reminder" => Some(7),
+            "decision" => Some(14),
+            "session" => Some(3),
+            _ => None,
+        }
+    }
+
+    /// 保存记忆（自动设置 tier / expires_at）
     pub fn save_memory(
         &self,
         category: &str,
@@ -866,13 +916,43 @@ impl Store {
         source: &str,
         confidence: f64,
     ) -> Result<i64> {
+        let tier = Self::infer_tier(category);
+        let expires_at = Self::default_ttl_days(category).map(|days| {
+            (chrono::Local::now() + chrono::Duration::days(days))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        });
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         conn.execute(
-            "INSERT INTO memories (category, content, source, confidence) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![category, content, source, confidence],
+            "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6)",
+            rusqlite::params![category, content, source, confidence, tier, expires_at],
         )
         .context("保存 memory 失败")?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// 清理过期 working 记忆：标记为 expired
+    pub fn expire_stale_memories(&self) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count = conn.execute(
+            "UPDATE memories SET status = 'expired'
+             WHERE tier = 'working' AND status = 'active'
+             AND expires_at IS NOT NULL AND expires_at < datetime('now')",
+            [],
+        ).context("清理过期记忆失败")?;
+        Ok(count)
+    }
+
+    /// 将 working 任务标记为完成
+    pub fn complete_task(&self, memory_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "UPDATE memories SET status = 'done', updated_at = datetime('now')
+             WHERE id = ?1 AND tier = 'working'",
+            rusqlite::params![memory_id],
+        ).context("标记任务完成失败")?;
+        Ok(())
     }
 
     /// 按 source 删除记忆（用于 session ingestion 的 upsert 场景）
@@ -1521,19 +1601,18 @@ mod tests {
     fn test_get_memory_context_includes_all_categories() {
         let store = Store::open_in_memory().unwrap();
 
-        // 写入各类记忆
-        store.save_memory("core", "重视团队成长", "test", 0.9).unwrap();
-        store.save_memory("pattern", "每天下午查邮件", "test", 0.7).unwrap();
-        store.save_memory("decision", "选择 Rust 作为核心语言", "test", 0.8).unwrap();
-        store.save_memory("coach_insight", "Evan 决策偏系统思考", "test", 0.8).unwrap();
+        // 写入各层记忆
+        store.save_memory("identity", "重视团队成长", "test", 0.9).unwrap();   // → core
+        store.save_memory("behavior", "每天下午查邮件", "test", 0.7).unwrap(); // → archive
+        store.save_memory("task", "选择 Rust 作为核心语言", "test", 0.8).unwrap(); // → working
+        store.save_memory("coach_insight", "Evan 决策偏系统思考", "test", 0.8).unwrap(); // → archive
 
         let ctx = store.get_memory_context(10000).unwrap();
 
-        // 验证各分类都包含
-        assert!(ctx.contains("## 核心认知"), "应包含核心认知分类");
-        assert!(ctx.contains("## 行为模式"), "应包含行为模式分类");
-        assert!(ctx.contains("## 近期决策"), "应包含近期决策分类");
-        assert!(ctx.contains("## 教练洞察"), "应包含教练洞察分类");
+        // 验证分层标题
+        assert!(ctx.contains("## 核心认知"), "应包含核心认知");
+        assert!(ctx.contains("## 当前任务与决策"), "应包含当前任务与决策");
+        assert!(ctx.contains("## 行为洞察"), "应包含行为洞察");
 
         // 验证内容存在
         assert!(ctx.contains("重视团队成长"));

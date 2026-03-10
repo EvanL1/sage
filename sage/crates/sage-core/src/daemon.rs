@@ -40,12 +40,15 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn new(config: Config) -> Result<Self> {
-        // 初始化 SQLite Store（统一存储，替代 memory.rs 的 Markdown 文件）
         let data_dir = Config::expand_path("~/.sage/data");
         std::fs::create_dir_all(&data_dir)?;
         let db_path = data_dir.join("sage.db");
         let store = Arc::new(Store::open(&db_path)?);
+        Self::with_store(config, store)
+    }
 
+    /// 使用外部提供的 Store 实例构建 Daemon（Desktop 内嵌时共享同一 Store）
+    pub fn with_store(config: Config, store: Arc<Store>) -> Result<Self> {
         // 动态 provider 发现：优先使用已配置的 provider，回退到 config 中的 CLI
         let (agent, initial_provider_id) = {
             let providers = discovery::discover_providers(&store);
@@ -125,6 +128,10 @@ impl Daemon {
             heartbeat_interval,
             handled_keys: Mutex::new(handled_keys),
         })
+    }
+
+    pub fn heartbeat_interval_secs(&self) -> u64 {
+        self.heartbeat_interval.as_secs()
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -260,6 +267,11 @@ impl Daemon {
                 Ok(false) => {}
                 Err(e) => error!("Questioner failed: {e}"),
             }
+        }
+
+        // 记忆清理：标记过期 working 记忆
+        if let Ok(n) = self.store.expire_stale_memories() {
+            if n > 0 { info!("Memory: {n} stale memories expired"); }
         }
 
         // Guardian：规则检测，无 Claude 调用（免费），每 tick 检查，自带每日去重

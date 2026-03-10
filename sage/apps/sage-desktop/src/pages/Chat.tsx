@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface Message {
   id: number;
@@ -249,7 +250,7 @@ function Chat() {
               <div key={msg.id} className={`chat-bubble ${msg.role}`}>
                 <div className="chat-bubble-content">
                   {msg.role === "sage" ? (
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                   ) : (
                     msg.content
                   )}

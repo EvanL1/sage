@@ -4,8 +4,9 @@
 mod commands;
 mod tray;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use fs2::FileExt;
 use sage_core::config::Config;
 use sage_core::onboarding::OnboardingState;
 use sage_core::store::Store;
@@ -13,18 +14,31 @@ use sage_core::Daemon;
 
 /// Tauri 应用共享状态
 pub struct AppState {
-    pub store: Store,
+    pub store: Arc<Store>,
     pub onboarding: Mutex<Option<OnboardingState>>,
+    pub daemon: Option<Arc<Daemon>>,
 }
 
-/// 检测独立 daemon 进程是否已在运行（精确匹配进程名）
-fn is_external_daemon_running() -> bool {
-    std::process::Command::new("pgrep")
-        .arg("-x")
-        .arg("sage-daemon")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// 尝试获取事件循环排他锁（PID 锁文件）
+/// 成功返回 File handle（持有锁直到进程退出），失败返回 None
+fn try_acquire_event_loop_lock() -> Option<std::fs::File> {
+    let lock_path = dirs::home_dir()?.join(".sage/data/event-loop.pid");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            // 写入 PID 方便调试
+            use std::io::Write;
+            let mut f = &file;
+            let _ = f.write_all(format!("{}", std::process::id()).as_bytes());
+            Some(file)
+        }
+        Err(_) => None, // 其他进程已持有锁
+    }
 }
 
 fn main() {
@@ -34,11 +48,42 @@ fn main() {
     std::fs::create_dir_all(&data_dir).expect("创建数据目录失败");
 
     let db_path = data_dir.join("sage.db");
-    let store = Store::open(&db_path).expect("打开数据库失败");
+    let store = Arc::new(Store::open(&db_path).expect("打开数据库失败"));
+
+    // 尝试获取事件循环锁 + 创建 Daemon
+    let (daemon, _lock_file) = match try_acquire_event_loop_lock() {
+        Some(lock_file) => {
+            let config_path = dirs::home_dir()
+                .map(|h| h.join(".sage/config.toml"))
+                .expect("无法确定 home 目录");
+            let config = Config::load_or_default(&config_path);
+            match Daemon::with_store(config, Arc::clone(&store)) {
+                Ok(d) => {
+                    tracing::info!(
+                        "内嵌 daemon 就绪（heartbeat: {}s）",
+                        d.heartbeat_interval_secs()
+                    );
+                    (Some(Arc::new(d)), Some(lock_file))
+                }
+                Err(e) => {
+                    tracing::error!("内嵌 daemon 创建失败: {e}");
+                    (None, Some(lock_file))
+                }
+            }
+        }
+        None => {
+            tracing::info!("其他进程已持有事件循环锁，跳过内嵌 daemon");
+            (None, None)
+        }
+    };
+
+    // spawn daemon 事件循环
+    let daemon_for_spawn = daemon.clone();
 
     let app_state = AppState {
         store,
         onboarding: Mutex::new(None),
+        daemon,
     };
 
     tauri::Builder::default()
@@ -73,30 +118,14 @@ fn main() {
             commands::trigger_test_report,
             commands::ingest_sessions,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             tray::setup_tray(app)?;
 
-            // 嵌入 daemon 事件循环：新用户无需安装独立 daemon
-            if is_external_daemon_running() {
-                tracing::info!("检测到独立 daemon 进程，跳过内嵌事件循环");
-            } else {
-                let config_path = dirs::home_dir()
-                    .map(|h| h.join(".sage/config.toml"))
-                    .expect("无法确定 home 目录");
-                let config = Config::load_or_default(&config_path);
-                tracing::info!(
-                    "启动内嵌 daemon（heartbeat: {}s）",
-                    config.daemon.heartbeat_interval_secs
-                );
-
+            // 启动内嵌 daemon 事件循环
+            if let Some(d) = daemon_for_spawn {
                 tauri::async_runtime::spawn(async move {
-                    match Daemon::new(config) {
-                        Ok(daemon) => {
-                            if let Err(e) = daemon.run().await {
-                                tracing::error!("内嵌 daemon 错误: {e}");
-                            }
-                        }
-                        Err(e) => tracing::error!("内嵌 daemon 启动失败: {e}"),
+                    if let Err(e) = d.run().await {
+                        tracing::error!("内嵌 daemon 错误: {e}");
                     }
                 });
             }

@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import FeedbackButtons, { FeedbackValue, actionToFeedback } from "../components/FeedbackButtons";
 
 interface Suggestion {
@@ -108,7 +109,7 @@ function History() {
                     <span className="suggestion-source">{sourceLabel(s.event_source)}</span>
                     <span className="suggestion-time">{formatTime(s.timestamp)}</span>
                   </div>
-                  <div className="suggestion-body"><ReactMarkdown>{s.response}</ReactMarkdown></div>
+                  <div className="suggestion-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{s.response}</ReactMarkdown></div>
                   <FeedbackButtons suggestionId={s.id} feedback={s.feedback} onSubmit={handleFeedback} />
                 </div>
               ))}

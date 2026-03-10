@@ -14,6 +14,51 @@ fn map_err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// 从 LLM 响应中提取 ```sage-memory JSON 块，写入 store，返回清理后的显示文本和保存数量
+fn extract_and_save_memories(raw: &str, store: &sage_core::store::Store) -> (String, usize) {
+    let marker_start = "```sage-memory";
+    let marker_end = "```";
+
+    let Some(start_idx) = raw.find(marker_start) else {
+        return (raw.to_string(), 0);
+    };
+    let json_start = start_idx + marker_start.len();
+    let Some(end_offset) = raw[json_start..].find(marker_end) else {
+        return (raw.to_string(), 0);
+    };
+    let json_str = raw[json_start..json_start + end_offset].trim();
+    let block_end = json_start + end_offset + marker_end.len();
+
+    // 解析 JSON 数组
+    let items: Vec<serde_json::Value> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return (raw.to_string(), 0),
+    };
+
+    let mut saved = 0;
+    for item in &items {
+        let mem_type = item["type"].as_str().unwrap_or("");
+        let content = item["content"].as_str().unwrap_or("");
+        if content.is_empty() {
+            continue;
+        }
+        let result = match mem_type {
+            "task" => store.save_memory("task", content, "chat", 1.0),
+            "insight" => store.save_memory("behavior", content, "chat", 0.8),
+            "decision" => store.append_decision("chat", content),
+            "reminder" => store.save_memory("task", &format!("[提醒] {content}"), "chat", 1.0),
+            _ => store.save_memory("behavior", content, "chat", 0.8),
+        };
+        if result.is_ok() {
+            saved += 1;
+        }
+    }
+
+    // 从显示文本中移除 sage-memory 块
+    let display = format!("{}{}", raw[..start_idx].trim_end(), &raw[block_end..]);
+    (display.trim().to_string(), saved)
+}
+
 fn default_agent_config() -> sage_core::config::AgentConfig {
     sage_core::config::AgentConfig {
         provider: "claude".into(),
@@ -537,6 +582,16 @@ pub async fn chat(
 - 不急于下结论，发现模式后用提问而非断言的方式分享
 - 尊重用户的主权，所有推断都可修正\n\n");
 
+    // --- 记忆写入能力 ---
+    system_prompt.push_str("\
+## 记忆写入
+你可以将重要信息持久化保存。当用户要求你「记住」「记下」「提醒我」某事，或你发现值得保存的洞察时，在回复末尾添加 JSON 块：
+```sage-memory
+[{\"type\": \"task\", \"content\": \"准备 PULSE 拓扑图给 Bob\"}, {\"type\": \"insight\", \"content\": \"用户倾向于...\"}]
+```
+type 可选值：task（待办任务）、insight（关于用户的洞察）、decision（用户做的决定）、reminder（定时提醒）。
+**只在需要时添加，不要每次都加。** 用户不会看到这个 JSON 块。\n\n");
+
     // --- 安全协议 ---
     system_prompt.push_str("\
 ## 安全协议
@@ -563,21 +618,25 @@ pub async fn chat(
     full_prompt.push_str(&format!("用户: {}", message));
 
     // 10. 调用 LLM
-    let response = provider
+    let raw_response = provider
         .invoke(&full_prompt, Some(&system_prompt))
         .await
         .map_err(map_err)?;
 
-    // 11. 保存 Sage 回复
+    // 11. 解析并持久化 sage-memory 块
+    let (display_response, memories_saved) = extract_and_save_memories(&raw_response, &state.store);
+
+    // 12. 保存 Sage 回复（只保存用户可见部分）
     state
         .store
-        .save_chat_message("sage", &response, &sid)
+        .save_chat_message("sage", &display_response, &sid)
         .map_err(map_err)?;
 
-    // 12. 返回
+    // 13. 返回
     Ok(json!({
-        "response": response,
+        "response": display_response,
         "session_id": sid,
+        "memories_saved": memories_saved,
     }))
 }
 

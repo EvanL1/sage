@@ -1,10 +1,10 @@
-use sage_core::config::Config;
-use sage_core::Daemon;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     App, Manager,
 };
+
+use crate::AppState;
 
 pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItem::with_id(app, "open", "打开面板", true, None::<&str>)?;
@@ -25,20 +25,17 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "brief" => {
-                tauri::async_runtime::spawn(async {
-                    let config_path = dirs::home_dir()
-                        .map(|h| h.join(".sage/config.toml"))
-                        .unwrap_or_default();
-                    let config = Config::load_or_default(&config_path);
-                    match Daemon::new(config) {
-                        Ok(daemon) => {
-                            if let Err(e) = daemon.heartbeat_once().await {
-                                tracing::error!("手动简报失败: {e}");
-                            }
+                let state = app.state::<AppState>();
+                if let Some(ref daemon) = state.daemon {
+                    let d = daemon.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = d.heartbeat_once().await {
+                            tracing::error!("手动简报失败: {e}");
                         }
-                        Err(e) => tracing::error!("简报初始化失败: {e}"),
-                    }
-                });
+                    });
+                } else {
+                    tracing::warn!("事件循环由外部 daemon 持有，请通过 CLI 触发简报");
+                }
             }
             "quit" => {
                 app.exit(0);
