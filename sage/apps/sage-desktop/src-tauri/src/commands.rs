@@ -915,7 +915,7 @@ pub async fn trigger_test_report(
         _ => return Err(format!("未知报告类型: {report_type}")),
     };
 
-    let ctx = sage_core::context_gatherer::gather(&rt, &state.store);
+    let ctx = sage_core::context_gatherer::gather(&rt, &state.store).await;
     let content = format!("## Context Preview\n\n{ctx}");
     state.store.save_report(&report_type, &content).map_err(map_err)?;
     Ok(format!("Test report '{report_type}' generated"))
