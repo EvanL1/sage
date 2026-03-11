@@ -11,7 +11,6 @@ import { sourceLabel } from "../utils/labels";
 interface SystemStatus {
   status: string;
   has_profile: boolean;
-  sop_version: number;
 }
 
 interface DailyQuestion {
@@ -35,10 +34,10 @@ function Dashboard() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [reports, setReports] = useState<Record<string, Report>>({});
   const [dailyQuestion, setDailyQuestion] = useState<DailyQuestion | null>(null);
-  // 触发报告的加载状态：key 为报告类型，value 为是否正在加载
   const [triggeringReport, setTriggeringReport] = useState<Record<string, boolean>>({});
+  const [memoryCount, setMemoryCount] = useState<number | null>(null);
 
-  // Status: load only on mount
+  // Status + memory count: load on mount
   useEffect(() => {
     invoke<SystemStatus>("get_system_status")
       .then((s) => {
@@ -48,6 +47,9 @@ function Dashboard() {
         }
       })
       .catch(() => navigate("/welcome", { replace: true }));
+    invoke<{ id: number }[]>("get_memories")
+      .then((m) => setMemoryCount(m.length))
+      .catch(() => setMemoryCount(0));
   }, [navigate]);
 
   // Suggestions: mount + poll every 30s
@@ -164,8 +166,8 @@ function Dashboard() {
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">SOP version</div>
-          <div className="stat-value">{status ? `v${status.sop_version}` : "—"}</div>
+          <div className="stat-label">Memories</div>
+          <div className="stat-value">{memoryCount !== null ? memoryCount : "—"}</div>
         </div>
       </div>
 
