@@ -908,6 +908,17 @@ pub async fn export_memories(state: State<'_, AppState>) -> Result<String, Strin
 
     md.push_str("---\n*Exported from Sage*\n");
 
+    // 直接用 pbcopy 写入系统剪贴板（macOS only）
+    use std::io::Write;
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("pbcopy failed: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(md.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
+    }
+    child.wait().map_err(|e| format!("pbcopy wait failed: {e}"))?;
+
     Ok(md)
 }
 

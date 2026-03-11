@@ -137,31 +137,12 @@ function AboutYou() {
     }
   };
 
-  const copyToClipboard = async (text: string): Promise<boolean> => {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // Fallback for Tauri webview where clipboard API may be restricted
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(ta);
-      return ok;
-    }
-  };
-
   const handleExport = async () => {
     setExporting(true);
     setExportMsg("");
     try {
-      const md = await invoke<string>("export_memories");
-      const ok = await copyToClipboard(md);
-      setExportMsg(ok ? "Copied to clipboard" : "Export failed");
+      await invoke<string>("export_memories");
+      setExportMsg("Copied to clipboard");
       setTimeout(() => setExportMsg(""), 3000);
     } catch (err) {
       console.error("Export failed:", err);
