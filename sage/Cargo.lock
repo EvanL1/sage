@@ -3263,7 +3263,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sage-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3281,7 +3281,7 @@ dependencies = [
 
 [[package]]
 name = "sage-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "sage-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde",
