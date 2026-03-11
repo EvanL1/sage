@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface Memory {
@@ -77,9 +77,10 @@ function AboutYou() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState("");
-  // 用户主动输入状态
   const [userInput, setUserInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const fetchMemories = useCallback(async () => {
     try {
@@ -186,6 +187,7 @@ function AboutYou() {
     }
   };
 
+  // 只保留已知分类，过滤掉不属于 "Who am I" 的杂项
   const grouped = CATEGORY_ORDER.reduce<Record<string, Memory[]>>((acc, cat) => {
     const items = memories.filter((m) => m.category === cat);
     if (items.length > 0) {
@@ -194,7 +196,15 @@ function AboutYou() {
     return acc;
   }, {});
 
-  const unknownItems = memories.filter((m) => !CATEGORY_ORDER.includes(m.category));
+  const visibleCategories = Object.keys(grouped);
+
+  const toggleCollapse = (cat: string) => {
+    setCollapsed((prev) => ({ ...prev, [cat]: !prev[cat] }));
+  };
+
+  const scrollToCategory = (cat: string) => {
+    categoryRefs.current[cat]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   return (
     <div className="about-page">
@@ -241,27 +251,45 @@ function AboutYou() {
           </p>
         </div>
       ) : (
-        <>
-          {Object.entries(grouped).map(([cat, items]) => (
-            <div key={cat} className="about-category">
-              <div className="about-category-title">
-                {CATEGORY_LABELS[cat] ?? cat}
-              </div>
-              {items.map((memory) => (
-                <MemoryItem key={memory.id} memory={memory} onDelete={handleDelete} />
+        <div className="about-layout">
+          {visibleCategories.length > 1 && (
+            <nav className="about-toc">
+              {visibleCategories.map((cat) => (
+                <button
+                  key={cat}
+                  className="about-toc-item"
+                  onClick={() => scrollToCategory(cat)}
+                >
+                  {CATEGORY_LABELS[cat] ?? cat}
+                  <span className="about-toc-count">{grouped[cat].length}</span>
+                </button>
               ))}
-            </div>
-          ))}
-
-          {unknownItems.length > 0 && (
-            <div className="about-category">
-              <div className="about-category-title">Other</div>
-              {unknownItems.map((memory) => (
-                <MemoryItem key={memory.id} memory={memory} onDelete={handleDelete} />
-              ))}
-            </div>
+            </nav>
           )}
-        </>
+          <div className="about-content">
+            {visibleCategories.map((cat) => (
+              <div
+                key={cat}
+                className="about-category"
+                ref={(el) => { categoryRefs.current[cat] = el; }}
+              >
+                <button
+                  className="about-category-title"
+                  onClick={() => toggleCollapse(cat)}
+                >
+                  <span className={`about-collapse-arrow${collapsed[cat] ? " collapsed" : ""}`}>
+                    &#9662;
+                  </span>
+                  {CATEGORY_LABELS[cat] ?? cat}
+                  <span className="about-category-count">{grouped[cat].length}</span>
+                </button>
+                {!collapsed[cat] && grouped[cat].map((memory) => (
+                  <MemoryItem key={memory.id} memory={memory} onDelete={handleDelete} />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* 用户主动输入区：让用户告诉 Sage 想被记住的内容 */}
