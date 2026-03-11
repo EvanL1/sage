@@ -3,27 +3,15 @@ import { Link, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import FeedbackButtons, { FeedbackValue, actionToFeedback } from "../components/FeedbackButtons";
+import FeedbackButtons, { actionToFeedback } from "../components/FeedbackButtons";
+import type { Suggestion, Report } from "../types";
+import { formatTime } from "../utils/time";
+import { sourceLabel } from "../utils/labels";
 
 interface SystemStatus {
   status: string;
   has_profile: boolean;
   sop_version: number;
-}
-
-interface Suggestion {
-  id: number;
-  event_source: string;
-  response: string;
-  timestamp: string;
-  feedback: FeedbackValue | null;
-}
-
-interface Report {
-  id: number;
-  report_type: string;
-  content: string;
-  created_at: string;
 }
 
 interface DailyQuestion {
@@ -40,25 +28,6 @@ const REPORT_LABELS: Record<string, string> = {
   weekly: "Weekly Report",
   week_start: "Week Start",
 };
-
-function formatTime(ts: string): string {
-  try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return ts;
-  }
-}
-
-function sourceLabel(source: string): string {
-  const map: Record<string, string> = {
-    email: "Email",
-    calendar: "Calendar",
-    heartbeat: "Scheduled",
-    hook: "Hook",
-  };
-  return map[source] ?? source;
-}
 
 function Dashboard() {
   const navigate = useNavigate();
@@ -137,6 +106,36 @@ function Dashboard() {
     setSuggestions((prev) =>
       prev.map((s) => (s.id === id ? { ...s, feedback: actionToFeedback(action) } : s))
     );
+  };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await invoke("delete_suggestion", { suggestionId: id });
+      setSuggestions((prev) => prev.filter((s) => s.id !== id));
+    } catch (err) {
+      console.error("Failed to delete suggestion:", err);
+    }
+  };
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
+
+  const startEdit = (s: Suggestion) => {
+    setEditingId(s.id);
+    setEditText(s.response);
+  };
+
+  const saveEdit = async () => {
+    if (editingId === null) return;
+    try {
+      await invoke("update_suggestion", { suggestionId: editingId, response: editText });
+      setSuggestions((prev) =>
+        prev.map((s) => (s.id === editingId ? { ...s, response: editText } : s))
+      );
+      setEditingId(null);
+    } catch (err) {
+      console.error("Failed to update suggestion:", err);
+    }
   };
 
   // Wait for status to load to avoid Dashboard → Welcome flicker
@@ -330,12 +329,59 @@ function Dashboard() {
             <div key={s.id} className="suggestion-bubble">
               <div className="suggestion-header">
                 <span className="suggestion-source">{sourceLabel(s.event_source)}</span>
-                <span className="suggestion-time">{formatTime(s.timestamp)}</span>
+                <div className="suggestion-header-right">
+                  <span className="suggestion-time">{formatTime(s.timestamp)}</span>
+                  <button
+                    className="suggestion-action-btn"
+                    onClick={() => startEdit(s)}
+                    title="Edit"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                  <button
+                    className="suggestion-action-btn suggestion-delete-btn"
+                    onClick={() => handleDelete(s.id)}
+                    title="Delete"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div className="suggestion-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{s.response}</ReactMarkdown></div>
               <FeedbackButtons suggestionId={s.id} feedback={s.feedback} onSubmit={handleFeedback} />
             </div>
           ))}
+        </div>
+      )}
+
+      {editingId !== null && (
+        <div className="edit-modal-overlay" onClick={() => setEditingId(null)}>
+          <div className="edit-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="edit-modal-header">
+              <span>Edit suggestion</span>
+              <button className="suggestion-action-btn" onClick={() => setEditingId(null)} title="Close">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <textarea
+              className="edit-modal-textarea"
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              autoFocus
+            />
+            <div className="edit-modal-actions">
+              <button className="btn btn-ghost" onClick={() => setEditingId(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveEdit}>Save</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -14,24 +14,25 @@ pub enum ReportType {
 }
 
 /// 为指定报告类型收集上下文，返回格式化的 Markdown 文本块
-pub async fn gather(report_type: &ReportType, store: &Store) -> String {
+/// calendar_source: "outlook" / "apple" / "both"
+pub async fn gather(report_type: &ReportType, store: &Store, calendar_source: &str) -> String {
     match report_type {
-        ReportType::MorningBrief => gather_morning(store).await,
-        ReportType::EveningReview => gather_evening(store).await,
+        ReportType::MorningBrief => gather_morning(store, calendar_source).await,
+        ReportType::EveningReview => gather_evening(store, calendar_source).await,
         ReportType::WeeklyReport => gather_weekly(store),
         ReportType::WeekStart => gather_week_start(store),
     }
 }
 
 /// Morning Brief：邮件摘要 + 工作 session + Claude 记忆 + 决策 + 晚间回顾
-async fn gather_morning(store: &Store) -> String {
+async fn gather_morning(store: &Store, calendar_source: &str) -> String {
     // 先 ingest 最近 24h 的 Claude Code session
     ingest_recent_sessions(store, 24);
 
     let mut sections = Vec::new();
 
     // 今日日历事件（会议安排）
-    match crate::channels::calendar::scan_today_events().await {
+    match crate::channels::calendar::scan_today_events(calendar_source).await {
         Ok(digest) if !digest.is_empty() => {
             sections.push(format!("## 今日日程\n{digest}"));
         }
@@ -94,14 +95,14 @@ async fn gather_morning(store: &Store) -> String {
 }
 
 /// Evening Review：今日 session memories + 今日 observations 数量 + 今日 coach insights
-async fn gather_evening(store: &Store) -> String {
+async fn gather_evening(store: &Store, calendar_source: &str) -> String {
     // 在收集上下文前，先从 Claude Code JSONL 文件中 ingest 最新的 session 数据
     ingest_recent_sessions(store, 24);
 
     let mut sections = Vec::new();
 
     // 今日日历事件（回顾会议情况）
-    match crate::channels::calendar::scan_today_events().await {
+    match crate::channels::calendar::scan_today_events(calendar_source).await {
         Ok(digest) if !digest.is_empty() => {
             sections.push(format!("## 今日会议\n{digest}"));
         }
@@ -288,7 +289,7 @@ mod tests {
         store.save_memory("decision", "chose Rust for EMS", "chat", 0.8).unwrap();
         store.save_memory("coach_insight", "Evan 偏系统思考", "coach", 0.8).unwrap();
 
-        let ctx = gather(&ReportType::MorningBrief, &store).await;
+        let ctx = gather(&ReportType::MorningBrief, &store, "outlook").await;
         assert!(ctx.contains("决策") || ctx.contains("chose Rust"), "应包含近期决策内容，实际: {ctx}");
     }
 
@@ -297,7 +298,7 @@ mod tests {
         let store = make_test_store();
         store.save_memory("session", "[session] fix bugs — 50 msgs", "claude-code", 0.8).unwrap();
 
-        let ctx = gather(&ReportType::WeeklyReport, &store).await;
+        let ctx = gather(&ReportType::WeeklyReport, &store, "outlook").await;
         assert!(ctx.contains("session") || ctx.contains("Session"), "应包含 session 信息，实际: {ctx}");
     }
 
@@ -306,7 +307,7 @@ mod tests {
         let store = make_test_store();
         store.record_observation("pattern", "focused work", None).unwrap();
 
-        let ctx = gather(&ReportType::EveningReview, &store).await;
+        let ctx = gather(&ReportType::EveningReview, &store, "outlook").await;
         assert!(ctx.contains("统计") || ctx.contains("活动"), "应包含活动统计，实际: {ctx}");
     }
 
@@ -315,7 +316,7 @@ mod tests {
         let store = make_test_store();
         store.save_report("weekly", "上周完成了 PULSE 模块开发").unwrap();
 
-        let ctx = gather(&ReportType::WeekStart, &store).await;
+        let ctx = gather(&ReportType::WeekStart, &store, "outlook").await;
         assert!(ctx.contains("上周"), "应包含上周周报，实际: {ctx}");
     }
 
@@ -323,9 +324,9 @@ mod tests {
     async fn test_gather_empty_store_returns_empty_or_partial() {
         let store = make_test_store();
         // 空 store 时各类型不崩溃
-        let _ = gather(&ReportType::MorningBrief, &store).await;
-        let _ = gather(&ReportType::EveningReview, &store).await;
-        let _ = gather(&ReportType::WeeklyReport, &store).await;
-        let _ = gather(&ReportType::WeekStart, &store).await;
+        let _ = gather(&ReportType::MorningBrief, &store, "outlook").await;
+        let _ = gather(&ReportType::EveningReview, &store, "outlook").await;
+        let _ = gather(&ReportType::WeeklyReport, &store, "outlook").await;
+        let _ = gather(&ReportType::WeekStart, &store, "outlook").await;
     }
 }

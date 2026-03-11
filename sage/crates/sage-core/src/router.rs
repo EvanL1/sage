@@ -26,6 +26,8 @@ pub struct Router {
     sop_text: String,
     /// SQLite 存储，替代 memory.rs 的 Markdown 文件系统
     store: Arc<Store>,
+    /// 日历来源配置："outlook" / "apple" / "both"
+    calendar_source: String,
 }
 
 impl Router {
@@ -35,7 +37,12 @@ impl Router {
             agent,
             sop_text,
             store,
+            calendar_source: "outlook".into(),
         }
+    }
+
+    pub fn set_calendar_source(&mut self, source: String) {
+        self.calendar_source = source;
     }
 
     /// 设置 SOP 文本（供外部注入动态生成的 SOP）
@@ -99,7 +106,7 @@ impl Router {
         };
 
         let context = match report_type.as_ref() {
-            Some(rt) => context_gatherer::gather(rt, &self.store).await,
+            Some(rt) => context_gatherer::gather(rt, &self.store, &self.calendar_source).await,
             None => String::new(),
         };
 
@@ -182,6 +189,7 @@ impl Router {
         } else {
             resp.text.clone()
         };
+        // 报告通知 → 点击跳转 Dashboard
         applescript::notify(&event.title, &notify_text).await?;
 
         // 将决策写入 SQLite memories 表（替代 memory.rs 的 decisions.md）
@@ -215,6 +223,7 @@ impl Router {
             error!("Failed to persist suggestion: {e}");
         }
 
+        // 紧急事件通知 → 点击跳转 Dashboard
         applescript::notify(&event.title, &resp.text).await?;
 
         // 将决策写入 SQLite memories 表（替代 memory.rs 的 decisions.md）
@@ -235,14 +244,11 @@ impl Router {
             error!("Failed to append pattern: {e}");
         }
 
-        // Email events: create lightweight suggestion + notification (no Claude needed)
+        // Email events: create lightweight suggestion (no Claude needed, no notification)
         if event.source == "email" {
             let summary = format!("📧 {}\n{}", event.title, event.body);
             if let Err(e) = self.store.record_suggestion(&event.source, &event.title, &summary) {
                 error!("Failed to persist email suggestion: {e}");
-            }
-            if let Err(e) = applescript::notify("新邮件", &event.title).await {
-                error!("Email notification failed: {e}");
             }
         }
 

@@ -26,16 +26,12 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "brief" => {
                 let state = app.state::<AppState>();
-                if let Some(ref daemon) = state.daemon {
-                    let d = daemon.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = d.heartbeat_once().await {
-                            tracing::error!("手动简报失败: {e}");
-                        }
-                    });
-                } else {
-                    tracing::warn!("事件循环由外部 daemon 持有，请通过 CLI 触发简报");
-                }
+                let d = state.daemon.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = d.heartbeat_once().await {
+                        tracing::error!("手动简报失败: {e}");
+                    }
+                });
             }
             "quit" => {
                 app.exit(0);

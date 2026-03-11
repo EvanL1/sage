@@ -67,6 +67,7 @@ impl Daemon {
         };
 
         let mut router = Router::new(agent, store.clone());
+        router.set_calendar_source(config.channels.calendar.source.clone());
 
         // 加载 profile → 动态生成 SOP
         let schedule = match store.load_profile()? {
@@ -182,7 +183,7 @@ impl Daemon {
         if let Ok(Some(profile)) = self.store.load_profile() {
             let sop = profile::generate_sop(&profile);
             {
-                let mut sched = self.schedule.lock().unwrap();
+                let mut sched = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
                 *sched = Some(profile.schedule);
             }
             self.router.lock().await.set_sop(sop);
@@ -222,7 +223,7 @@ impl Daemon {
         }
 
         let actions = {
-            let schedule_guard = self.schedule.lock().unwrap();
+            let schedule_guard = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
             heartbeat::evaluate(&self.config, schedule_guard.as_ref())
         };
         for action in actions {
@@ -291,7 +292,7 @@ impl Daemon {
         let best = discovery::select_best_provider(&providers, &saved);
 
         let new_id = best.as_ref().map(|(info, _)| info.id.clone());
-        let current_id = self.current_provider_id.lock().unwrap().clone();
+        let current_id = self.current_provider_id.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
         if new_id == current_id {
             return;
@@ -310,7 +311,7 @@ impl Daemon {
         };
 
         self.router.lock().await.set_agent(agent);
-        *self.current_provider_id.lock().unwrap() = new_id;
+        *self.current_provider_id.lock().unwrap_or_else(|e| e.into_inner()) = new_id;
     }
 
     fn action_to_event(&self, action: &heartbeat::Action, events: &[Event]) -> Option<Event> {
@@ -381,7 +382,7 @@ impl Daemon {
 
     /// 过滤已处理事件（不插入，路由成功后再标记）
     fn filter_new_events(&self, events: Vec<Event>) -> Vec<Event> {
-        let mut handled = self.handled_keys.lock().unwrap();
+        let mut handled = self.handled_keys.lock().unwrap_or_else(|e| e.into_inner());
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         let reset_key = format!("__date:{today}");
@@ -408,6 +409,6 @@ impl Daemon {
             return;
         }
         let key = format!("{}:{}", event.source, event.title);
-        self.handled_keys.lock().unwrap().insert(key);
+        self.handled_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(key);
     }
 }

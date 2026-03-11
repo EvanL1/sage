@@ -4,7 +4,6 @@ use tracing::info;
 
 use crate::config::AgentConfig;
 use crate::provider::{self, LlmProvider};
-use crate::reliable_provider::ReliableProvider;
 
 pub struct Agent {
     config: AgentConfig,
@@ -63,37 +62,6 @@ impl Agent {
         self.invocation_count.store(0, Ordering::SeqCst);
     }
 
-    /// 用弹性 provider 创建 Agent
-    ///
-    /// primary 失败时自动重试（指数退避），重试耗尽后切换到 fallback。
-    pub fn with_reliable_provider(
-        primary: Box<dyn LlmProvider>,
-        fallback: Option<Box<dyn LlmProvider>>,
-    ) -> Self {
-        let mut reliable = ReliableProvider::new(primary);
-        if let Some(fb) = fallback {
-            reliable = reliable.fallback(fb);
-        }
-        info!("Agent initialized with ReliableProvider");
-        Self {
-            config: AgentConfig::default(),
-            provider: Box::new(reliable),
-            invocation_count: AtomicUsize::new(0),
-        }
-    }
-
-    /// 快速轻量判断（临时切换到更便宜的配置）
-    #[allow(dead_code)]
-    pub async fn quick_judge(&self, prompt: &str) -> Result<String> {
-        let config = AgentConfig {
-            default_model: "sonnet".into(),
-            max_budget_usd: 0.05,
-            ..self.config.clone()
-        };
-        let agent = Agent::new(config);
-        let resp = agent.invoke(prompt, None).await?;
-        Ok(resp.text)
-    }
 }
 
 #[cfg(test)]

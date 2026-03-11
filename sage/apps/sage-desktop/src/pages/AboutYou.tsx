@@ -293,7 +293,7 @@ function AboutYou() {
           onChange={(e) => setUserInput(e.target.value)}
           onKeyDown={(e) => {
             // Ctrl/Cmd + Enter 快捷提交
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
               handleSaveUserInput();
             }

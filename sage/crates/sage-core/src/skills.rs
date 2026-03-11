@@ -25,6 +25,14 @@ pub const VOICE_SKILL: &str =
 pub const DECISION_JOURNAL_SKILL: &str =
     include_str!("../../../skills/sage-decision-journal/SKILL.md");
 
+/// sage-chat-strategist: 工作模式 — 专业策略顾问
+pub const CHAT_STRATEGIST_SKILL: &str =
+    include_str!("../../../skills/sage-chat-strategist/SKILL.md");
+
+/// sage-chat-companion: 个人模式 — 有温度的倾听者
+pub const CHAT_COMPANION_SKILL: &str =
+    include_str!("../../../skills/sage-chat-companion/SKILL.md");
+
 /// 用户 skill 覆盖目录（支持 SAGE_SKILLS_DIR 环境变量覆盖）
 fn skills_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("SAGE_SKILLS_DIR") {
@@ -54,7 +62,76 @@ fn bundled_skill(name: &str) -> &'static str {
         "sage-week-rhythm" => WEEK_RHYTHM_SKILL,
         "sage-voice" => VOICE_SKILL,
         "sage-decision-journal" => DECISION_JOURNAL_SKILL,
+        "sage-chat-strategist" => CHAT_STRATEGIST_SKILL,
+        "sage-chat-companion" => CHAT_COMPANION_SKILL,
         _ => "",
+    }
+}
+
+/// Chat skill 路由 — 根据消息内容选择合适的对话 skill
+///
+/// 返回 skill 名称（"sage-chat-strategist" 或 "sage-chat-companion"）
+pub fn route_chat_skill(message: &str) -> &'static str {
+    const COMPANION_KEYWORDS: &[&str] = &[
+        "焦虑", "迷茫", "情绪", "感受", "压力", "失眠", "孤独",
+        "关系", "分手", "吵架", "家庭", "父母", "伴侣",
+        "意义", "价值观", "人生", "自我", "身份", "活着",
+        "害怕", "恐惧", "难过", "伤心", "委屈", "愤怒",
+        "累了", "崩溃", "撑不住", "不想", "算了",
+        "梦到", "小时候", "回忆",
+    ];
+
+    let msg_lower = message.to_lowercase();
+    for kw in COMPANION_KEYWORDS {
+        if msg_lower.contains(kw) {
+            return "sage-chat-companion";
+        }
+    }
+
+    "sage-chat-strategist"
+}
+
+/// 加载 chat skill 并替换模板变量
+pub fn load_chat_skill(skill_name: &str, user_name: &str, layer: &str) -> String {
+    let raw = load_skill(skill_name);
+
+    // 去掉 YAML frontmatter
+    let content = if let Some(stripped) = raw.strip_prefix("---") {
+        if let Some(end) = stripped.find("---") {
+            stripped[end + 3..].trim_start().to_string()
+        } else {
+            raw.to_string()
+        }
+    } else {
+        raw.to_string()
+    };
+
+    // 替换模板变量
+    let content = content.replace("{{user_name}}", user_name);
+
+    // 提取层级对应段落
+    let layer_heading = match layer {
+        "safety" => "### 初识阶段",
+        "patterns" => "### 模式识别阶段",
+        _ => "### 深度伙伴阶段",
+    };
+
+    let layer_section = extract_section(&content, layer_heading).to_string();
+
+    // 重新组装：skill 内容（去掉层级指导段落）+ 当前层级段落
+    let base = if let Some(pos) = content.find("## 层级指导") {
+        content[..pos].trim_end().to_string()
+    } else {
+        content
+    };
+
+    if layer_section.is_empty() {
+        base
+    } else {
+        let section_body = layer_section
+            .trim_start_matches(layer_heading)
+            .trim();
+        format!("{}\n\n## 当前阶段\n{}", base, section_body)
     }
 }
 
@@ -162,7 +239,57 @@ mod tests {
         assert!(!bundled_skill("sage-week-rhythm").is_empty());
         assert!(!bundled_skill("sage-voice").is_empty());
         assert!(!bundled_skill("sage-decision-journal").is_empty());
+        assert!(!bundled_skill("sage-chat-strategist").is_empty());
+        assert!(!bundled_skill("sage-chat-companion").is_empty());
         assert!(bundled_skill("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn test_chat_skill_include_str() {
+        assert!(CHAT_STRATEGIST_SKILL.contains("Strategist"));
+        assert!(CHAT_COMPANION_SKILL.contains("Companion"));
+    }
+
+    #[test]
+    fn test_route_chat_skill_default_is_strategist() {
+        assert_eq!(route_chat_skill("明天的会议怎么准备"), "sage-chat-strategist");
+        assert_eq!(route_chat_skill("OKR 怎么写"), "sage-chat-strategist");
+        assert_eq!(route_chat_skill("帮我分析一下"), "sage-chat-strategist");
+        assert_eq!(route_chat_skill("你好"), "sage-chat-strategist");
+    }
+
+    #[test]
+    fn test_route_chat_skill_personal_keywords() {
+        assert_eq!(route_chat_skill("最近有点焦虑"), "sage-chat-companion");
+        assert_eq!(route_chat_skill("我和女朋友吵架了"), "sage-chat-companion");
+        assert_eq!(route_chat_skill("感觉很迷茫"), "sage-chat-companion");
+        assert_eq!(route_chat_skill("和父母的关系"), "sage-chat-companion");
+        assert_eq!(route_chat_skill("人生的意义是什么"), "sage-chat-companion");
+    }
+
+    #[test]
+    fn test_load_chat_skill_strips_frontmatter() {
+        let result = load_chat_skill("sage-chat-strategist", "Evan", "safety");
+        assert!(!result.contains("---"));
+        assert!(!result.contains("name: sage-chat-strategist"));
+        assert!(result.contains("Evan"));
+    }
+
+    #[test]
+    fn test_load_chat_skill_replaces_user_name() {
+        let result = load_chat_skill("sage-chat-companion", "TestUser", "deep");
+        assert!(result.contains("TestUser"));
+        assert!(!result.contains("{{user_name}}"));
+    }
+
+    #[test]
+    fn test_load_chat_skill_extracts_layer() {
+        let safety = load_chat_skill("sage-chat-strategist", "X", "safety");
+        assert!(safety.contains("当前阶段"));
+        assert!(!safety.contains("## 层级指导"));
+
+        let deep = load_chat_skill("sage-chat-strategist", "X", "deep");
+        assert!(deep.contains("当前阶段"));
     }
 
     #[test]

@@ -14,14 +14,11 @@ pub struct Config {
 pub struct DaemonConfig {
     pub heartbeat_interval_secs: u64,
     pub log_level: String,
-    pub pid_file: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryConfig {
     pub base_dir: String,
-    #[allow(dead_code)]
-    pub heartbeat_file: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +61,13 @@ pub struct PollChannelConfig {
     pub enabled: bool,
     #[serde(default = "default_poll")]
     pub poll_interval_secs: u64,
+    /// 日历来源："outlook"（默认）、"apple"、"both"
+    #[serde(default = "default_calendar_source")]
+    pub source: String,
+}
+
+fn default_calendar_source() -> String {
+    "outlook".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,7 +96,6 @@ impl Default for DaemonConfig {
         Self {
             heartbeat_interval_secs: 300,
             log_level: "info".into(),
-            pid_file: "/tmp/sage-daemon.pid".into(),
         }
     }
 }
@@ -101,7 +104,6 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             base_dir: "~/.sage/memory".into(),
-            heartbeat_file: "~/.sage/HEARTBEAT.md".into(),
         }
     }
 }
@@ -127,6 +129,7 @@ impl Default for PollChannelConfig {
         Self {
             enabled: false,
             poll_interval_secs: 300,
+            source: default_calendar_source(),
         }
     }
 }
@@ -141,10 +144,12 @@ impl Default for Config {
                 email: PollChannelConfig {
                     enabled: false,
                     poll_interval_secs: 300,
+                    source: default_calendar_source(),
                 },
                 calendar: PollChannelConfig {
                     enabled: false,
                     poll_interval_secs: 900,
+                    source: default_calendar_source(),
                 },
                 wechat: WechatConfig {
                     enabled: false,

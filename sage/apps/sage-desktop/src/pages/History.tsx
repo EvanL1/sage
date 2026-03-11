@@ -1,45 +1,15 @@
 import { useEffect, useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import FeedbackButtons, { FeedbackValue, actionToFeedback } from "../components/FeedbackButtons";
-
-interface Suggestion {
-  id: number;
-  event_source: string;
-  response: string;
-  timestamp: string;
-  feedback: FeedbackValue | null;
-}
-
-function formatDate(ts: string): string {
-  try {
-    const d = new Date(ts);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === today.toDateString()) return "Today";
-    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString("en-US", { month: "long", day: "numeric" });
-  } catch {
-    return ts;
-  }
-}
-
-function formatTime(ts: string): string {
-  try {
-    return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return "";
-  }
-}
-
-function sourceLabel(source: string): string {
-  const map: Record<string, string> = { email: "Email", calendar: "Calendar", heartbeat: "Scheduled", hook: "Hook" };
-  return map[source] ?? source;
-}
+import FeedbackButtons, { actionToFeedback } from "../components/FeedbackButtons";
+import type { Suggestion } from "../types";
+import { formatDate, formatTime } from "../utils/time";
+import { sourceLabel } from "../utils/labels";
 
 function History() {
+  const navigate = useNavigate();
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [search, setSearch] = useState("");
 
@@ -76,6 +46,22 @@ function History() {
     );
   };
 
+  const handleDelete = async (id: number) => {
+    try {
+      await invoke("delete_suggestion", { suggestionId: id });
+      setSuggestions((prev) => prev.filter((s) => s.id !== id));
+    } catch (err) {
+      console.error("Failed to delete suggestion:", err);
+    }
+  };
+
+  const handleTalk = (s: Suggestion) => {
+    const preview = s.response.length > 60 ? s.response.slice(0, 60) + "..." : s.response;
+    navigate("/chat", {
+      state: { initialMessage: `关于 Sage 之前的建议「${preview}」——我想聊聊这个。` },
+    });
+  };
+
   return (
     <div className="page">
       <div className="page-header">
@@ -107,7 +93,28 @@ function History() {
                 <div key={s.id} className="suggestion-bubble">
                   <div className="suggestion-header">
                     <span className="suggestion-source">{sourceLabel(s.event_source)}</span>
-                    <span className="suggestion-time">{formatTime(s.timestamp)}</span>
+                    <div className="suggestion-header-right">
+                      <span className="suggestion-time">{formatTime(s.timestamp)}</span>
+                      <button
+                        className="suggestion-action-btn"
+                        onClick={() => handleTalk(s)}
+                        title="聊聊这个"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                        </svg>
+                      </button>
+                      <button
+                        className="suggestion-action-btn suggestion-delete-btn"
+                        onClick={() => handleDelete(s.id)}
+                        title="Delete"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                   <div className="suggestion-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{s.response}</ReactMarkdown></div>
                   <FeedbackButtons suggestionId={s.id} feedback={s.feedback} onSubmit={handleFeedback} />

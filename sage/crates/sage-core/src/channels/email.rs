@@ -176,8 +176,9 @@ fn format_email_digest(raw: &str) -> String {
         }
 
         let tag = if status == "unread" { "[未读]" } else { "[已读]" };
-        let preview: String = body_preview.chars().take(150).collect();
-        let preview_suffix = if body_preview.chars().count() > 150 { "..." } else { "" };
+        let clean = strip_html(&body_preview);
+        let preview: String = clean.chars().take(150).collect();
+        let preview_suffix = if clean.chars().count() > 150 { "..." } else { "" };
 
         if preview.is_empty() {
             lines.push(format!("- {tag} **{subject}** — {from}"));
@@ -214,10 +215,14 @@ fn parse_emails(raw: &str) -> Vec<Event> {
                 return None;
             }
 
-            let body = if body_preview.is_empty() {
+            let clean_body = strip_html(&body_preview);
+            let body = if clean_body.is_empty() {
                 format!("From: {from}")
             } else {
-                format!("From: {from}\n\n{body_preview}")
+                // 截取前 500 字符作为预览，避免超长邮件占满 Dashboard
+                let preview: String = clean_body.chars().take(500).collect();
+                let suffix = if clean_body.chars().count() > 500 { "..." } else { "" };
+                format!("From: {from}\n\n{preview}{suffix}")
             };
 
             Some(Event {
@@ -235,6 +240,78 @@ fn parse_emails(raw: &str) -> Vec<Event> {
             })
         })
         .collect()
+}
+
+/// 剥离 HTML 标签、`<style>` 块、CSS 残留，返回干净纯文本
+fn strip_html(input: &str) -> String {
+    // 1. 移除 <style>...</style> 块（含内容）— 用 find 而非逐字节遍历，保证 UTF-8 安全
+    let mut s = String::with_capacity(input.len());
+    let lower = input.to_lowercase();
+    let mut pos = 0;
+    while pos < input.len() {
+        if let Some(style_start) = lower[pos..].find("<style") {
+            // 拷贝 <style 之前的内容
+            s.push_str(&input[pos..pos + style_start]);
+            let after_tag = pos + style_start;
+            // 找 </style> 结束
+            if let Some(end_offset) = lower[after_tag..].find("</style") {
+                let close_start = after_tag + end_offset;
+                // 跳过 </style> 标签本身（到 > 为止）
+                if let Some(gt) = input[close_start..].find('>') {
+                    pos = close_start + gt + 1;
+                } else {
+                    pos = input.len();
+                }
+            } else {
+                // 没有闭合标签，跳过到末尾
+                pos = input.len();
+            }
+        } else {
+            s.push_str(&input[pos..]);
+            break;
+        }
+    }
+
+    // 2. 移除所有 <...> 标签
+    let mut result = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+
+    // 3. 基础 HTML 实体解码
+    let result = result
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+        .replace("&quot;", "\"");
+
+    // 4. 压缩连续空白行和空格
+    let mut cleaned = String::with_capacity(result.len());
+    let mut blank_count = 0u32;
+    for line in result.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            blank_count += 1;
+            if blank_count <= 1 {
+                cleaned.push('\n');
+            }
+        } else {
+            blank_count = 0;
+            if !cleaned.is_empty() && !cleaned.ends_with('\n') {
+                cleaned.push('\n');
+            }
+            cleaned.push_str(trimmed);
+        }
+    }
+
+    cleaned.trim().to_string()
 }
 
 /// 判断邮件是否应升级为紧急
@@ -429,5 +506,49 @@ mod tests {
             &["voltageenergy.com".into()],
             &["urgent".into()]
         ));
+    }
+
+    #[test]
+    fn test_strip_html_basic_tags() {
+        assert_eq!(strip_html("<p>Hello <b>world</b></p>"), "Hello world");
+    }
+
+    #[test]
+    fn test_strip_html_style_block() {
+        let input = "Before<style type=\"text/css\">.foo{color:red}</style>After";
+        assert_eq!(strip_html(input), "BeforeAfter");
+    }
+
+    #[test]
+    fn test_strip_html_css_fragments() {
+        let input = "<text-decoration:none; color:#2A3C42> some text <font-size:14px> more";
+        let result = strip_html(input);
+        assert_eq!(result, "some text  more");
+    }
+
+    #[test]
+    fn test_strip_html_entities() {
+        assert_eq!(strip_html("A &amp; B &lt; C"), "A & B < C");
+    }
+
+    #[test]
+    fn test_strip_html_collapses_blank_lines() {
+        let input = "Line 1\n\n\n\nLine 2";
+        let result = strip_html(input);
+        assert_eq!(result, "Line 1\nLine 2");
+    }
+
+    #[test]
+    fn test_strip_html_empty_input() {
+        assert_eq!(strip_html(""), "");
+    }
+
+    #[test]
+    fn test_parse_emails_strips_html_from_body() {
+        let raw = "SUBJECT:Newsletter||FROM:news@co.com||DATE:2026-03-10||BODY:<p>Hello <b>world</b></p>|||";
+        let result = parse_emails(raw);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].body.contains("Hello world"));
+        assert!(!result[0].body.contains("<p>"));
     }
 }

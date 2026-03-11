@@ -319,4 +319,7 @@ pub struct ProviderConfig {
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub enabled: bool,
+    /// 用户自定义优先级（覆盖默认值，越小越优先）
+    #[serde(default)]
+    pub priority: Option<u8>,
 }

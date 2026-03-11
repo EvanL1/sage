@@ -124,8 +124,46 @@ fn parse_events(raw: &str) -> Vec<Event> {
         .collect()
 }
 
-/// 扫描今日所有日历事件，返回格式化文本供 Morning Brief 注入
-pub async fn scan_today_events() -> Result<String> {
+/// 扫描今日所有日历事件，根据 source 配置选择 Outlook/Apple/both
+/// source: "outlook"（默认）, "apple", "both"
+pub async fn scan_today_events(source: &str) -> Result<String> {
+    let mut parts = Vec::new();
+
+    if source == "outlook" || source == "both" {
+        if let Ok(raw) = scan_outlook_events().await {
+            if !raw.is_empty() {
+                parts.push(raw);
+            }
+        }
+    }
+
+    if source == "apple" || source == "both" {
+        if let Ok(raw) = scan_apple_events().await {
+            if !raw.is_empty() {
+                parts.push(raw);
+            }
+        }
+    }
+
+    // 默认 fallback 到 outlook
+    if parts.is_empty() && source != "outlook" && source != "apple" && source != "both" {
+        if let Ok(raw) = scan_outlook_events().await {
+            if !raw.is_empty() {
+                parts.push(raw);
+            }
+        }
+    }
+
+    let combined = parts.join("|||");
+    if combined.is_empty() {
+        return Ok(String::new());
+    }
+
+    Ok(format_calendar_digest(&combined))
+}
+
+/// 扫描 Microsoft Outlook 今日事件
+async fn scan_outlook_events() -> Result<String> {
     let script = r#"
         tell application "System Events"
             if not (exists process "Microsoft Outlook") then return "__NOT_RUNNING__"
@@ -168,12 +206,62 @@ pub async fn scan_today_events() -> Result<String> {
     "#;
 
     let raw = applescript::run(script).await?;
-
     if raw == "__NOT_RUNNING__" || raw.is_empty() {
         return Ok(String::new());
     }
+    Ok(raw)
+}
 
-    Ok(format_calendar_digest(&raw))
+/// 扫描 macOS Calendar.app (Apple Calendar) 今日事件
+async fn scan_apple_events() -> Result<String> {
+    let script = r#"
+        tell application "System Events"
+            if not (exists process "Calendar") then return "__NOT_RUNNING__"
+        end tell
+        tell application "Calendar"
+            set todayStart to current date
+            set time of todayStart to 0
+            set todayEnd to todayStart + (1 * days)
+            set output to ""
+            repeat with cal in calendars
+                try
+                    set calEvents to (every event of cal whose start date >= todayStart and start date < todayEnd)
+                    repeat with evt in calEvents
+                        set evtSubject to summary of evt
+                        set evtStart to start date of evt as string
+                        set evtEnd to end date of evt as string
+                        set evtLocation to ""
+                        try
+                            set evtLocation to location of evt
+                        end try
+                        set attendeeList to ""
+                        try
+                            set attList to attendees of evt
+                            repeat with att in attList
+                                try
+                                    set attendeeList to attendeeList & (display name of att) & ","
+                                end try
+                            end repeat
+                        end try
+                        set evtOrganizer to ""
+                        try
+                            set org to organizer of evt
+                            set evtOrganizer to display name of org
+                        end try
+                        set output to output & "SUBJECT:" & evtSubject & "||START:" & evtStart & "||END:" & evtEnd & "||LOCATION:" & evtLocation & "||ATTENDEES:" & attendeeList & "||ORGANIZER:" & evtOrganizer & "|||"
+                    end repeat
+                end try
+            end repeat
+            if output is "" then return ""
+            return output
+        end tell
+    "#;
+
+    let raw = applescript::run(script).await?;
+    if raw == "__NOT_RUNNING__" || raw.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(raw)
 }
 
 /// 格式化日历事件为 Markdown 摘要

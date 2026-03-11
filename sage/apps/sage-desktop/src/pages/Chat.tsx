@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { formatDate } from "../utils/time";
 
 interface Message {
   id: number;
@@ -21,17 +22,7 @@ interface ChatSession {
 }
 
 function formatSessionDate(ts: string): string {
-  try {
-    const d = new Date(ts);
-    const now = new Date();
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === now.toDateString()) return "Today";
-    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  } catch {
-    return ts;
-  }
+  return formatDate(ts, "short");
 }
 
 function Chat() {
@@ -46,6 +37,7 @@ function Chat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const initialMessageHandled = useRef(false);
+  const msgCountRef = useRef(0);
 
   // Scroll to bottom
   useEffect(() => {
@@ -75,6 +67,7 @@ function Chat() {
             role: m.role as "user" | "sage",
           })));
           setSessionId(history[history.length - 1].session_id);
+          msgCountRef.current = history.length;
         }
       })
       .catch(console.error);
@@ -110,18 +103,21 @@ function Chat() {
     }
     setSessionId(null);
     setMessages([]);
+    msgCountRef.current = 0;
     loadSessions();
   };
 
-  const sendMessage = async (overrideText?: string) => {
+  const sendMessage = async (overrideText?: string, forceNewSession?: boolean) => {
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
+
+    const sid = forceNewSession ? null : sessionId;
 
     const tempUserMsg: Message = {
       id: Date.now(),
       role: "user",
       content: text,
-      session_id: sessionId || "",
+      session_id: sid || "",
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, tempUserMsg]);
@@ -131,7 +127,7 @@ function Chat() {
     try {
       const result = await invoke<{ response: string; session_id: string }>("chat", {
         message: text,
-        sessionId: sessionId,
+        sessionId: sid,
       });
 
       if (!sessionId) {
@@ -148,8 +144,8 @@ function Chat() {
       setMessages((prev) => [...prev, sageMsg]);
 
       // Trigger memory extraction every 4 messages (2 rounds)
-      const totalMsgs = messages.length + 2;
-      if (totalMsgs > 0 && totalMsgs % 4 === 0) {
+      msgCountRef.current += 2;
+      if (msgCountRef.current % 4 === 0) {
         triggerMemoryExtraction(result.session_id);
       }
 
@@ -175,21 +171,20 @@ function Chat() {
     }
   };
 
-  // 从 Dashboard 今日思考卡片跳转过来时，自动发送问题开始对话
+  // 从 Dashboard/History 跳转过来时，强制开新 session 发送
   useEffect(() => {
     const state = location.state as { initialMessage?: string } | null;
     if (state?.initialMessage && !initialMessageHandled.current) {
       initialMessageHandled.current = true;
-      // 开新 session 再发送
       setSessionId(null);
       setMessages([]);
-      sendMessage(state.initialMessage);
+      sendMessage(state.initialMessage, true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       sendMessage();
     }

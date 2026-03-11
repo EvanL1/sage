@@ -2,13 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 
-interface ProviderInfo {
-  id: string;
-  display_name: string;
-  kind: "Cli" | "HttpApi";
-  status: "Ready" | "NeedsApiKey" | "NotFound";
-  priority: number;
-}
+import type { ProviderInfo } from "../types";
 
 interface ScenarioQuestion {
   id: number;
@@ -58,6 +52,15 @@ const DIMENSIONS: DimensionSpec[] = [
   { left: "Deep", right: "Broad", leftDesc: "Focused depth, pursues mastery", rightDesc: "Wide exploration, diverse interests", balancedDesc: "Both deep and broad" },
 ];
 
+function computeScores(answers: (number | null)[]): number[] {
+  return DIMENSIONS.map((_, dimIdx) => {
+    const qs = QUESTIONS.filter((q) => q.dimension === dimIdx);
+    const answered = qs.filter((q) => answers[q.id] !== null);
+    if (answered.length === 0) return 0.5;
+    return answered.reduce((sum, q) => sum + (answers[q.id] ?? 0), 0) / answered.length;
+  });
+}
+
 function Welcome() {
   const navigate = useNavigate();
   const [phase, setPhase] = useState(0);
@@ -66,7 +69,7 @@ function Welcome() {
   const [name, setName] = useState("");
   const [identityTags, setIdentityTags] = useState<string[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<(number | null)[]>(new Array(12).fill(null));
+  const [answers, setAnswers] = useState<(number | null)[]>(new Array(QUESTIONS.length).fill(null));
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -76,14 +79,7 @@ function Welcome() {
 
   const readyProviders = providers.filter((p) => p.status === "Ready");
   const apiProviders = providers.filter((p) => p.kind === "HttpApi");
-  const scores = useMemo(() => {
-    return DIMENSIONS.map((_, dimIdx) => {
-      const qs = QUESTIONS.filter((q) => q.dimension === dimIdx);
-      const answered = qs.filter((q) => answers[q.id] !== null);
-      if (answered.length === 0) return 0.5;
-      return answered.reduce((sum, q) => sum + (answers[q.id] ?? 0), 0) / answered.length;
-    });
-  }, [answers]);
+  const scores = useMemo(() => computeScores(answers), [answers]);
 
   useEffect(() => {
     if (phase === 4) {
@@ -110,12 +106,7 @@ function Welcome() {
   };
 
   const saveAssessment = async (finalAnswers: (number | null)[]) => {
-    const finalScores = DIMENSIONS.map((_, dimIdx) => {
-      const qs = QUESTIONS.filter((q) => q.dimension === dimIdx);
-      const answered = qs.filter((q) => finalAnswers[q.id] !== null);
-      if (answered.length === 0) return 0.5;
-      return answered.reduce((sum, q) => sum + (finalAnswers[q.id] ?? 0), 0) / answered.length;
-    });
+    const finalScores = computeScores(finalAnswers);
     const dimensionResults = DIMENSIONS.map((dim, i) => {
       const score = finalScores[i];
       const desc = score <= 0.25 ? dim.leftDesc : score >= 0.75 ? dim.rightDesc : dim.balancedDesc;
@@ -137,7 +128,7 @@ function Welcome() {
     setAnswers(newAnswers);
 
     setTimeout(() => {
-      if (questionIndex < 11) {
+      if (questionIndex < QUESTIONS.length - 1) {
         setQuestionIndex((prev) => prev + 1);
       } else {
         saveAssessment(newAnswers);
@@ -219,7 +210,7 @@ function Welcome() {
                   className="form-input"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) goTo(2); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) goTo(2); }}
                   placeholder="Your name"
                   autoFocus
                 />

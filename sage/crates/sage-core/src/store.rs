@@ -171,6 +171,14 @@ impl Store {
             .context("初始化记忆层级失败")?;
         }
 
+        if version < 8 {
+            conn.execute_batch(
+                "ALTER TABLE provider_config ADD COLUMN priority INTEGER;
+                 PRAGMA user_version = 8;",
+            )
+            .context("数据库迁移 v8（provider priority）失败")?;
+        }
+
         Ok(())
     }
 
@@ -347,6 +355,33 @@ impl Store {
         }
     }
 
+    /// 删除指定 suggestion 及其关联 feedback
+    pub fn delete_suggestion(&self, suggestion_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "DELETE FROM feedback WHERE suggestion_id = ?1",
+            rusqlite::params![suggestion_id],
+        ).context("删除关联 feedback 失败")?;
+        conn.execute(
+            "DELETE FROM suggestions WHERE id = ?1",
+            rusqlite::params![suggestion_id],
+        ).context("删除 suggestion 失败")?;
+        Ok(())
+    }
+
+    /// 更新 suggestion 的 response 内容
+    pub fn update_suggestion_response(&self, suggestion_id: i64, response: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let affected = conn.execute(
+            "UPDATE suggestions SET response = ?1 WHERE id = ?2",
+            rusqlite::params![response, suggestion_id],
+        ).context("更新 suggestion 失败")?;
+        if affected == 0 {
+            anyhow::bail!("Suggestion {suggestion_id} not found");
+        }
+        Ok(())
+    }
+
     // ─── Feedback 方法 ──────────────────────────────
 
     /// 记录反馈
@@ -410,16 +445,18 @@ impl Store {
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let now = chrono::Local::now().to_rfc3339();
         let enabled: i32 = if config.enabled { 1 } else { 0 };
+        let priority: Option<i32> = config.priority.map(|p| p as i32);
         conn.execute(
             "INSERT OR REPLACE INTO provider_config
-             (provider_id, api_key, model, base_url, enabled, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (provider_id, api_key, model, base_url, enabled, priority, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 config.provider_id,
                 config.api_key,
                 config.model,
                 config.base_url,
                 enabled,
+                priority,
                 now,
             ],
         )
@@ -434,17 +471,19 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn
-            .prepare("SELECT provider_id, api_key, model, base_url, enabled FROM provider_config")
+            .prepare("SELECT provider_id, api_key, model, base_url, enabled, priority FROM provider_config")
             .context("准备 load_provider_configs 查询失败")?;
         let rows = stmt
             .query_map([], |row| {
                 let enabled_int: i32 = row.get(4)?;
+                let priority_int: Option<i32> = row.get(5)?;
                 Ok(ProviderConfig {
                     provider_id: row.get(0)?,
                     api_key: row.get(1)?,
                     model: row.get(2)?,
                     base_url: row.get(3)?,
                     enabled: enabled_int != 0,
+                    priority: priority_int.map(|p| p as u8),
                 })
             })
             .context("执行 load_provider_configs 查询失败")?;
@@ -591,9 +630,10 @@ impl Store {
     /// 保存聊天消息
     pub fn save_chat_message(&self, role: &str, content: &str, session_id: &str) -> Result<i64> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO chat_messages (role, content, session_id) VALUES (?1, ?2, ?3)",
-            rusqlite::params![role, content, session_id],
+            "INSERT INTO chat_messages (role, content, session_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![role, content, session_id, now],
         )
         .context("保存 chat_message 失败")?;
         Ok(conn.last_insert_rowid())
@@ -717,9 +757,13 @@ impl Store {
         }
 
         // 2. Working 层：活跃任务/决策（未过期 + status=active）
+        let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let working_where = format!(
+            "tier = 'working' AND status = 'active' AND (expires_at IS NULL OR expires_at > '{now_str}')"
+        );
         let working_items = Self::query_memories_by(
             &conn,
-            "tier = 'working' AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))",
+            &working_where,
             20,
         )?;
         if !working_items.is_empty() {
@@ -965,10 +1009,11 @@ impl Store {
                 .to_string()
         });
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6)",
-            rusqlite::params![category, content, source, confidence, tier, expires_at],
+            "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?7)",
+            rusqlite::params![category, content, source, confidence, tier, expires_at, now],
         )
         .context("保存 memory 失败")?;
         Ok(conn.last_insert_rowid())
@@ -977,11 +1022,12 @@ impl Store {
     /// 清理过期 working 记忆：标记为 expired
     pub fn expire_stale_memories(&self) -> Result<usize> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let count = conn.execute(
             "UPDATE memories SET status = 'expired'
              WHERE tier = 'working' AND status = 'active'
-             AND expires_at IS NOT NULL AND expires_at < datetime('now')",
-            [],
+             AND expires_at IS NOT NULL AND expires_at < ?1",
+            rusqlite::params![now],
         ).context("清理过期记忆失败")?;
         Ok(count)
     }
@@ -989,10 +1035,11 @@ impl Store {
     /// 将 working 任务标记为完成
     pub fn complete_task(&self, memory_id: i64) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
         conn.execute(
-            "UPDATE memories SET status = 'done', updated_at = datetime('now')
+            "UPDATE memories SET status = 'done', updated_at = ?2
              WHERE id = ?1 AND tier = 'working'",
-            rusqlite::params![memory_id],
+            rusqlite::params![memory_id, now],
         ).context("标记任务完成失败")?;
         Ok(())
     }
@@ -1010,9 +1057,10 @@ impl Store {
     /// 更新记忆的内容和置信度
     pub fn update_memory(&self, id: i64, content: &str, confidence: f64) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
         conn.execute(
-            "UPDATE memories SET content = ?1, confidence = ?2, updated_at = datetime('now') WHERE id = ?3",
-            rusqlite::params![content, confidence, id],
+            "UPDATE memories SET content = ?1, confidence = ?2, updated_at = ?4 WHERE id = ?3",
+            rusqlite::params![content, confidence, id, now],
         )
         .context("更新 memory 失败")?;
         Ok(())
@@ -1479,6 +1527,7 @@ mod tests {
             model: Some("claude-sonnet-4-20250514".into()),
             base_url: None,
             enabled: true,
+            priority: None,
         };
         store.save_provider_config(&config).unwrap();
 
@@ -1498,6 +1547,7 @@ mod tests {
             model: None,
             base_url: None,
             enabled: true,
+            priority: None,
         };
         store.save_provider_config(&config).unwrap();
 
@@ -1520,6 +1570,7 @@ mod tests {
             model: None,
             base_url: None,
             enabled: true,
+            priority: None,
         };
         store.save_provider_config(&config).unwrap();
         assert_eq!(store.load_provider_configs().unwrap().len(), 1);

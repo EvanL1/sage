@@ -3,8 +3,6 @@ resolver = "2"
 members = [
     "crates/sage-types",
     "crates/sage-core",
-    "crates/sage-daemon",
-    "crates/sage-ingest",
     "apps/sage-desktop/src-tauri",
 ]
 
@@ -28,4 +26,4 @@ sage-core = { path = "crates/sage-core" }
 
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-build = { version = "2", features = [] }
-tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"

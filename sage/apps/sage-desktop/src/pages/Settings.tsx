@@ -36,21 +36,7 @@ interface UserProfile {
   sop_version: number;
 }
 
-interface ProviderInfo {
-  id: string;
-  display_name: string;
-  kind: "Cli" | "HttpApi";
-  status: "Ready" | "NeedsApiKey" | "NotFound";
-  priority: number;
-}
-
-interface ProviderConfig {
-  provider_id: string;
-  api_key: string | null;
-  model: string | null;
-  base_url: string | null;
-  enabled: boolean;
-}
+import type { ProviderInfo, ProviderConfig } from "../types";
 
 type TestState = "idle" | "testing" | "ok" | "fail";
 
@@ -207,6 +193,7 @@ function Settings() {
             model: existing?.model ?? null,
             base_url: existing?.base_url ?? null,
             enabled: true,
+            priority: existing?.priority ?? null,
           } satisfies ProviderConfig,
         });
       }
@@ -251,8 +238,26 @@ function Settings() {
     );
   }
 
-  const apiProviders = providers.filter((p) => p.kind === "HttpApi");
-  const cliProviders = providers.filter((p) => p.kind === "Cli");
+  // 所有 provider 按 priority 排序（用户可调整）
+  const sortedProviders = [...providers].sort((a, b) => a.priority - b.priority);
+  const apiProviders = sortedProviders.filter((p) => p.kind === "HttpApi");
+
+  const moveProvider = async (id: string, direction: "up" | "down") => {
+    const idx = sortedProviders.findIndex((p) => p.id === id);
+    if (idx < 0) return;
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= sortedProviders.length) return;
+    const newOrder = sortedProviders.map((p) => p.id);
+    [newOrder[idx], newOrder[swapIdx]] = [newOrder[swapIdx], newOrder[idx]];
+    try {
+      await invoke("save_provider_priorities", { orderedIds: newOrder });
+      // 重新获取 providers 以更新 UI
+      const updated = await invoke<ProviderInfo[]>("discover_providers");
+      setProviders(updated);
+    } catch (err) {
+      console.error("Failed to save priorities:", err);
+    }
+  };
 
   return (
     <div className="page">
@@ -269,30 +274,57 @@ function Settings() {
             <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>Detecting...</p>
           ) : (
             <>
-              {cliProviders.length > 0 && (
-                <div style={{ marginBottom: apiProviders.length > 0 ? 16 : 0 }}>
-                  <div className="form-label" style={{ marginBottom: 8 }}>Local CLI</div>
-                  {cliProviders.map((p) => (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--border-subtle)" }}>
-                      <span style={{ fontSize: 13, color: "var(--text)" }}>{p.display_name}</span>
-                      {p.status === "Ready" ? (
-                        <span style={{ fontSize: 12, color: "var(--success-text)", background: "var(--success-light)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />
-                          Available
+              {/* Provider 优先级排序列表 */}
+              <div style={{ marginBottom: 16 }}>
+                <div className="form-label" style={{ marginBottom: 8 }}>Priority order</div>
+                <div className="form-hint" style={{ marginBottom: 8 }}>Sage uses the first available provider. Drag to reorder.</div>
+                {sortedProviders.map((p, i) => (
+                  <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--border-subtle)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: "0 4px", fontSize: 10, lineHeight: 1, opacity: i === 0 ? 0.3 : 1 }}
+                          disabled={i === 0}
+                          onClick={() => moveProvider(p.id, "up")}
+                          title="Move up (higher priority)"
+                        >▲</button>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: "0 4px", fontSize: 10, lineHeight: 1, opacity: i === sortedProviders.length - 1 ? 0.3 : 1 }}
+                          disabled={i === sortedProviders.length - 1}
+                          onClick={() => moveProvider(p.id, "down")}
+                          title="Move down (lower priority)"
+                        >▼</button>
+                      </div>
+                      <span style={{ fontSize: 13, color: "var(--text)" }}>
+                        {p.display_name}
+                        <span style={{ fontSize: 11, color: "var(--text-tertiary)", marginLeft: 6 }}>
+                          {p.kind === "Cli" ? "CLI" : "API"}
                         </span>
-                      ) : (
-                        <span style={{ fontSize: 12, color: "var(--text-tertiary)", background: "var(--border-subtle)", padding: "2px 8px", borderRadius: 999 }}>
-                          Not installed
-                        </span>
-                      )}
+                      </span>
                     </div>
-                  ))}
-                </div>
-              )}
+                    {p.status === "Ready" ? (
+                      <span style={{ fontSize: 12, color: "var(--success-text)", background: "var(--success-light)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />
+                        {i === 0 ? "Active" : "Available"}
+                      </span>
+                    ) : p.status === "NeedsApiKey" ? (
+                      <span style={{ fontSize: 12, color: "var(--warning-text)", background: "var(--warning-light)", padding: "2px 8px", borderRadius: 999 }}>
+                        Needs setup
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 12, color: "var(--text-tertiary)", background: "var(--border-subtle)", padding: "2px 8px", borderRadius: 999 }}>
+                        Not installed
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
 
               {apiProviders.length > 0 && (
                 <div>
-                  {cliProviders.length > 0 && <div className="form-label" style={{ marginBottom: 8, marginTop: 4 }}>API Services</div>}
+                  <div className="form-label" style={{ marginBottom: 8, marginTop: 4 }}>API Keys</div>
                   {apiProviders.map((p) => {
                     const testState = testStates[p.id] ?? "idle";
                     const key = apiKeys[p.id] ?? "";

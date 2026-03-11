@@ -88,11 +88,9 @@ mod tests {
             daemon: DaemonConfig {
                 heartbeat_interval_secs: 60,
                 log_level: "info".into(),
-                pid_file: "/tmp/sage.pid".into(),
             },
             memory: MemoryConfig {
                 base_dir: "/tmp".into(),
-                heartbeat_file: "heartbeat.json".into(),
             },
             agent: AgentConfig {
                 provider: "claude".into(),
@@ -109,10 +107,12 @@ mod tests {
                 email: PollChannelConfig {
                     enabled: email_enabled,
                     poll_interval_secs: 300,
+                    source: "outlook".into(),
                 },
                 calendar: PollChannelConfig {
                     enabled: calendar_enabled,
                     poll_interval_secs: 300,
+                    source: "outlook".into(),
                 },
                 wechat: WechatConfig {
                     enabled: false,

@@ -1,0 +1,30 @@
+# Build
+target/
+dist/
+node_modules/
+
+# Config (use config.example.toml as template)
+config.toml
+
+# Personal data
+*.db
+*.db-wal
+*.db-shm
+
+# Env & secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+
+# Tauri dev artifacts
+apps/sage-desktop/src-tauri/target/

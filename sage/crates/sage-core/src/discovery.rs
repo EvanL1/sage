@@ -22,12 +22,17 @@ pub fn discover_providers(store: &Store) -> Vec<ProviderInfo> {
     let mut providers = Vec::new();
 
     // 检测 CLI provider（通过 which 命令）
-    for &(id, name, binary, priority) in CLI_PROVIDERS {
+    for &(id, name, binary, default_priority) in CLI_PROVIDERS {
         let status = if check_cli_available(binary) {
             ProviderStatus::Ready
         } else {
             ProviderStatus::NotFound
         };
+        // 用户自定义优先级覆盖默认值
+        let priority = saved.iter()
+            .find(|c| c.provider_id == id)
+            .and_then(|c| c.priority)
+            .unwrap_or(default_priority);
         providers.push(ProviderInfo {
             id: id.into(),
             display_name: name.into(),
@@ -38,7 +43,7 @@ pub fn discover_providers(store: &Store) -> Vec<ProviderInfo> {
     }
 
     // 检测 API provider（通过环境变量或 Store 配置）
-    for &(id, name, env_var, priority) in API_PROVIDERS {
+    for &(id, name, env_var, default_priority) in API_PROVIDERS {
         let has_env_key = std::env::var(env_var).is_ok();
         let has_saved_key = saved
             .iter()
@@ -48,6 +53,10 @@ pub fn discover_providers(store: &Store) -> Vec<ProviderInfo> {
         } else {
             ProviderStatus::NeedsApiKey
         };
+        let priority = saved.iter()
+            .find(|c| c.provider_id == id)
+            .and_then(|c| c.priority)
+            .unwrap_or(default_priority);
         providers.push(ProviderInfo {
             id: id.into(),
             display_name: name.into(),
@@ -81,6 +90,7 @@ pub fn select_best_provider(
                 model: None,
                 base_url: None,
                 enabled: true,
+                priority: None,
             });
         if config.enabled {
             return Some((info.clone(), config));
@@ -173,6 +183,7 @@ mod tests {
             model: Some("claude-sonnet-4-20250514".into()),
             base_url: None,
             enabled: true,
+            priority: None,
         }];
         let result = select_best_provider(&discovered, &saved);
         assert!(result.is_some());
@@ -196,6 +207,7 @@ mod tests {
             model: None,
             base_url: None,
             enabled: false,
+            priority: None,
         }];
         assert!(select_best_provider(&discovered, &saved).is_none());
     }
