@@ -112,6 +112,7 @@ fn check_cli_available(binary: &str) -> bool {
     // fallback: try which (works in terminal context)
     std::process::Command::new("which")
         .arg(binary)
+        .current_dir("/tmp")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)

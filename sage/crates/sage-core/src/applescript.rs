@@ -6,6 +6,7 @@ pub async fn run(script: &str) -> Result<String> {
     let output = Command::new("osascript")
         .arg("-e")
         .arg(script)
+        .current_dir("/tmp")
         .output()
         .await
         .context("Failed to run osascript")?;
@@ -32,6 +33,7 @@ pub async fn notify(title: &str, body: &str) -> Result<()> {
 
     if let Some(bin) = notifier {
         let output = Command::new(bin)
+            .current_dir("/tmp")
             .arg("-title").arg("Sage")
             .arg("-subtitle").arg(title)
             .arg("-message").arg(body)

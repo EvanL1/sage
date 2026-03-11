@@ -45,51 +45,11 @@ const WEEKDAY_LABELS: Record<string, string> = {
   Fri: "Friday", Sat: "Saturday", Sun: "Sunday",
 };
 
-// Parse "Name - Description" lines into structured objects
-function parseProjectLines(text: string) {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const idx = line.indexOf(" - ");
-      return idx !== -1
-        ? { name: line.slice(0, idx).trim(), description: line.slice(idx + 3).trim(), status: "Active" }
-        : { name: line, description: "", status: "Active" };
-    });
-}
-
-function parseStakeholderLines(text: string) {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const idx = line.indexOf(" - ");
-      return idx !== -1
-        ? { name: line.slice(0, idx).trim(), role: line.slice(idx + 3).trim(), relationship: "Colleague" }
-        : { name: line, role: "", relationship: "Colleague" };
-    });
-}
-
-function projectsToText(projects: { name: string; description: string }[]) {
-  return projects.map((p) => (p.description ? `${p.name} - ${p.description}` : p.name)).join("\n");
-}
-
-function stakeholdersToText(stakeholders: { name: string; role: string }[]) {
-  return stakeholders.map((s) => (s.role ? `${s.name} - ${s.role}` : s.name)).join("\n");
-}
-
 function Settings() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; msg: string } | null>(null);
-
-  // Work context text state (derived from profile, edited as free text)
-  const [projectsText, setProjectsText] = useState("");
-  const [stakeholdersText, setStakeholdersText] = useState("");
-  const [reportingLineText, setReportingLineText] = useState("");
 
   // Provider state
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -103,9 +63,6 @@ function Settings() {
       .then((p) => {
         if (p) {
           setProfile(p);
-          setProjectsText(projectsToText(p.work_context.projects));
-          setStakeholdersText(stakeholdersToText(p.work_context.stakeholders));
-          setReportingLineText((p.identity.reporting_line ?? []).join("\n"));
         }
         setLoading(false);
       })
@@ -157,20 +114,7 @@ function Settings() {
     if (!profile) return;
     setSaving(true);
     try {
-      const merged: UserProfile = {
-        ...profile,
-        identity: {
-          ...profile.identity,
-          reporting_line: reportingLineText.split("\n").map((l) => l.trim()).filter(Boolean),
-        },
-        work_context: {
-          ...profile.work_context,
-          projects: parseProjectLines(projectsText),
-          stakeholders: parseStakeholderLines(stakeholdersText),
-        },
-      };
-      await invoke("save_profile", { profile: merged });
-      setProfile(merged);
+      await invoke("save_profile", { profile });
       showToast("success", "Settings saved");
     } catch (err) {
       console.error(err);
@@ -468,46 +412,6 @@ function Settings() {
             <label className="form-label">Max notification length</label>
             <input className="form-input" type="number" value={profile.communication.notification_max_chars} onChange={(e) => updateComm({ notification_max_chars: parseInt(e.target.value, 10) || 200 })} min="50" max="500" />
             <div className="form-hint">Maximum characters for suggestion notifications (50–500)</div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Work Context ── */}
-      <div className="settings-section">
-        <div className="settings-section-title">Work context</div>
-        <div className="card">
-          <div className="form-group">
-            <label className="form-label">Reporting line</label>
-            <textarea
-              className="form-textarea"
-              value={reportingLineText}
-              onChange={(e) => setReportingLineText(e.target.value)}
-              placeholder={"Your name\nDirect manager\nManager's manager"}
-              rows={3}
-            />
-            <div className="form-hint">One per line, starting from you upward</div>
-          </div>
-          <div className="form-group">
-            <label className="form-label">Current projects</label>
-            <textarea
-              className="form-textarea"
-              value={projectsText}
-              onChange={(e) => setProjectsText(e.target.value)}
-              placeholder={"Project A - Brief description\nProject B - Brief description"}
-              rows={4}
-            />
-            <div className="form-hint">One per line, format: Project name - description</div>
-          </div>
-          <div className="form-group">
-            <label className="form-label">Stakeholders</label>
-            <textarea
-              className="form-textarea"
-              value={stakeholdersText}
-              onChange={(e) => setStakeholdersText(e.target.value)}
-              placeholder={"Alice - Product Manager\nBob - Client"}
-              rows={4}
-            />
-            <div className="form-hint">One per line, format: Name - role</div>
           </div>
         </div>
       </div>

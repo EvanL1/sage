@@ -583,9 +583,15 @@ pub async fn chat(
     let skill_prompt = sage_core::skills::load_chat_skill(skill_name, &user_name, layer);
 
     // 9. 构建完整 system prompt = skill + 用户上下文 + 共享能力
+    let now = chrono::Local::now();
     let mut system_prompt = String::with_capacity(4000);
     system_prompt.push_str(&skill_prompt);
-    system_prompt.push_str(&format!("\n\n## 关于 {}\n{}{}{}\n\n", user_name, memory_text, obs_text, feedback_text));
+    system_prompt.push_str(&format!(
+        "\n\n## 当前时间（所有时间推理以此为准）\n{} ({})\n\n## 关于 {}\n{}{}{}\n\n",
+        now.format("%Y-%m-%d %A %H:%M"),
+        now.format("%Z UTC%:z"),
+        user_name, memory_text, obs_text, feedback_text
+    ));
 
     // --- 记忆写入能力（所有 skill 共享）---
     system_prompt.push_str("\

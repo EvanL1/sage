@@ -38,6 +38,7 @@ function Chat() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const initialMessageHandled = useRef(false);
   const msgCountRef = useRef(0);
+  const composingRef = useRef(false);
 
   // Scroll to bottom
   useEffect(() => {
@@ -184,7 +185,8 @@ function Chat() {
   }, [location.state]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // 中文输入法回车确认选字时不发送：检查 composing ref + isComposing + keyCode 229（IME process key）
+    if (e.key === "Enter" && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       sendMessage();
     }
@@ -285,6 +287,8 @@ function Chat() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
               placeholder="Say something..."
               rows={1}
               disabled={loading}

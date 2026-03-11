@@ -53,7 +53,18 @@ impl Agent {
                 self.config.max_iterations
             ));
         }
-        let text = self.provider.invoke(prompt, system_prompt).await?;
+        // 注入实时时钟，让 LLM 所有时间推理都基于系统时间
+        let now = chrono::Local::now();
+        let time_header = format!(
+            "[当前时间: {} ({})]\n\n",
+            now.format("%Y-%m-%d %A %H:%M"),
+            now.format("%Z UTC%:z"),
+        );
+        let enriched_system = match system_prompt {
+            Some(sp) => format!("{time_header}{sp}"),
+            None => time_header,
+        };
+        let text = self.provider.invoke(prompt, Some(&enriched_system)).await?;
         Ok(AgentResponse { text })
     }
 

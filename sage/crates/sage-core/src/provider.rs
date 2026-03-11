@@ -15,6 +15,15 @@ const PROXY_ENVS: &[(&str, &str)] = &[
     ("all_proxy", "socks5://127.0.0.1:7890"),
 ];
 
+/// 返回安全的工作目录（~/.sage），避免 .app 从 Finder 启动时 cwd="/" 导致 CLI 扫描整个文件系统
+fn safe_working_dir() -> std::path::PathBuf {
+    let dir = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".sage"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// 将短名称（如 "claude"）解析为完整路径（.app bundle 的 PATH 通常不含 /opt/homebrew/bin）
 fn resolve_binary(name: &str) -> String {
     if name.contains('/') {
@@ -65,7 +74,6 @@ pub fn create_provider(config: &AgentConfig) -> Box<dyn LlmProvider> {
 struct ClaudeProvider {
     binary: String,
     model: String,
-    project_dir: String,
     max_budget_usd: f64,
     permission_mode: String,
 }
@@ -75,7 +83,6 @@ impl ClaudeProvider {
         Self {
             binary: resolve_binary(&config.claude_binary),
             model: config.default_model.clone(),
-            project_dir: config.project_dir.clone(),
             max_budget_usd: config.max_budget_usd,
             permission_mode: config.permission_mode.clone(),
         }
@@ -91,11 +98,14 @@ impl LlmProvider for ClaudeProvider {
     async fn invoke(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
         let mut cmd = Command::new(&self.binary);
 
+        // 使用安全的工作目录，避免 .app 启动时 cwd="/" 触发 macOS TCC 权限弹窗
+        let safe_dir = safe_working_dir();
+        cmd.current_dir(&safe_dir);
+
         cmd.arg("--print")
             .arg("--model").arg(&self.model)
             .arg("--permission-mode").arg(&self.permission_mode)
             .arg("--max-budget-usd").arg(self.max_budget_usd.to_string())
-            .arg("--add-dir").arg(&self.project_dir)
             .arg("--output-format").arg("text")
             .arg("--no-session-persistence");
 
@@ -130,7 +140,6 @@ impl LlmProvider for ClaudeProvider {
 struct CodexProvider {
     binary: String,
     model: String,
-    project_dir: String,
 }
 
 impl CodexProvider {
@@ -142,7 +151,6 @@ impl CodexProvider {
                 config.codex_binary.clone()
             },
             model: config.default_model.clone(),
-            project_dir: config.project_dir.clone(),
         }
     }
 }
@@ -166,12 +174,14 @@ impl LlmProvider for CodexProvider {
             .as_nanos();
         let tmp_out = format!("/tmp/sage-codex-{}-{}.txt", ts, seq);
 
+        let safe_dir = safe_working_dir();
         let mut cmd = Command::new(&self.binary);
+        cmd.current_dir(&safe_dir);
         cmd.arg("exec")
             .arg("-m").arg(&self.model)
             .arg("--sandbox").arg("read-only")
             .arg("-o").arg(&tmp_out)
-            .arg("-C").arg(&self.project_dir)
+            .arg("-C").arg(safe_dir.to_str().unwrap_or("/tmp"))
             .arg("--ephemeral")
             .arg(&full_prompt);
 
@@ -236,6 +246,7 @@ impl LlmProvider for GeminiProvider {
         };
 
         let mut cmd = Command::new(&self.binary);
+        cmd.current_dir(safe_working_dir());
         cmd.arg("-p").arg(&full_prompt)
             .arg("-m").arg(&self.model)
             .arg("-o").arg("text")
