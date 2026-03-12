@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Sage Bridge",
+  "version": "0.1.0",
+  "description": "Connect your AI conversations to Sage for unified memory",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["http://127.0.0.1:18522/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content-scripts/claude.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["content-scripts/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content-scripts/gemini.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Sage Bridge"
+  }
+}

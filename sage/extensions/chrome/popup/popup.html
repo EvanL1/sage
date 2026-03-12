@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sage Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="logo">Sage Bridge</span>
+      <span id="status-badge" class="badge badge--checking">Checking…</span>
+    </header>
+
+    <section class="info">
+      <div class="stat">
+        <span class="stat__label">Memories synced</span>
+        <span id="memory-count" class="stat__value">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat__label">Behaviors recorded</span>
+        <span id="behavior-count" class="stat__value">—</span>
+      </div>
+    </section>
+
+    <button id="sync-btn" class="btn" disabled>Sync Now</button>
+
+    <footer>
+      <span id="last-sync">Last sync: never</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
