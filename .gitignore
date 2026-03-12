@@ -22,3 +22,6 @@ sage/apps/sage-desktop/src-tauri/target/
 
 # Logs
 *.log
+
+# Worktrees
+.worktrees/
