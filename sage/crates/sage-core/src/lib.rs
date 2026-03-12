@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod applescript;
+pub mod bridge;
 pub mod context_gatherer;
 pub mod channel;
 pub mod channels;

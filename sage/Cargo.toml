@@ -20,6 +20,9 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors"] }
 reqwest = { version = "0.12", features = ["json"] }
 sage-types = { path = "crates/sage-types" }
 sage-core = { path = "crates/sage-core" }
