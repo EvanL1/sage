@@ -247,9 +247,15 @@ impl Daemon {
         }
 
         // 认知觉醒角色链：Evening Review 后依次触发
-        // 顺序：Coach（更新 sage.md）→ Mirror（反映模式）→ Questioner（深度问题）
+        // 顺序：Observer → Coach → Mirror → Questioner → Memory Evolution
         if had_evening_review {
             let router = self.router.lock().await;
+
+            match router.run_observer().await {
+                Ok(true) => info!("Observer: annotations saved"),
+                Ok(false) => {}
+                Err(e) => error!("Observer failed (Coach will use raw observations): {e}"),
+            }
 
             match router.run_coach().await {
                 Ok(true) => info!("Coach: learning completed"),
@@ -267,6 +273,16 @@ impl Daemon {
                 Ok(true) => info!("Questioner: daily question generated"),
                 Ok(false) => {}
                 Err(e) => error!("Questioner failed: {e}"),
+            }
+
+            // 记忆进化：合并重复、衰减过期、提升高频
+            match router.run_memory_evolution().await {
+                Ok((m, d, p)) => {
+                    if m + d + p > 0 {
+                        info!("Memory evolution: merged={m}, decayed={d}, promoted={p}");
+                    }
+                }
+                Err(e) => error!("Memory evolution failed: {e}"),
             }
         }
 

@@ -9,7 +9,9 @@ use crate::agent::Agent;
 use crate::applescript;
 use crate::coach;
 use crate::context_gatherer;
+use crate::memory_evolution;
 use crate::mirror;
+use crate::observer;
 use crate::questioner;
 use crate::store::Store;
 
@@ -55,7 +57,12 @@ impl Router {
         self.agent = agent;
     }
 
-    /// 触发学习教练：读 observations → 发现模式 → 保存 coach_insight → 归档
+    /// 触发观察者：raw observations → 语义标注 → observer_note
+    pub async fn run_observer(&self) -> Result<bool> {
+        observer::annotate(&self.agent, &self.store).await
+    }
+
+    /// 触发学习教练：读 observer_notes（降级读 raw obs）→ 发现模式 → 保存 coach_insight → 归档
     pub async fn run_coach(&self) -> Result<bool> {
         coach::learn(&self.agent, &self.store).await
     }
@@ -68,6 +75,11 @@ impl Router {
     /// 触发提问者：生成一个苏格拉底式深度问题
     pub async fn run_questioner(&self) -> Result<bool> {
         questioner::ask(&self.agent, &self.store).await
+    }
+
+    /// 触发记忆进化：合并重复 → 衰减过期 → 提升高频
+    pub async fn run_memory_evolution(&self) -> Result<(usize, usize, usize)> {
+        memory_evolution::evolve(&self.agent, &self.store).await
     }
 
     pub async fn route(&self, event: Event) -> Result<()> {

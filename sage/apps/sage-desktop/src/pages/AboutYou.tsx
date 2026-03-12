@@ -19,11 +19,18 @@ const CATEGORY_LABELS: Record<string, string> = {
   thinking: "Thinking style",
   emotion: "Emotional cues",
   growth: "Growth direction",
+  preference: "Preferences",
+  skill: "Skills",
+  goal: "Goals",
+  relationship: "Relationships",
   // 用户主动告诉 Sage 的内容
   user_input: "From you",
 };
 
-const CATEGORY_ORDER = ["personality", "identity", "values", "behavior", "thinking", "emotion", "growth", "user_input"];
+const CATEGORY_ORDER = [
+  "personality", "identity", "values", "behavior", "thinking", "emotion",
+  "growth", "preference", "skill", "goal", "relationship", "user_input",
+];
 
 function MemoryItem({ memory, onDelete }: { memory: Memory; onDelete: (id: number) => void }) {
   const [deleting, setDeleting] = useState(false);
@@ -81,6 +88,8 @@ function AboutYou() {
   const [saving, setSaving] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [aiImportText, setAiImportText] = useState("");
+  const [importing, setImporting] = useState(false);
 
   const fetchMemories = useCallback(async () => {
     try {
@@ -184,6 +193,31 @@ function AboutYou() {
       console.error("Import failed:", err);
       setExportMsg("Import failed — please copy content to clipboard first");
       setTimeout(() => setExportMsg(""), 3000);
+    }
+  };
+
+  // 从其他 AI 导入记忆（粘贴原始文本，LLM 自动结构化）
+  const handleAiImport = async () => {
+    const text = aiImportText.trim();
+    if (!text) return;
+    setImporting(true);
+    try {
+      const count = await invoke<number>("import_raw_memories", { text });
+      setAiImportText("");
+      if (count > 0) {
+        const refreshed = await invoke<Memory[]>("get_memories");
+        setMemories(refreshed);
+        setExportMsg(`Imported ${count} memories from AI`);
+      } else {
+        setExportMsg("No memories extracted — try pasting more content");
+      }
+      setTimeout(() => setExportMsg(""), 3000);
+    } catch (err) {
+      console.error("AI import failed:", err);
+      setExportMsg("Import failed: " + String(err));
+      setTimeout(() => setExportMsg(""), 3000);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -318,6 +352,29 @@ function AboutYou() {
             disabled={saving || !userInput.trim()}
           >
             {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+
+      {/* 从其他 AI 导入记忆 */}
+      <div className="about-user-input" style={{ marginTop: "var(--spacing-md)" }}>
+        <div className="about-user-input-label">Import memories from other AI assistants</div>
+        <textarea
+          className="about-user-textarea"
+          placeholder="Paste your memories from Claude, Gemini, or ChatGPT here. Sage will automatically structure and save them."
+          value={aiImportText}
+          onChange={(e) => setAiImportText(e.target.value)}
+          rows={4}
+          disabled={importing}
+        />
+        <div className="about-user-input-actions">
+          <span className="about-user-input-hint">Paste from Claude / Gemini / ChatGPT</span>
+          <button
+            className="about-action-btn"
+            onClick={handleAiImport}
+            disabled={importing || !aiImportText.trim()}
+          >
+            {importing ? "Importing..." : "Import"}
           </button>
         </div>
       </div>

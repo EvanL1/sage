@@ -59,6 +59,26 @@ fn extract_and_save_memories(raw: &str, store: &sage_core::store::Store) -> (Str
     (display.trim().to_string(), saved)
 }
 
+/// 从用户消息中提取关键词，自动匹配并回答 open_questions
+fn auto_answer_open_questions(message: &str, store: &sage_core::store::Store) {
+    // 提取 ≥3 字符的有意义词（中文每个字算 3 字节，取前 5 个关键词搜索）
+    let keywords: Vec<&str> = message
+        .split(|c: char| c.is_whitespace() || c == '，' || c == '。' || c == '？' || c == '！')
+        .filter(|w| w.chars().count() >= 2)
+        .take(5)
+        .collect();
+
+    for kw in keywords {
+        if let Ok(matches) = store.search_open_questions(kw) {
+            for (qid, _text) in matches {
+                if let Err(e) = store.answer_question(qid) {
+                    tracing::warn!("Failed to auto-answer question {qid}: {e}");
+                }
+            }
+        }
+    }
+}
+
 fn default_agent_config() -> sage_core::config::AgentConfig {
     sage_core::config::AgentConfig {
         provider: "claude".into(),
@@ -637,6 +657,10 @@ type 可选值：task（待办任务）、insight（关于用户的洞察）、d
     // 11. 解析并持久化 sage-memory 块
     let (display_response, memories_saved) = extract_and_save_memories(&raw_response, &state.store);
 
+    // 11a. 轻量级 open_questions 自动回答检测
+    // 从用户消息中提取关键词，匹配 open questions 并标记为 answered
+    auto_answer_open_questions(&message, &state.store);
+
     // 12. 保存 Sage 回复（只保存用户可见部分）
     state
         .store
@@ -1012,4 +1036,72 @@ pub async fn trigger_report(
         return Err(format!("未知报告类型: {report_type}，支持: morning/evening/weekly/week_start"));
     }
     state.daemon.trigger_report(&report_type).await.map_err(map_err)
+}
+
+// ─── 外部 AI 记忆导入（Claude/Gemini/ChatGPT 记忆粘贴） ──────────────────────────
+
+/// 解析用户从其他 AI 助手粘贴的原始文本，通过 LLM 结构化后保存为记忆
+#[tauri::command]
+pub async fn import_raw_memories(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<usize, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("内容不能为空".to_string());
+    }
+
+    // 发现并选择 provider
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or("没有可用的 AI 服务。请在设置中配置 API Key。")?;
+
+    let agent_config = default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let prompt = format!(
+        "以下是用户从其他 AI 助手（Claude/Gemini/ChatGPT）导出的记忆或个人信息：\n\n{text}\n\n\
+         请将其解析为结构化记忆条目。每条输出一行 JSON：\n\
+         {{\"category\": \"...\", \"content\": \"...\"}}\n\n\
+         可用 category：identity, personality, values, behavior, thinking, emotion, \
+         growth, decision, pattern, preference, skill, relationship, goal\n\n\
+         要求：\n\
+         - 保留原始信息的核心内容，忠于原文\n\
+         - 每条记忆简洁明了（1-2句话）\n\
+         - 只输出 JSON 行，不要其他内容（不要 markdown 代码块）"
+    );
+
+    let raw = provider
+        .invoke(&prompt, None)
+        .await
+        .map_err(map_err)?;
+
+    // 解析 LLM 输出的 JSON 行
+    let mut count = 0;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
+            if let (Some(category), Some(content)) = (
+                obj.get("category").and_then(|v| v.as_str()),
+                obj.get("content").and_then(|v| v.as_str()),
+            ) {
+                if !content.is_empty() {
+                    state
+                        .store
+                        .save_memory(category, content, "ai_import", 0.7)
+                        .map_err(map_err)?;
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    if count > 0 {
+        trigger_memory_sync(&state.store);
+    }
+    Ok(count)
 }

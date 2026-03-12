@@ -5,18 +5,39 @@ use crate::agent::Agent;
 use crate::skills;
 use crate::store::Store;
 
-/// 发问者：基于行为模式和近期决策，生成一个苏格拉底式深度问题
-/// 问题静默存储（不发通知），用户在 Dashboard 自行发现
-/// 不再读 sage.md + decisions.md，改用 Store 查询 coach_insight 和 decision 类别记忆
+/// 发问者：基于行为模式和近期决策，生成苏格拉底式深度问题
+/// 支持问题追踪：新问题存入 open_questions，到期问题重新浮现
 pub async fn ask(agent: &Agent, store: &Store) -> Result<bool> {
-    // 读取教练洞察（替代原来读 sage.md）
+    // 1. 先检查是否有到期需要重新浮现的问题
+    let due = store.get_due_questions(1)?;
+    if let Some((q_id, question_text, ask_count)) = due.into_iter().next() {
+        // 每日最多生成一次
+        if store.has_recent_suggestion("questioner", "daily-question") {
+            return Ok(false);
+        }
+
+        // 重新浮现：以变体形式再次提出
+        let prompt = format!(
+            "以下是一个之前提出但尚未被回答的深度问题（第 {ask_count} 次提出）：\n\
+             \"{question_text}\"\n\n\
+             请用不同的角度或措辞重新表述这个问题，保持核心追问方向不变。\n\
+             只输出一个问题，不要编号、不要解释。"
+        );
+
+        let resp = agent.invoke(&prompt, None).await?;
+        store.record_suggestion("questioner", "daily-question", &resp.text)?;
+        store.bump_question_ask(q_id)?;
+        info!("Questioner: resurfaced question #{q_id} (ask #{ask_count})");
+        return Ok(true);
+    }
+
+    // 2. 没有到期问题，生成新问题
     let insights = store.search_memories("coach_insight", 10)?;
     if insights.is_empty() {
         info!("Questioner: no coach_insight records found, skipping");
         return Ok(false);
     }
 
-    // 每日最多生成一次
     if store.has_recent_suggestion("questioner", "daily-question") {
         info!("Questioner: daily question already generated, skipping");
         return Ok(false);
@@ -28,7 +49,6 @@ pub async fn ask(agent: &Agent, store: &Store) -> Result<bool> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // 近期决策记录（替代原来读 decisions.md）
     let decisions = store.search_memories("decision", 5)?;
     let decisions_text = if decisions.is_empty() {
         "（暂无记录）".to_string()
@@ -58,9 +78,10 @@ pub async fn ask(agent: &Agent, store: &Store) -> Result<bool> {
     );
     let resp = agent.invoke(&prompt, Some(&system)).await?;
 
-    // 静默存储，不发通知
-    store.record_suggestion("questioner", "daily-question", &resp.text)?;
-    info!("Questioner: generated daily question");
+    // 存入 suggestions 并同时追踪到 open_questions
+    let suggestion_id = store.record_suggestion("questioner", "daily-question", &resp.text)?;
+    store.save_open_question(&resp.text, Some(suggestion_id))?;
+    info!("Questioner: generated daily question and tracked in open_questions");
 
     Ok(true)
 }

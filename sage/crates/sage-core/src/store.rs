@@ -179,6 +179,25 @@ impl Store {
             .context("数据库迁移 v8（provider priority）失败")?;
         }
 
+        if version < 9 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS open_questions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_text TEXT NOT NULL,
+                    source_suggestion_id INTEGER REFERENCES suggestions(id),
+                    status TEXT NOT NULL DEFAULT 'open',
+                    ask_count INTEGER NOT NULL DEFAULT 1,
+                    next_ask_at TEXT,
+                    created_at TEXT NOT NULL,
+                    answered_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_open_questions_status
+                    ON open_questions(status, next_ask_at);
+                PRAGMA user_version = 9;",
+            )
+            .context("数据库迁移 v9（open_questions 表）失败")?;
+        }
+
         Ok(())
     }
 
@@ -979,7 +998,7 @@ impl Store {
     fn infer_tier(category: &str) -> &'static str {
         match category {
             "identity" | "personality" | "values" => "core",
-            "task" | "decision" | "session" | "reminder" => "working",
+            "task" | "decision" | "session" | "reminder" | "observer_note" => "working",
             _ => "archive",
         }
     }
@@ -989,7 +1008,7 @@ impl Store {
         match category {
             "task" | "reminder" => Some(7),
             "decision" => Some(14),
-            "session" => Some(3),
+            "session" | "observer_note" => Some(3),
             _ => None,
         }
     }
@@ -1260,6 +1279,193 @@ impl Store {
         ).context("准备 get_coach_insights_since 查询失败")?;
         let rows = stmt.query_map(rusqlite::params![since], |row| {
             row.get::<_, String>(0)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    // ─── Memory Evolution 方法 ──────────────────────────────
+
+    /// 加载所有活跃记忆（status='active'）
+    pub fn load_active_memories(&self) -> Result<Vec<Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, created_at, updated_at
+             FROM memories WHERE status = 'active'
+             ORDER BY confidence DESC, updated_at DESC",
+        ).context("准备 load_active_memories 查询失败")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Memory {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                content: row.get(2)?,
+                source: row.get(3)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 衰减长期未更新的 archive 记忆（纯 SQL）
+    /// - stale_days: 多少天未更新算"过期"
+    /// - decay_amount: 每次衰减的 confidence 量
+    /// - expire_threshold: confidence 低于此值则标记为 expired
+    pub fn decay_stale_archive_memories(
+        &self,
+        stale_days: i64,
+        decay_amount: f64,
+        expire_threshold: f64,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let cutoff = (chrono::Local::now() - chrono::Duration::days(stale_days))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let now = chrono::Local::now().to_rfc3339();
+
+        // 衰减
+        let decayed = conn.execute(
+            "UPDATE memories SET confidence = MAX(0.1, confidence - ?1), updated_at = ?2
+             WHERE tier = 'archive' AND status = 'active'
+             AND updated_at < ?3 AND confidence > ?4",
+            rusqlite::params![decay_amount, now, cutoff, expire_threshold],
+        ).context("衰减记忆失败")?;
+
+        // 低于阈值的标记为 expired
+        conn.execute(
+            "UPDATE memories SET status = 'expired'
+             WHERE tier = 'archive' AND status = 'active' AND confidence <= ?1",
+            rusqlite::params![expire_threshold],
+        ).context("过期低置信度记忆失败")?;
+
+        Ok(decayed)
+    }
+
+    /// 提升高置信度 archive 记忆到 core（限定特定行为/模式类别）
+    pub fn promote_high_confidence_memories(&self, min_confidence: f64) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        let promoted = conn.execute(
+            "UPDATE memories SET tier = 'core', updated_at = ?1
+             WHERE tier = 'archive' AND status = 'active' AND confidence >= ?2
+             AND category IN ('behavior', 'thinking', 'pattern', 'growth', 'emotion')
+             AND updated_at != created_at",
+            rusqlite::params![now, min_confidence],
+        ).context("提升记忆到 core 失败")?;
+        Ok(promoted)
+    }
+
+    // ─── Open Questions 方法（Questioner 实体化） ──────────────────────────────
+
+    /// 保存开放问题
+    pub fn save_open_question(
+        &self,
+        question_text: &str,
+        source_suggestion_id: Option<i64>,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        let next_ask = (chrono::Local::now() + chrono::Duration::days(3))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        conn.execute(
+            "INSERT INTO open_questions (question_text, source_suggestion_id, status, ask_count, next_ask_at, created_at)
+             VALUES (?1, ?2, 'open', 1, ?3, ?4)",
+            rusqlite::params![question_text, source_suggestion_id, next_ask, now],
+        ).context("保存 open_question 失败")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 获取到期需要重新提问的开放问题
+    pub fn get_due_questions(&self, limit: usize) -> Result<Vec<(i64, String, i32)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let mut stmt = conn.prepare(
+            "SELECT id, question_text, ask_count FROM open_questions
+             WHERE status = 'open' AND next_ask_at <= ?1 AND ask_count < 4
+             ORDER BY next_ask_at ASC LIMIT ?2",
+        ).context("查询 due questions 失败")?;
+        let rows = stmt.query_map(rusqlite::params![now, limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 标记问题为已回答
+    pub fn answer_question(&self, question_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "UPDATE open_questions SET status = 'answered', answered_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, question_id],
+        ).context("标记问题已回答失败")?;
+        Ok(())
+    }
+
+    /// 增加问题提问次数，更新下次提问时间（间隔递增：3d→7d→14d）
+    /// 超过 3 次自动归档
+    pub fn bump_question_ask(&self, question_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let ask_count: i32 = conn
+            .query_row(
+                "SELECT ask_count FROM open_questions WHERE id = ?1",
+                rusqlite::params![question_id],
+                |row| row.get(0),
+            )
+            .context("查询 ask_count 失败")?;
+
+        let interval_days = match ask_count {
+            1 => 3,
+            2 => 7,
+            _ => 14,
+        };
+        let next_ask = (chrono::Local::now() + chrono::Duration::days(interval_days))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        conn.execute(
+            "UPDATE open_questions SET ask_count = ask_count + 1, next_ask_at = ?1 WHERE id = ?2",
+            rusqlite::params![next_ask, question_id],
+        ).context("更新问题提问次数失败")?;
+
+        // 超过 3 次归档
+        if ask_count + 1 >= 4 {
+            conn.execute(
+                "UPDATE open_questions SET status = 'archived' WHERE id = ?1",
+                rusqlite::params![question_id],
+            ).context("归档超限问题失败")?;
+        }
+
+        Ok(())
+    }
+
+    /// 搜索开放问题（用于 Chat 中匹配用户是否在回答某个问题）
+    /// 加载最近 24 小时内的 observer_note 记忆（供 Coach 使用）
+    pub fn load_observer_notes_recent(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT content FROM memories
+             WHERE category = 'observer_note'
+               AND created_at >= datetime('now', '-24 hours')
+             ORDER BY created_at ASC
+             LIMIT 100",
+        ).context("查询 observer_notes 失败")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn search_open_questions(&self, query: &str) -> Result<Vec<(i64, String)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let pattern = format!("%{}%", query.trim());
+        let mut stmt = conn.prepare(
+            "SELECT id, question_text FROM open_questions
+             WHERE status = 'open' AND question_text LIKE ?1
+             LIMIT 5",
+        ).context("搜索 open_questions 失败")?;
+        let rows = stmt.query_map(rusqlite::params![pattern], |row| {
+            Ok((row.get(0)?, row.get(1)?))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -2045,5 +2251,353 @@ mod tests {
         let insights = store.get_coach_insights_since("2000-01-01T00:00:00+00:00").unwrap();
         assert_eq!(insights.len(), 2);
         assert!(insights.iter().all(|s| !s.is_empty()));
+    }
+
+    // ─── Memory Evolution 测试 ──────────────────────────────
+
+    #[test]
+    fn test_load_active_memories() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("behavior", "active memory", "test", 0.8).unwrap();
+        store.save_memory("behavior", "another active", "test", 0.6).unwrap();
+
+        let active = store.load_active_memories().unwrap();
+        assert_eq!(active.len(), 2);
+        // 按 confidence DESC 排序
+        assert!(active[0].confidence >= active[1].confidence);
+    }
+
+    #[test]
+    fn test_load_active_excludes_expired() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("behavior", "active one", "test", 0.8).unwrap();
+
+        // 手动将一条记忆标记为 expired
+        let id = store.save_memory("behavior", "will expire", "test", 0.3).unwrap();
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memories SET status = 'expired' WHERE id = ?1",
+            rusqlite::params![id],
+        ).unwrap();
+        drop(conn);
+
+        let active = store.load_active_memories().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].content, "active one");
+    }
+
+    #[test]
+    fn test_decay_stale_archive_memories() {
+        let store = Store::open_in_memory().unwrap();
+
+        // 创建一条 archive 记忆，手动设置 updated_at 为 90 天前
+        let id = store.save_memory("pattern", "old pattern", "test", 0.5).unwrap();
+        let old_date = (chrono::Local::now() - chrono::Duration::days(90))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memories SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![old_date, id],
+        ).unwrap();
+        drop(conn);
+
+        // 衰减 60 天未更新的，衰减 0.1，阈值 0.2
+        let decayed = store.decay_stale_archive_memories(60, 0.1, 0.2).unwrap();
+        assert_eq!(decayed, 1);
+
+        // 验证 confidence 降低了
+        let memories = store.load_memories().unwrap();
+        let m = memories.iter().find(|m| m.id == id).unwrap();
+        assert!((m.confidence - 0.4).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_decay_expires_low_confidence() {
+        let store = Store::open_in_memory().unwrap();
+
+        // 创建一条低 confidence 的 archive 记忆
+        let id = store.save_memory("pattern", "weak pattern", "test", 0.2).unwrap();
+        let old_date = (chrono::Local::now() - chrono::Duration::days(90))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memories SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![old_date, id],
+        ).unwrap();
+        drop(conn);
+
+        // 衰减后 confidence 0.2 - 0.1 = 0.1，但 0.2 <= threshold，所以应该被 expired
+        store.decay_stale_archive_memories(60, 0.1, 0.2).unwrap();
+
+        // 检查 status 变为 expired
+        let active = store.load_active_memories().unwrap();
+        assert!(active.iter().all(|m| m.id != id));
+    }
+
+    #[test]
+    fn test_promote_high_confidence_memories() {
+        let store = Store::open_in_memory().unwrap();
+
+        // 创建一条高 confidence 的 behavior 记忆（archive 层）
+        let id = store.save_memory("behavior", "consistent pattern", "coach", 0.9).unwrap();
+
+        // 需要 updated_at != created_at 才会提升
+        store.update_memory(id, "consistent pattern (confirmed)", 0.9).unwrap();
+
+        let promoted = store.promote_high_confidence_memories(0.85).unwrap();
+        assert_eq!(promoted, 1);
+
+        // 验证 tier 变为 core
+        let conn = store.conn.lock().unwrap();
+        let tier: String = conn.query_row(
+            "SELECT tier FROM memories WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(tier, "core");
+    }
+
+    #[test]
+    fn test_promote_ignores_unconfirmed() {
+        let store = Store::open_in_memory().unwrap();
+
+        // 高 confidence 但 updated_at == created_at（从未被更新确认过）
+        store.save_memory("behavior", "new observation", "coach", 0.9).unwrap();
+
+        let promoted = store.promote_high_confidence_memories(0.85).unwrap();
+        assert_eq!(promoted, 0);
+    }
+
+    #[test]
+    fn test_promote_ignores_wrong_categories() {
+        let store = Store::open_in_memory().unwrap();
+
+        // 高 confidence 的 identity 记忆（已是 core，不该再提升）
+        let id = store.save_memory("identity", "I am Evan", "user", 0.95).unwrap();
+        store.update_memory(id, "I am Evan (confirmed)", 0.95).unwrap();
+
+        // identity 已是 core 层，promote 的 WHERE 筛选 tier='archive'
+        let promoted = store.promote_high_confidence_memories(0.85).unwrap();
+        assert_eq!(promoted, 0);
+    }
+
+    // ─── Open Questions 测试 ──────────────────────────────
+
+    #[test]
+    fn test_save_and_search_open_question() {
+        let store = Store::open_in_memory().unwrap();
+
+        let id = store.save_open_question("你为什么选择这个方向？", None).unwrap();
+        assert!(id > 0);
+
+        let results = store.search_open_questions("方向").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, id);
+        assert!(results[0].1.contains("方向"));
+    }
+
+    #[test]
+    fn test_open_question_with_suggestion_link() {
+        let store = Store::open_in_memory().unwrap();
+
+        let suggestion_id = store.record_suggestion("questioner", "daily-question", "test q").unwrap();
+        let q_id = store.save_open_question("test question", Some(suggestion_id)).unwrap();
+        assert!(q_id > 0);
+    }
+
+    #[test]
+    fn test_get_due_questions_respects_time() {
+        let store = Store::open_in_memory().unwrap();
+
+        // 新问题的 next_ask_at 是 3 天后，不应该 due
+        store.save_open_question("future question", None).unwrap();
+
+        let due = store.get_due_questions(10).unwrap();
+        assert!(due.is_empty(), "新问题不应该立即到期");
+    }
+
+    #[test]
+    fn test_get_due_questions_returns_past_due() {
+        let store = Store::open_in_memory().unwrap();
+
+        let id = store.save_open_question("overdue question", None).unwrap();
+
+        // 手动设置 next_ask_at 为过去
+        let past = (chrono::Local::now() - chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE open_questions SET next_ask_at = ?1 WHERE id = ?2",
+            rusqlite::params![past, id],
+        ).unwrap();
+        drop(conn);
+
+        let due = store.get_due_questions(10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, id);
+    }
+
+    #[test]
+    fn test_answer_question() {
+        let store = Store::open_in_memory().unwrap();
+
+        let id = store.save_open_question("will be answered", None).unwrap();
+        store.answer_question(id).unwrap();
+
+        // 已回答的不应出现在搜索中（status != 'open'）
+        let results = store.search_open_questions("answered").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_bump_question_ask_increments() {
+        let store = Store::open_in_memory().unwrap();
+
+        let id = store.save_open_question("bump test", None).unwrap();
+
+        // bump 增加 ask_count
+        store.bump_question_ask(id).unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let (count, status): (i32, String) = conn.query_row(
+            "SELECT ask_count, status FROM open_questions WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        drop(conn);
+        assert_eq!(count, 2);
+        assert_eq!(status, "open");
+    }
+
+    #[test]
+    fn test_bump_question_archives_after_max() {
+        let store = Store::open_in_memory().unwrap();
+
+        let id = store.save_open_question("will archive", None).unwrap();
+
+        // 手动设置 ask_count = 3（再 bump 一次就是 4，应该归档）
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE open_questions SET ask_count = 3 WHERE id = ?1",
+            rusqlite::params![id],
+        ).unwrap();
+        drop(conn);
+
+        store.bump_question_ask(id).unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let status: String = conn.query_row(
+            "SELECT status FROM open_questions WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "archived");
+    }
+
+    #[test]
+    fn test_due_questions_excludes_answered_and_archived() {
+        let store = Store::open_in_memory().unwrap();
+
+        let id1 = store.save_open_question("answered q", None).unwrap();
+        let id2 = store.save_open_question("archived q", None).unwrap();
+        let id3 = store.save_open_question("open q", None).unwrap();
+
+        store.answer_question(id1).unwrap();
+
+        // 手动归档 id2
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE open_questions SET status = 'archived' WHERE id = ?1",
+            rusqlite::params![id2],
+        ).unwrap();
+        // 手动设置所有 next_ask_at 为过去
+        let past = (chrono::Local::now() - chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        conn.execute(
+            "UPDATE open_questions SET next_ask_at = ?1",
+            rusqlite::params![past],
+        ).unwrap();
+        drop(conn);
+
+        let due = store.get_due_questions(10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, id3);
+    }
+
+    #[test]
+    fn test_chat_auto_answer_flow() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_open_question("你对团队协作有什么看法？", None).unwrap();
+
+        // 模拟用户在 Chat 中讨论了"团队协作"
+        let matches = store.search_open_questions("团队协作").unwrap();
+        assert!(!matches.is_empty());
+        assert_eq!(matches[0].0, id);
+
+        // 标记为已回答
+        store.answer_question(matches[0].0).unwrap();
+
+        // 确认不再出现在搜索结果中（只搜 status='open'）
+        let matches_after = store.search_open_questions("团队协作").unwrap();
+        assert!(matches_after.is_empty());
+    }
+
+    #[test]
+    fn test_observer_note_tier_and_ttl() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("observer_note", "邮件频率增加 ← 本周第3封", "observer", 0.6).unwrap();
+
+        // observer_note 应该在 working tier，TTL 3 天
+        let conn = store.conn.lock().unwrap();
+        let (tier, expires_at): (String, Option<String>) = conn.query_row(
+            "SELECT tier, expires_at FROM memories WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(tier, "working");
+        assert!(expires_at.is_some(), "observer_note should have expires_at");
+    }
+
+    #[test]
+    fn test_load_observer_notes_recent_empty() {
+        let store = Store::open_in_memory().unwrap();
+        let notes = store.load_observer_notes_recent().unwrap();
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn test_load_observer_notes_recent_returns_today() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("observer_note", "note1 ← 首次出现", "observer", 0.6).unwrap();
+        store.save_memory("observer_note", "note2 ← 本周第2次", "observer", 0.6).unwrap();
+        // 其他 category 不应返回
+        store.save_memory("behavior", "some behavior", "chat", 0.8).unwrap();
+
+        let notes = store.load_observer_notes_recent().unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].contains("note1"));
+        assert!(notes[1].contains("note2"));
+    }
+
+    #[test]
+    fn test_coach_reads_observer_notes_over_raw_obs() {
+        // 验证 load_observer_notes_recent 返回的数据可被 Coach 使用
+        let store = Store::open_in_memory().unwrap();
+        // 模拟 Observer 已存入标注
+        store.save_memory("observer_note", "Morning Brief ← 今天第2次触发", "observer", 0.6).unwrap();
+        // 同时有 raw observations
+        store.record_observation("scheduled", "Morning Brief", None).unwrap();
+
+        let notes = store.load_observer_notes_recent().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("今天第2次"));
+
+        // Coach 应该优先使用 observer_notes
+        let raw = store.load_unprocessed_observations(50).unwrap();
+        assert_eq!(raw.len(), 1); // raw 仍在，待 Coach 归档
     }
 }

@@ -5,8 +5,7 @@ use crate::agent::Agent;
 use crate::skills;
 use crate::store::Store;
 
-/// 学习教练：读取未处理 observations → Claude 发现模式 → 保存 coach_insight → 归档
-/// 不再写 sage.md，改用 store.save_coach_insight() 持久化洞察
+/// 学习教练：读取 observer_notes（降级读 raw observations）→ 发现模式 → 保存 coach_insight → 归档
 pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
     let observations = store.load_unprocessed_observations(50)?;
     if observations.is_empty() {
@@ -16,13 +15,24 @@ pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
 
     info!("Coach: analyzing {} observations", observations.len());
 
-    let obs_text = observations
-        .iter()
-        .map(|o| format!("- [{}] **{}**: {}", o.created_at, o.category, o.observation))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // 优先使用 Observer 标注过的 notes；降级使用 raw observations
+    let observer_notes = store.load_observer_notes_recent()?;
+    let obs_text = if !observer_notes.is_empty() {
+        info!("Coach: using {} observer notes (enriched)", observer_notes.len());
+        observer_notes
+            .iter()
+            .map(|n| format!("- {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        info!("Coach: no observer notes, falling back to raw observations");
+        observations
+            .iter()
+            .map(|o| format!("- [{}] **{}**: {}", o.created_at, o.category, o.observation))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
-    // 从 SQLite 读取最近的教练洞察，替代原来读 sage.md
     let existing_insights = store.search_memories("coach_insight", 10)?;
     let existing_text = if existing_insights.is_empty() {
         "（空，首次学习）".to_string()
@@ -35,8 +45,8 @@ pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
     };
 
     let prompt = format!(
-        "你是 Sage 的学习教练。分析以下原始观察记录，从中发现用户的行为模式、偏好和习惯。\n\n\
-         ## 最近观察（未处理）\n{obs_text}\n\n\
+        "你是 Sage 的学习教练。分析以下观察记录，从中发现用户的行为模式、偏好和习惯。\n\n\
+         ## 最近观察\n{obs_text}\n\n\
          ## 当前认知（历史洞察）\n{existing_text}\n\n\
          请输出你新发现的核心洞察（每条一行，简洁）。规则：\n\
          1. 只输出新发现或需要更新的认知，不要重复已有内容\n\
@@ -53,10 +63,8 @@ pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
     );
     let resp = agent.invoke(&prompt, Some(&system)).await?;
 
-    // 将洞察保存到 SQLite memories 表（替代原来写 sage.md）
     let content = resp.text.trim();
     if !content.is_empty() {
-        // 每行作为一条独立的 coach_insight 保存
         for line in content.lines() {
             let line = line.trim().trim_start_matches('-').trim();
             if !line.is_empty() {

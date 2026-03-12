@@ -79,6 +79,7 @@ fn main() {
             commands::delete_memory,
             commands::export_memories,
             commands::import_memories,
+            commands::import_raw_memories,
             commands::save_assessment,
             commands::get_latest_reports,
             commands::add_user_memory,
