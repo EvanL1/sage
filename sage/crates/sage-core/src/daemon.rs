@@ -137,6 +137,15 @@ impl Daemon {
 
     pub async fn run(&self) -> Result<()> {
         info!("Daemon event loop started");
+
+        // 启动 Browser Bridge HTTP 服务器
+        let bridge_store = self.store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::bridge::start_bridge_server(bridge_store, crate::bridge::DEFAULT_PORT).await {
+                error!("Bridge server failed: {e}");
+            }
+        });
+
         let mut ticker = time::interval(self.heartbeat_interval);
 
         loop {
