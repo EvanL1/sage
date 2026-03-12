@@ -10,6 +10,11 @@ const todayPageCount = document.getElementById("today-page-count");
 const todayTopDomain = document.getElementById("today-top-domain");
 const todayActiveTime = document.getElementById("today-active-time");
 
+// Teams 相关 DOM 元素
+const teamsStatusBadge = document.getElementById("teams-status-badge");
+const teamsMessageCount = document.getElementById("teams-message-count");
+const teamsCaptureLevel = document.getElementById("teams-capture-level");
+
 // --- 工具函数 ---
 
 function setConnected(data) {
@@ -41,7 +46,6 @@ function formatTime(iso) {
   }
 }
 
-// 将秒数格式化为可读时长，如 "1h 23m" 或 "45m"
 function formatDuration(seconds) {
   if (!seconds || seconds < 60) return `${seconds || 0}s`;
   const h = Math.floor(seconds / 3600);
@@ -49,6 +53,56 @@ function formatDuration(seconds) {
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
 }
+
+// --- Teams 状态更新 ---
+
+function updateTeamsStatus() {
+  chrome.storage.local.get(
+    [
+      "teams_page_active",
+      "teams_today_count",
+      "teams_today_date",
+      "teams_send_content_summary",
+    ],
+    (result) => {
+      const isActive = result.teams_page_active === true;
+      if (isActive) {
+        teamsStatusBadge.textContent = "已连接";
+        teamsStatusBadge.className = "badge badge--connected";
+      } else {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          const tab = tabs[0];
+          const isTeamsTab =
+            tab?.url?.includes("teams.microsoft.com") ||
+            tab?.url?.includes("teams.live.com");
+
+          if (isTeamsTab) {
+            teamsStatusBadge.textContent = "检测中…";
+            teamsStatusBadge.className = "badge badge--checking";
+          } else {
+            teamsStatusBadge.textContent = "未检测到";
+            teamsStatusBadge.className = "badge badge--disconnected";
+          }
+        });
+      }
+
+      const today = new Date().toDateString();
+      if (result.teams_today_date === today) {
+        teamsMessageCount.textContent = result.teams_today_count ?? 0;
+      } else {
+        teamsMessageCount.textContent = 0;
+      }
+
+      const sendSummary = result.teams_send_content_summary ?? false;
+      teamsCaptureLevel.value = sendSummary ? "summary" : "metadata";
+    }
+  );
+}
+
+teamsCaptureLevel.addEventListener("change", () => {
+  const sendSummary = teamsCaptureLevel.value === "summary";
+  chrome.storage.local.set({ teams_send_content_summary: sendSummary });
+});
 
 // --- 检查连接状态（popup 打开时执行）---
 
@@ -71,7 +125,6 @@ syncBtn.addEventListener("click", () => {
   syncBtn.disabled = true;
   syncBtn.textContent = "Syncing…";
 
-  // 让当前标签的 content script 重新推送记忆
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs[0];
     if (!tab?.id) {
@@ -80,7 +133,6 @@ syncBtn.addEventListener("click", () => {
       return;
     }
 
-    // 短暂延迟后刷新状态计数
     setTimeout(() => {
       chrome.runtime.sendMessage({ type: "CHECK_STATUS" }, (res) => {
         syncBtn.textContent = "Sync Now";
@@ -107,13 +159,11 @@ chrome.storage.local.get(["lastSync"], (result) => {
 
 // ── 追踪开关 ──────────────────────────────────────────────────────────────────
 
-// 从 storage 加载追踪开关状态（默认开启）
 chrome.storage.local.get(["trackingEnabled"], (result) => {
   const enabled = result.trackingEnabled !== false;
   trackingToggle.checked = enabled;
 });
 
-// 用户切换追踪开关时，持久化到 storage（background.js 会监听变更）
 trackingToggle.addEventListener("change", () => {
   const enabled = trackingToggle.checked;
   chrome.storage.local.set({ trackingEnabled: enabled });
@@ -123,7 +173,6 @@ trackingToggle.addEventListener("change", () => {
 
 function renderDailyStats(stats) {
   if (!stats || stats.date !== new Date().toDateString()) {
-    // 没有今日数据，显示默认值
     todayPageCount.textContent = "0";
     todayTopDomain.textContent = "—";
     todayActiveTime.textContent = "0m";
@@ -132,7 +181,6 @@ function renderDailyStats(stats) {
 
   todayPageCount.textContent = stats.pageCount || 0;
 
-  // 找出停留时间最长的域名
   const domainDurations = stats.domainDurations || {};
   const topDomain = Object.entries(domainDurations).sort(
     ([, a], [, b]) => b - a
@@ -148,7 +196,9 @@ function renderDailyStats(stats) {
   todayActiveTime.textContent = formatDuration(stats.totalActiveSeconds || 0);
 }
 
-// 加载今日统计数据
 chrome.storage.local.get(["dailyStats"], (result) => {
   renderDailyStats(result.dailyStats);
 });
+
+// --- 初始化 Teams 状态 ---
+updateTeamsStatus();

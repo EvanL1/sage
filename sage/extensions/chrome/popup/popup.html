@@ -35,7 +35,6 @@
         </label>
       </div>
 
-      <!-- 今日统计 -->
       <div class="daily-stats" id="daily-stats">
         <div class="stat">
           <span class="stat__label">今日访问页面</span>
@@ -49,6 +48,27 @@
           <span class="stat__label">活跃时长</span>
           <span id="today-active-time" class="stat__value">—</span>
         </div>
+      </div>
+    </section>
+
+    <!-- Teams 配置区域 -->
+    <section class="teams-section">
+      <div class="section-header">
+        <span class="section-title">Microsoft Teams</span>
+        <span id="teams-status-badge" class="badge badge--checking">未检测到</span>
+      </div>
+
+      <div class="stat">
+        <span class="stat__label">今日消息数</span>
+        <span id="teams-message-count" class="stat__value">0</span>
+      </div>
+
+      <div class="setting-row">
+        <label for="teams-capture-level" class="setting-label">捕获级别</label>
+        <select id="teams-capture-level" class="setting-select">
+          <option value="metadata">仅元数据</option>
+          <option value="summary">元数据 + 摘要</option>
+        </select>
       </div>
     </section>
 
