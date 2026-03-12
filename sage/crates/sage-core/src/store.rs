@@ -15,6 +15,16 @@ pub struct ObservationRow {
     pub created_at: String,
 }
 
+/// 浏览器行为记录
+#[derive(Debug, Clone)]
+pub struct BrowserBehaviorRow {
+    pub id: i64,
+    pub source: String,
+    pub event_type: String,
+    pub metadata: Option<String>,
+    pub created_at: String,
+}
+
 /// SQLite 存储层，线程安全
 pub struct Store {
     conn: Mutex<Connection>,
@@ -196,6 +206,22 @@ impl Store {
                 PRAGMA user_version = 9;",
             )
             .context("数据库迁移 v9（open_questions 表）失败")?;
+        }
+
+        if version < 10 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS browser_behaviors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    metadata TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_browser_behaviors_source
+                    ON browser_behaviors(source, created_at DESC);
+                PRAGMA user_version = 10;",
+            )
+            .context("数据库迁移 v10（browser_behaviors 表）失败")?;
         }
 
         Ok(())
@@ -1469,6 +1495,48 @@ impl Store {
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    // ─── Browser Bridge 方法 ──────────────────────────────
+
+    /// 保存浏览器行为事件
+    pub fn save_browser_behavior(&self, source: &str, event_type: &str, metadata: &str) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT INTO browser_behaviors (source, event_type, metadata) VALUES (?1, ?2, ?3)",
+            rusqlite::params![source, event_type, metadata],
+        ).context("保存浏览器行为失败")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 获取最近 N 条浏览器行为事件
+    pub fn get_browser_behaviors(&self, limit: usize) -> Result<Vec<BrowserBehaviorRow>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source, event_type, metadata, created_at
+             FROM browser_behaviors ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+            Ok(BrowserBehaviorRow {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                event_type: row.get(2)?,
+                metadata: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 记忆总数（活跃状态）
+    pub fn count_memories(&self) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE status = 'active'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
 }
 
 /// UTF-8 安全截断：在 max_bytes 处找最近的字符边界
@@ -2599,5 +2667,45 @@ mod tests {
         // Coach 应该优先使用 observer_notes
         let raw = store.load_unprocessed_observations(50).unwrap();
         assert_eq!(raw.len(), 1); // raw 仍在，待 Coach 归档
+    }
+
+    // ─── Browser Bridge 测试 ──────────────────────────────
+
+    #[test]
+    fn test_save_browser_behavior() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_browser_behavior("chatgpt", "conversation_start", r#"{"topic":"rust"}"#).unwrap();
+        store.save_browser_behavior("claude", "memory_created", r#"{"count":3}"#).unwrap();
+        let rows = store.get_browser_behaviors(10).unwrap();
+        assert_eq!(rows.len(), 2);
+        // 最新在前
+        assert_eq!(rows[0].source, "claude");
+        assert_eq!(rows[1].source, "chatgpt");
+    }
+
+    #[test]
+    fn test_count_memories() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("identity", "test memory", "chat", 0.9).unwrap();
+        store.save_memory("values", "another one", "import", 0.8).unwrap();
+        let count = store.count_memories().unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_browser_behavior_empty() {
+        let store = Store::open_in_memory().unwrap();
+        let rows = store.get_browser_behaviors(10).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_save_memory_with_browser_source() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("behavior", "uses chatgpt for brainstorming", "browser:chatgpt", 0.7).unwrap();
+        assert!(id > 0);
+        let mems = store.search_memories("brainstorming", 10).unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].source, "browser:chatgpt");
     }
 }
