@@ -323,3 +323,45 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub priority: Option<u8>,
 }
+
+// ─── Browser Bridge 模型 ──────────────────────────
+
+/// 浏览器插件导入记忆请求
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeImportRequest {
+    /// 来源平台：claude / chatgpt / gemini / other
+    pub source: String,
+    /// 记忆条目
+    pub memories: Vec<BridgeMemoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeMemoryEntry {
+    pub category: String,
+    pub content: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
+}
+
+fn default_confidence() -> f64 {
+    0.7
+}
+
+/// 浏览器行为事件
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeBehaviorEvent {
+    /// 来源平台
+    pub source: String,
+    /// 事件类型：conversation_start / conversation_end / topic_switch / memory_created
+    pub event_type: String,
+    /// 附加数据
+    pub metadata: HashMap<String, String>,
+}
+
+/// Bridge 状态响应
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeStatusResponse {
+    pub status: String,
+    pub version: String,
+    pub memory_count: usize,
+}
