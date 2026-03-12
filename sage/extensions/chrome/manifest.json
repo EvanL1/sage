@@ -3,7 +3,7 @@
   "name": "Sage Bridge",
   "version": "0.1.0",
   "description": "Connect your AI conversations to Sage for unified memory",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "tabs", "webNavigation"],
   "host_permissions": ["http://127.0.0.1:18522/*"],
   "background": {
     "service_worker": "background.js"
