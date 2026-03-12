@@ -25,6 +25,27 @@
 
     <button id="sync-btn" class="btn" disabled>Sync Now</button>
 
+    <!-- Teams 配置区域 -->
+    <section class="teams-section">
+      <div class="section-header">
+        <span class="section-title">Microsoft Teams</span>
+        <span id="teams-status-badge" class="badge badge--checking">未检测到</span>
+      </div>
+
+      <div class="stat">
+        <span class="stat__label">今日消息数</span>
+        <span id="teams-message-count" class="stat__value">0</span>
+      </div>
+
+      <div class="setting-row">
+        <label for="teams-capture-level" class="setting-label">捕获级别</label>
+        <select id="teams-capture-level" class="setting-select">
+          <option value="metadata">仅元数据</option>
+          <option value="summary">元数据 + 摘要</option>
+        </select>
+      </div>
+    </section>
+
     <footer>
       <span id="last-sync">Last sync: never</span>
     </footer>

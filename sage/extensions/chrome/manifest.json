@@ -23,6 +23,11 @@
       "matches": ["https://gemini.google.com/*"],
       "js": ["content-scripts/gemini.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://teams.microsoft.com/*", "https://teams.live.com/*"],
+      "js": ["content-scripts/teams.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

@@ -4,6 +4,11 @@ const behaviorCount = document.getElementById("behavior-count");
 const syncBtn = document.getElementById("sync-btn");
 const lastSync = document.getElementById("last-sync");
 
+// Teams 相关 DOM 元素
+const teamsStatusBadge = document.getElementById("teams-status-badge");
+const teamsMessageCount = document.getElementById("teams-message-count");
+const teamsCaptureLevel = document.getElementById("teams-capture-level");
+
 // --- Helpers ---
 
 function setConnected(data) {
@@ -34,6 +39,62 @@ function formatTime(iso) {
     return iso;
   }
 }
+
+// --- Teams 状态更新 ---
+
+function updateTeamsStatus() {
+  chrome.storage.local.get(
+    [
+      "teams_page_active",
+      "teams_today_count",
+      "teams_today_date",
+      "teams_send_content_summary",
+    ],
+    (result) => {
+      // 检测 Teams 页面是否活跃
+      const isActive = result.teams_page_active === true;
+      if (isActive) {
+        teamsStatusBadge.textContent = "已连接";
+        teamsStatusBadge.className = "badge badge--connected";
+      } else {
+        // 进一步检查当前 active tab 是否是 Teams
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          const tab = tabs[0];
+          const isTeamsTab =
+            tab?.url?.includes("teams.microsoft.com") ||
+            tab?.url?.includes("teams.live.com");
+
+          if (isTeamsTab) {
+            teamsStatusBadge.textContent = "检测中…";
+            teamsStatusBadge.className = "badge badge--checking";
+          } else {
+            teamsStatusBadge.textContent = "未检测到";
+            teamsStatusBadge.className = "badge badge--disconnected";
+          }
+        });
+      }
+
+      // 更新今日消息计数（如果是今天的数据）
+      const today = new Date().toDateString();
+      if (result.teams_today_date === today) {
+        teamsMessageCount.textContent = result.teams_today_count ?? 0;
+      } else {
+        teamsMessageCount.textContent = 0;
+      }
+
+      // 恢复捕获级别选择
+      const sendSummary = result.teams_send_content_summary ?? false;
+      teamsCaptureLevel.value = sendSummary ? "summary" : "metadata";
+    }
+  );
+}
+
+// --- Teams 捕获级别设置 ---
+
+teamsCaptureLevel.addEventListener("change", () => {
+  const sendSummary = teamsCaptureLevel.value === "summary";
+  chrome.storage.local.set({ teams_send_content_summary: sendSummary });
+});
 
 // --- Check connection on popup open ---
 
@@ -89,3 +150,6 @@ chrome.storage.local.get(["lastSync"], (result) => {
     lastSync.textContent = `Last sync: ${formatTime(result.lastSync)}`;
   }
 });
+
+// --- 初始化 Teams 状态 ---
+updateTeamsStatus();
