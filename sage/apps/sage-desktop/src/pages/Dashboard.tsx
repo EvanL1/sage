@@ -36,6 +36,8 @@ function Dashboard() {
   const [dailyQuestion, setDailyQuestion] = useState<DailyQuestion | null>(null);
   const [triggeringReport, setTriggeringReport] = useState<Record<string, boolean>>({});
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  const [topTags, setTopTags] = useState<{ tag: string; count: number }[]>([]);
+  const [connections, setConnections] = useState<Record<string, { status: string; label: string }> | null>(null);
 
   // Status + memory count: load on mount
   useEffect(() => {
@@ -50,6 +52,17 @@ function Dashboard() {
     invoke<{ id: number }[]>("get_memories")
       .then((m) => setMemoryCount(m.length))
       .catch(() => setMemoryCount(0));
+    invoke<{ tag: string; count: number }[]>("get_all_tags")
+      .then((tags) => setTopTags(tags.slice(0, 8)))
+      .catch(() => {});
+    const fetchConnections = () => {
+      invoke<Record<string, { status: string; label: string }>>("get_connections_status")
+        .then(setConnections)
+        .catch(() => {});
+    };
+    fetchConnections();
+    const connTimer = setInterval(fetchConnections, 15_000);
+    return () => clearInterval(connTimer);
   }, [navigate]);
 
   // Suggestions: mount + poll every 30s
@@ -170,6 +183,67 @@ function Dashboard() {
           <div className="stat-value">{memoryCount !== null ? memoryCount : "—"}</div>
         </div>
       </div>
+
+      {connections && (
+        <div className="connections-panel" style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+          gap: "var(--spacing-sm)",
+          marginBottom: "var(--spacing-lg)",
+        }}>
+          {[
+            { key: "browser_extension", name: "浏览器扩展" },
+            { key: "outlook", name: "Outlook" },
+            { key: "claude_code", name: "Claude Code" },
+            { key: "behavior_tracking", name: "行为追踪" },
+          ].map(({ key, name }) => {
+            const conn = connections[key];
+            if (!conn) return null;
+            const dotColor = conn.status === "connected" ? "var(--green, #22c55e)"
+              : conn.status === "stale" ? "var(--accent, #d97706)"
+              : conn.status === "idle" ? "var(--text-tertiary)"
+              : conn.status === "never" ? "var(--text-tertiary)"
+              : "var(--red, #ef4444)";
+            return (
+              <div key={key} style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 12px",
+                background: "var(--surface)",
+                borderRadius: "var(--radius)",
+                border: "1px solid var(--border)",
+                fontSize: 13,
+              }}>
+                <span style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: dotColor,
+                  flexShrink: 0,
+                }} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 500, fontSize: 12, color: "var(--text-secondary)" }}>{name}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-tertiary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{conn.label}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {topTags.length > 0 && (
+        <div className="dashboard-tags">
+          <span className="dashboard-tags-label">Memory tags</span>
+          <div className="dashboard-tags-list">
+            {topTags.map(({ tag, count }) => (
+              <Link key={tag} to="/about" className="tag-chip">
+                {tag} <span className="tag-chip-count">{count}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {!status?.has_profile && (
         <div className="card">

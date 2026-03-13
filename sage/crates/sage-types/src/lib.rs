@@ -274,8 +274,45 @@ pub struct Memory {
     pub content: String,
     pub source: String,      // "chat" | "observation" | "feedback"
     pub confidence: f64,     // 0.0-1.0
+    /// 可见性层级：public（Digital Evan 可见）| private（仅 Evan）| subconscious（AI 推断）
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn default_visibility() -> String {
+    "public".to_string()
+}
+
+// ─── Memory Edge 模型（记忆图谱连接）────────────────
+
+/// 记忆之间的语义连接
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEdge {
+    pub id: i64,
+    pub from_id: i64,
+    pub to_id: i64,
+    /// 关系类型：similar / derived_from / co_occurred / causes / contradicts / supports
+    pub relation: String,
+    /// 关系强度 0.0-1.0
+    pub weight: f64,
+    pub created_at: String,
+}
+
+// ─── Knowledge Edge 模型（通用知识图谱连接）────────────────
+
+/// 不同类型节点之间的语义连接
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeEdge {
+    pub id: i64,
+    pub from_type: String,   // "memory" | "message" | "observation" | "question"
+    pub from_id: i64,
+    pub to_type: String,     // "memory" | "message" | "observation" | "question"
+    pub to_id: i64,
+    pub relation: String,    // "references" | "triggers" | "answers" | "supports" | "contradicts" | "co_occurred" | "causes" | "derived_from" | "similar"
+    pub weight: f64,         // 0.0-1.0
+    pub created_at: String,
 }
 
 // ─── Report 模型（定时报告记录）────────────────────
@@ -324,6 +361,21 @@ pub struct ProviderConfig {
     pub priority: Option<u8>,
 }
 
+// ─── Message 模型（通讯消息）────────────────────────
+
+/// 来自 Teams/Email/Slack 等的通讯消息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: i64,
+    pub sender: String,
+    pub channel: String,
+    pub content: Option<String>,
+    pub source: String,       // "teams" | "email" | "slack"
+    pub message_type: String, // "text" | "file" | "meeting"
+    pub timestamp: String,    // 消息原始时间
+    pub created_at: String,   // 入库时间
+}
+
 // ─── Browser Bridge 模型 ──────────────────────────
 
 /// 浏览器插件导入记忆请求
@@ -354,8 +406,8 @@ pub struct BridgeBehaviorEvent {
     pub source: String,
     /// 事件类型：conversation_start / conversation_end / topic_switch / memory_created
     pub event_type: String,
-    /// 附加数据
-    pub metadata: HashMap<String, String>,
+    /// 附加数据（值可以是字符串、数字、布尔等任意 JSON 类型）
+    pub metadata: HashMap<String, serde_json::Value>,
 }
 
 /// Bridge 状态响应

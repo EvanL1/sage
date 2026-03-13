@@ -303,7 +303,7 @@ pub fn ingest_sessions(claude_dir: &Path, store: &Store, hours: i64) -> Result<u
                     let content = format_session_summary(&summary, &project_name);
                     // Upsert: 删旧 → 插新
                     let _ = store.delete_memory_by_source(&source_key);
-                    store.save_memory("session", &content, &source_key, 0.8)?;
+                    store.save_memory_with_visibility("session", &content, &source_key, 0.8, "public")?;
                     ingested += 1;
                     debug!(
                         "Ingested session {} ({} msgs, {} files)",

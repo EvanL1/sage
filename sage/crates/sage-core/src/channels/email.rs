@@ -198,6 +198,7 @@ fn parse_emails(raw: &str) -> Vec<Event> {
             let mut from = String::new();
             let mut priority = String::from("normal");
             let mut body_preview = String::new();
+            let mut date_raw = String::new();
 
             for field in entry.split("||") {
                 if let Some(val) = field.strip_prefix("SUBJECT:") {
@@ -208,6 +209,8 @@ fn parse_emails(raw: &str) -> Vec<Event> {
                     priority = val.to_string();
                 } else if let Some(val) = field.strip_prefix("BODY:") {
                     body_preview = val.trim().to_string();
+                } else if let Some(val) = field.strip_prefix("DATE:") {
+                    date_raw = val.trim().to_string();
                 }
             }
 
@@ -233,6 +236,7 @@ fn parse_emails(raw: &str) -> Vec<Event> {
                 metadata: [
                     ("from".into(), from),
                     ("priority".into(), priority),
+                    ("date".into(), date_raw),
                 ]
                 .into_iter()
                 .collect(),

@@ -20,6 +20,15 @@ pub struct AppState {
 }
 
 fn main() {
+    // 初始化 tracing：输出到 stderr（LaunchAgent 会重定向到 sage.err.log）
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "sage_core=info,sage_desktop=info".parse().unwrap()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let data_dir = dirs::home_dir()
         .map(|h| h.join(".sage/data"))
         .expect("无法确定 home 目录");
@@ -85,6 +94,20 @@ fn main() {
             commands::add_user_memory,
             commands::get_daily_question,
             commands::trigger_report,
+            commands::trigger_memory_evolution,
+            commands::trigger_strategist,
+            commands::get_memory_graph,
+            commands::trigger_memory_linking,
+            commands::get_all_tags,
+            commands::get_memory_tags,
+            commands::add_memory_tag,
+            commands::remove_memory_tag,
+            commands::get_memories_by_tag,
+            commands::get_connections_status,
+            commands::get_messages,
+            commands::get_message_channels,
+            commands::summarize_messages,
+            commands::chat_external,
         ])
         .setup(move |app| {
             tray::setup_tray(app)?;

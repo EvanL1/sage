@@ -160,6 +160,25 @@ impl Daemon {
         self.tick().await
     }
 
+    /// 手动触发记忆进化（去重 + 特质合成 + 精简 + 衰减 + 晋升）
+    pub async fn trigger_memory_evolution(&self) -> Result<crate::memory_evolution::EvolutionResult> {
+        info!("手动触发记忆进化");
+        self.router.lock().await.run_memory_evolution().await
+    }
+
+    /// 手动触发战略家分析
+    pub async fn trigger_strategist(&self) -> Result<bool> {
+        info!("手动触发战略家分析");
+        self.router.lock().await.run_strategist().await
+    }
+
+    /// 单独触发记忆图谱连接（不走完整 evolution pipeline）
+    pub async fn trigger_memory_linking(&self) -> Result<usize> {
+        info!("手动触发记忆连接");
+        let router = self.router.lock().await;
+        crate::memory_evolution::link_memories(router.agent(), router.store()).await
+    }
+
     /// 直接触发指定类型的定时报告（绕过心跳时间窗口检查）
     pub async fn trigger_report(&self, report_type: &str) -> Result<String> {
         let title = match report_type {
@@ -205,7 +224,23 @@ impl Daemon {
 
         if let Some(ref email) = self.email {
             match email.poll().await {
-                Ok(events) => all_events.extend(events),
+                Ok(events) => {
+                    // 邮件事件写入 messages 表，供信息流页面浏览
+                    // 使用邮件原始 DATE 字段作为时间戳（稳定，用于去重）
+                    for ev in &events {
+                        let sender = ev.metadata.get("from").map(|s| s.as_str()).unwrap_or("unknown");
+                        let subject = &ev.title;
+                        let body = if ev.body.is_empty() { None } else { Some(ev.body.as_str()) };
+                        let ts = ev.metadata.get("date")
+                            .filter(|d| !d.is_empty())
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| ev.timestamp.to_rfc3339());
+                        if let Err(e) = self.store.save_message(sender, subject, body, "email", "email", &ts) {
+                            error!("保存邮件到 messages 失败: {e}");
+                        }
+                    }
+                    all_events.extend(events);
+                }
                 Err(e) => error!("Email poll failed: {e}"),
             }
         }
@@ -245,9 +280,13 @@ impl Daemon {
         info!("Tick: {} events to process", deduped.len());
 
         let mut had_evening_review = false;
+        let mut had_weekly_report = false;
         for event in deduped {
             if event.title == "Evening Review" {
                 had_evening_review = true;
+            }
+            if event.title == "Weekly Report" {
+                had_weekly_report = true;
             }
             match self.router.lock().await.route(event.clone()).await {
                 Ok(()) => self.mark_event_handled(&event),
@@ -284,14 +323,27 @@ impl Daemon {
                 Err(e) => error!("Questioner failed: {e}"),
             }
 
-            // 记忆进化：合并重复、衰减过期、提升高频
+            // 记忆进化：合并重复、精简冗长、衰减过期、提升高频
             match router.run_memory_evolution().await {
-                Ok((m, d, p)) => {
-                    if m + d + p > 0 {
-                        info!("Memory evolution: merged={m}, decayed={d}, promoted={p}");
+                Ok(r) => {
+                    if r.consolidated + r.condensed + r.decayed + r.promoted + r.linked > 0 {
+                        info!(
+                            "Memory evolution: consolidated={}, condensed={}, linked={}, decayed={}, promoted={}",
+                            r.consolidated, r.condensed, r.linked, r.decayed, r.promoted
+                        );
                     }
                 }
                 Err(e) => error!("Memory evolution failed: {e}"),
+            }
+        }
+
+        // 战略家：Weekly Report 后触发，超然视角的宏观结构分析
+        if had_weekly_report {
+            let router = self.router.lock().await;
+            match router.run_strategist().await {
+                Ok(true) => info!("Strategist: weekly strategic insights generated"),
+                Ok(false) => {}
+                Err(e) => error!("Strategist failed: {e}"),
             }
         }
 

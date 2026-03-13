@@ -57,6 +57,7 @@ function Settings() {
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
   const [providersLoading, setProvidersLoading] = useState(true);
+  const [evolutionRunning, setEvolutionRunning] = useState(false);
 
   useEffect(() => {
     invoke<UserProfile | null>("get_profile")
@@ -412,6 +413,62 @@ function Settings() {
             <label className="form-label">Max notification length</label>
             <input className="form-input" type="number" value={profile.communication.notification_max_chars} onChange={(e) => updateComm({ notification_max_chars: parseInt(e.target.value, 10) || 200 })} min="50" max="500" />
             <div className="form-hint">Maximum characters for suggestion notifications (50–500)</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Memory Management ── */}
+      <div className="settings-section">
+        <div className="settings-section-title">Memory management</div>
+        <div className="card">
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>Memory Evolution</div>
+                <div className="form-hint">Deduplicate, synthesize traits, decay stale, promote validated</div>
+              </div>
+              <button
+                className="btn btn-secondary btn-sm"
+                disabled={evolutionRunning}
+                onClick={() => {
+                  setEvolutionRunning(true);
+                  showToast("success", "Evolution running in background...");
+                  invoke<{ consolidated: number; condensed: number; decayed: number; promoted: number; linked: number }>("trigger_memory_evolution")
+                    .then((r) => {
+                      const parts = [];
+                      if (r.consolidated) parts.push(`${r.consolidated} merged`);
+                      if (r.condensed) parts.push(`${r.condensed} condensed`);
+                      if (r.linked) parts.push(`${r.linked} linked`);
+                      if (r.decayed) parts.push(`${r.decayed} decayed`);
+                      if (r.promoted) parts.push(`${r.promoted} promoted`);
+                      showToast("success", parts.length ? `Done: ${parts.join(", ")}` : "Done: no changes needed");
+                    })
+                    .catch((err) => showToast("error", String(err)))
+                    .finally(() => setEvolutionRunning(false));
+                }}
+              >
+                {evolutionRunning ? "Running..." : "Run now"}
+              </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>Sync to Claude Code</div>
+                <div className="form-hint">Overwrite Claude Code memory with latest Sage memories</div>
+              </div>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={async () => {
+                  try {
+                    const result = await invoke<string>("sync_memory");
+                    showToast("success", result);
+                  } catch (err) {
+                    showToast("error", String(err));
+                  }
+                }}
+              >
+                Sync now
+              </button>
+            </div>
           </div>
         </div>
       </div>

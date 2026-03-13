@@ -38,6 +38,7 @@
 | 普通邮件 | NewEmail | 非紧急新邮件 | 记录 pattern，不打扰 | patterns.md |
 | 新消息 | NewMessage | Teams/飞书消息 | 记录 pattern，不打扰 | patterns.md |
 | 行为模式 | PatternObserved | 系统识别到重复行为 | 静默记录 | patterns.md |
+| 浏览器行为 | BrowserBehavior | Chrome 扩展实时推送 | 聚合分析 | browser_behaviors |
 
 **优先级路由逻辑**（对应 router.rs `classify()`）：
 - Immediate：UrgentEmail、UpcomingMeeting
@@ -108,6 +109,23 @@
 2. 读取上周未完成事项（来自上周 Evening Review）
 3. 生成本周重点提醒
 4. 推送通知
+
+---
+
+## 第三部分（补充）：浏览器感知能力
+
+Sage 通过 Chrome/Edge 扩展（Sage Bridge）实时接收浏览器行为数据，存储在 `browser_behaviors` 表中。
+
+### 数据来源
+- **Teams 消息**：捕获消息发送者、频道、类型（不含消息正文，除非用户开启内容摘要）
+- **页面访问**：域名 + 停留时长（不含完整 URL，保护隐私）
+- **活动模式**：深度专注（单域名 >10 分钟）、频繁切换（5 分钟内 >8 个域名）
+
+### 在对话中的使用
+当用户询问今日工作通讯、浏览习惯、或与特定同事的互动时，你可以直接引用 `## 浏览器活动（今日）` 中的数据回答。这些数据每次对话自动注入 system prompt。
+
+### 在 Evening Review 中的使用
+每日晚间回顾自动包含当日浏览器活动摘要（Teams 通讯统计、网站访问 Top 10、活动模式），供 LLM 综合分析工作模式。
 
 ---
 

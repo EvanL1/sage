@@ -6,27 +6,37 @@ const SOURCE = "teams";
 
 // --- 常量 ---
 
-// 消息去重集合（页面刷新时自动清空）
-const processedIds = new Set();
+// 消息去重集合（从 storage 恢复，实现跨刷新增量）
+let processedIds = new Set();
+const MAX_STORED_IDS = 500;
 
-// 今日消息计数（存储到 chrome.storage.local）
 let todayMessageCount = 0;
-
-// 是否发送内容摘要（默认关闭，保护隐私）
-let sendContentSummary = false;
-
-// 防抖计时器
 let debounceTimer = null;
 const DEBOUNCE_MS = 500;
 
-// --- 初始化：读取配置 ---
+// 持久化已处理 ID（限制上限，FIFO 淘汰）
+function persistProcessedIds() {
+  const ids = [...processedIds];
+  // 只保留最近 MAX_STORED_IDS 个
+  const toStore = ids.slice(-MAX_STORED_IDS);
+  chrome.storage.local.set({ teams_processed_ids: toStore });
+}
+
+// --- 初始化：读取配置 + 恢复已处理 ID ---
 
 chrome.storage.local.get(
-  ["teams_send_content_summary", "teams_today_count", "teams_today_date"],
+  [
+    "teams_today_count",
+    "teams_today_date",
+    "teams_processed_ids",
+  ],
   (result) => {
-    sendContentSummary = result.teams_send_content_summary ?? false;
+    // 恢复已处理 ID（一次性清空旧缓存，重新捕获带内容的消息）
+    // TODO: 下个版本恢复持久化：processedIds = new Set(result.teams_processed_ids || []);
+    processedIds = new Set();
+    chrome.storage.local.remove("teams_processed_ids");
 
-    // 如果是新的一天，重置计数
+    // 如果是新的一天，重置计数（但不清空 ID，避免重复捕获跨天消息）
     const today = new Date().toDateString();
     if (result.teams_today_date === today) {
       todayMessageCount = result.teams_today_count ?? 0;
@@ -40,12 +50,26 @@ chrome.storage.local.get(
   }
 );
 
+// --- 消息选择器（新版 Teams 优先，旧版 fallback）---
+
+// 新版 Teams (teams.cloud.microsoft) 使用 data-testid
+// 旧版 Teams (teams.microsoft.com) 使用 data-tid / .ui-chat__*
+// 分两组：chat list sidebar + 对话区域
+const SIDEBAR_SELECTORS = [
+  '[data-testid="comfy-message-wrapper"]',
+];
+const CONVERSATION_SELECTORS = [
+  '[data-testid="message-pane-list-item"]',
+  '[data-testid="message-wrapper"]',
+  '[data-tid="message-pane-list-item"]',
+  '[class*="message-list-item"]',
+  ".ui-chat__item",
+  '[data-scope="message"]',
+];
+const MESSAGE_SELECTORS = [...SIDEBAR_SELECTORS, ...CONVERSATION_SELECTORS].join(",");
+
 // --- DOM 选择器工具函数 ---
 
-/**
- * 从多个候选选择器中取第一个匹配的元素文本
- * Teams Web 是 React SPA，选择器随版本变化，需多写 fallback
- */
 function queryText(root, selectors) {
   for (const sel of selectors) {
     try {
@@ -54,42 +78,106 @@ function queryText(root, selectors) {
         const text = el.innerText?.trim() || el.textContent?.trim();
         if (text) return text;
       }
-    } catch (_) {
-      // 忽略无效选择器
-    }
+    } catch (_) {}
   }
   return null;
 }
 
 /**
- * 获取消息唯一 ID（从 DOM 属性提取）
+ * 新版 Teams chat list：从 comfy-message-wrapper 的兄弟 DIV 提取对话名
+ * DOM 结构：parent > [0] 对话名+日期 | [1] comfy-message-wrapper
+ * 例如："Jiong Li3/11" → "Jiong Li"，"EMS—Monarch Hub开发项目3/11" → "EMS—Monarch Hub开发项目"
  */
-function getMessageId(el) {
-  return (
-    el.getAttribute("data-message-id") ||
-    el.getAttribute("data-mid") ||
-    el.getAttribute("id") ||
-    el.getAttribute("data-item-key") ||
-    null
-  );
+function extractConversationName(el) {
+  const parent = el.parentElement;
+  if (!parent || parent.children.length < 2) return null;
+
+  // comfy-message-wrapper 通常是第二个子元素，第一个是对话名
+  const sibling = parent.children[0];
+  if (sibling === el || !sibling.textContent) return null;
+
+  let name = sibling.textContent.trim();
+  // 去掉末尾日期/时间标记（直接拼接在名字后面，无空格）
+  // "3/11" "12/25" "10:30" "昨天" "今天" "前天" "上午 10:30" "星期一"
+  name = name
+    .replace(
+      /(\d{1,2}\/\d{1,2}|昨天|前天|今天|\d{1,2}:\d{2}|[上下]午\s*\d{1,2}:\d{2}|星期[一二三四五六日天])$/,
+      ""
+    )
+    .trim();
+  return name || null;
 }
 
 /**
- * 判断消息类型
+ * 检测文本是否包含敏感信息（密码、token、密钥等）
+ * 匹配到则跳过记忆写入，防止凭据泄漏
  */
+function containsSensitiveInfo(text) {
+  const patterns = [
+    /password\s*[:=：is]/i,
+    /密码\s*[:=：是]/,
+    /the password/i,
+    /token\s*[:=：]/i,
+    /secret\s*[:=：]/i,
+    /api[_-]?key\s*[:=：]/i,
+    /credential/i,
+    /ssh[_-]?key/i,
+    /private[_-]?key/i,
+  ];
+  return patterns.some((p) => p.test(text));
+}
+
+/**
+ * 简单字符串 hash（用于生成 fallback 消息 ID）
+ */
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return "hash_" + Math.abs(hash).toString(36);
+}
+
+function getMessageId(el) {
+  // 新版 Teams：id 属性包含 message ID
+  // 旧版 Teams：data-message-id 或 data-mid
+  const id = el.getAttribute("id");
+  if (id && id.includes("message")) return id;
+
+  // 尝试子元素的 id（comfy-message 在 wrapper 内部）
+  const inner = el.querySelector('[data-testid="comfy-message"][id]');
+  if (inner) return inner.getAttribute("id");
+
+  const explicitId =
+    el.getAttribute("data-message-id") ||
+    el.getAttribute("data-mid") ||
+    el.getAttribute("data-item-key");
+  if (explicitId) return explicitId;
+
+  // 对话区域 fallback：任意带 id 的子元素
+  const anyId = el.querySelector("[id]");
+  if (anyId?.id) return anyId.id;
+
+  // 最终 fallback：基于内容 hash 生成 ID（确保可去重）
+  const text = (el.textContent || "").trim().slice(0, 200);
+  if (text.length > 3) return simpleHash(text);
+
+  return id || null;
+}
+
 function detectMessageType(el) {
-  // 文件附件
+  // 附件检测：只用结构性选择器，避免 aria-label 误匹配普通文本
   if (
     el.querySelector(
-      '[data-tid="attachment-card"], .ui-attachment, [aria-label*="file"], [aria-label*="文件"]'
+      '[data-testid*="attachment"], [data-testid*="file"], [data-tid="attachment-card"], .ui-attachment'
     )
   ) {
     return "file";
   }
-  // 会议/通话消息
+  // 会议/通话检测：只用结构性选择器（aria-label*="meeting" 会误匹配含 "meeting" 的普通消息）
   if (
     el.querySelector(
-      '[data-tid="meeting-card"], .ui-meeting, [aria-label*="meeting"], [aria-label*="会议"], [aria-label*="通话"]'
+      '[data-testid*="meeting"], [data-testid*="call"], [data-tid="meeting-card"], .ui-meeting'
     )
   ) {
     return "meeting";
@@ -97,71 +185,187 @@ function detectMessageType(el) {
   return "text";
 }
 
-/**
- * 提取发送者名称
- */
 function extractSender(el) {
+  // 策略 1：新版 Teams chat list — 消息内容前缀（"你：xxx" / "张三：xxx"）
+  const comfy =
+    el.querySelector('[data-testid="comfy-message"]') ||
+    (el.matches?.('[data-testid="comfy-message-wrapper"]') ? el : null);
+  if (comfy) {
+    const text = comfy.textContent?.trim() || "";
+    const prefixMatch = text.match(/^(.{1,20})[：:]\s*/);
+    if (prefixMatch) return prefixMatch[1].trim();
+  }
+
+  // 策略 2：新版 Teams chat list — 兄弟 DIV 对话名（1:1 聊天时即联系人）
+  const convName = extractConversationName(el);
+  if (convName) return convName;
+
+  // 策略 3：新版 Teams 对话区域 — fui-ChatMessage__author / fui-ChatMyMessage__author
+  const myAuthor = el.querySelector('[class*="ChatMyMessage__author"]');
+  if (myAuthor) {
+    const name = myAuthor.textContent?.trim();
+    if (name) return name;
+  }
+  const otherAuthor = el.querySelector('[class*="ChatMessage__author"]');
+  if (otherAuthor) {
+    const name = otherAuthor.textContent?.trim();
+    if (name) return name;
+  }
+
+  // 策略 4：新版 Teams data-testid 选择器（fallback）
+  const sender = queryText(el, [
+    '[data-testid="message-author-name"]',
+    '[data-testid="message-header-name"]',
+    '[data-testid*="author"]',
+    '[data-testid*="sender"]',
+    '[data-testid*="display-name"]',
+  ]);
+  if (sender) return sender;
+
+  // 策略 5：旧版 Teams 选择器
   return queryText(el, [
     '[data-tid="message-header-name"]',
     ".ui-chat__message__author",
     '[class*="authorName"]',
     '[class*="senderName"]',
-    '[aria-label*="sent by"]',
-    ".ts-author",
     "[data-scope='message-author']",
     'span[title][class*="author"]',
   ]);
 }
 
-/**
- * 提取消息文本内容（前 100 字符）
- */
 function extractContent(el) {
+  // 策略 1：chat list sidebar — comfy-message（去掉 "发送者：" 前缀）
+  const comfy = el.querySelector('[data-testid="comfy-message"]');
+  if (comfy) {
+    let text = comfy.textContent?.trim() || "";
+    text = text.replace(/^.{1,20}[：:]\s*/, "").trim();
+    if (text) return text;
+  }
+
+  // 策略 2：对话区域 — 新版 Teams 消息体 + 通用选择器
+  const convText = queryText(el, [
+    '[class*="Message__body"]',
+    '[data-testid="message-body"]',
+    '[data-testid="chat-pane-message"]',
+    '[data-testid*="message-text"]',
+    '[data-testid*="message-content"]',
+    ".message-body-content",
+    'div[class*="markdown"]',
+    "p",
+  ]);
+  if (convText) return convText;
+
+  // 策略 3：旧版 fallback
   const text = queryText(el, [
     '[data-tid="chat-pane-message"]',
     ".ui-chat__message__content",
     '[class*="messageBody"]',
-    '[class*="messageContent"]',
-    ".ts-message-content",
     "[data-scope='message-content']",
-    "p",
   ]);
-  if (!text) return null;
-  return text.length > 100 ? text.slice(0, 100) + "…" : text;
+  if (text) return text;
+
+  // 策略 4（最后兜底）：从 heading 提取（截断摘要，仅当其他策略全失败时）
+  const heading = el.querySelector('[role="heading"]');
+  if (heading) {
+    let h = heading.textContent?.trim() || "";
+    h = h.replace(/\s+x\s+\S+(\s+\S+)?$/, "").trim();
+    if (h) return h;
+  }
+  return null;
 }
 
 /**
- * 获取当前频道/聊天名称
+ * 从消息 DOM 提取实际发送时间
+ * Teams 在消息中嵌入 <time datetime="ISO8601"> 元素
+ * 回退到扫描时间
  */
+function extractTimestamp(el) {
+  // 策略 1：<time datetime="..."> 元素（新版 Teams 标准方式）
+  const timeEl = el.querySelector("time[datetime]");
+  if (timeEl) {
+    const dt = timeEl.getAttribute("datetime");
+    if (dt) return dt;
+  }
+
+  // 策略 2：data-testid 含 timestamp 的元素
+  const tsEl = el.querySelector('[data-testid*="timestamp"]');
+  if (tsEl) {
+    const dt = tsEl.getAttribute("datetime") || tsEl.getAttribute("title");
+    if (dt) return dt;
+  }
+
+  // 策略 3：aria-label 含时间模式的元素（"10:30 AM" / "下午 3:45"）
+  const labelEl = el.querySelector("[aria-label]");
+  if (labelEl) {
+    const label = labelEl.getAttribute("aria-label") || "";
+    // 匹配 ISO 日期或常见时间格式
+    const isoMatch = label.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    if (isoMatch) return isoMatch[0];
+  }
+
+  // 策略 4：chat list sidebar — 兄弟 DIV 中的日期文本（"3/11" "今天" "10:30"）
+  // 这些不够精确，不做解析，直接回退
+
+  return new Date().toISOString();
+}
+
 function getCurrentChannel() {
-  return queryText(document, [
+  // 新版 Teams：尝试 data-testid 选择器
+  const channel = queryText(document, [
+    '[data-testid="chat-header-title"]',
+    '[data-testid="channel-header-title"]',
+    '[data-testid*="header-title"]',
+    '[data-testid*="thread-header"]',
     ".channel-header-title",
     '[data-tid="team-channel-header"]',
-    '[class*="channelName"]',
-    '[class*="chatName"]',
-    '[aria-label*="channel"]',
     'h1[class*="header"]',
-    '[class*="threadHeader"] h1',
-    '[class*="threadHeader"] span',
-    ".ts-channel-header-title",
     'div[role="banner"] h1',
     'div[role="banner"] span[title]',
-  ]) || extractChannelFromUrl();
+  ]);
+  if (channel) return channel;
+
+  // 新版 Teams 对话区域：从非自己的 author 推断对话方（1:1 聊天）
+  const partner = getConversationPartner();
+  if (partner) return partner;
+
+  // 从 URL hash 提取（新版 Teams 用 hash 路由）
+  return extractChannelFromUrl();
 }
 
 /**
- * 从 URL 中提取频道信息作为 fallback
- * 例如 https://teams.microsoft.com/l/channel/...
+ * 从对话区域推断对话方名字（1:1 聊天场景）
+ * fui-ChatMessage__author = 对方，fui-ChatMyMessage__author = 自己
  */
+function getConversationPartner() {
+  // 先获取"自己"的名字
+  const myEls = document.querySelectorAll('[class*="ChatMyMessage__author"]');
+  let myName = null;
+  for (const el of myEls) {
+    const n = el.textContent?.trim();
+    if (n) { myName = n; break; }
+  }
+  // 找到非自己的 author
+  const allAuthors = document.querySelectorAll('[class*="ChatMessage__author"]');
+  for (const el of allAuthors) {
+    // 跳过 ChatMyMessage__author（它也包含 "ChatMessage__author" 子串）
+    if (el.className.includes("ChatMyMessage")) continue;
+    const name = el.textContent?.trim();
+    if (name && name !== myName) return name;
+  }
+  return null;
+}
+
 function extractChannelFromUrl() {
   try {
     const url = new URL(location.href);
-    // 尝试从路径或 hash 参数中提取频道标识
     const threadId = url.searchParams.get("threadId") || "";
     if (threadId) {
-      // threadId 格式通常是 "19:xxx@thread.xxx"，提取前缀数字
       return `channel_${threadId.slice(0, 8)}`;
     }
+    // 新版 Teams hash 路由：#/conversations/xxx
+    const hash = url.hash || "";
+    const convMatch = hash.match(/conversations\/([^/?]+)/);
+    if (convMatch) return `conv_${convMatch[1].slice(0, 12)}`;
   } catch (_) {}
   return "unknown";
 }
@@ -174,15 +378,19 @@ function extractChannelFromUrl() {
 function processMessage(el) {
   const msgId = getMessageId(el);
 
-  // 去重检查
+  // 去重检查（持久化，跨刷新有效）
   if (msgId) {
     if (processedIds.has(msgId)) return;
     processedIds.add(msgId);
+  } else {
+    // 没有 ID 的消息无法去重，跳过避免重复
+    return;
   }
 
   const sender = extractSender(el) || "Unknown";
-  const channel = getCurrentChannel();
-  const timestamp = new Date().toISOString();
+  // 优先从兄弟 DIV 提取对话名作为 channel，fallback 到页面级选择器
+  const channel = extractConversationName(el) || getCurrentChannel();
+  const timestamp = extractTimestamp(el);
   const messageType = detectMessageType(el);
 
   // 更新计数
@@ -192,7 +400,16 @@ function processMessage(el) {
     teams_today_date: new Date().toDateString(),
   });
 
-  // 发送行为事件（始终发送元数据）
+  // 提取内容（文字消息才提取，附件/会议只记元数据）
+  let content = null;
+  if (messageType === "text") {
+    const raw = extractContent(el);
+    if (raw && raw.length > 5 && !containsSensitiveInfo(raw)) {
+      content = raw;
+    }
+  }
+
+  // 发送行为事件到 browser_behaviors（含内容），不直接写 memories
   chrome.runtime.sendMessage({
     type: "BEHAVIOR_EVENT",
     payload: {
@@ -203,47 +420,17 @@ function processMessage(el) {
         channel,
         timestamp,
         message_type: messageType,
+        ...(content && { content }),
       },
     },
   });
 
-  // 可选：发送内容摘要记忆（需用户配置开启，且只对文字消息）
-  if (sendContentSummary && messageType === "text") {
-    const content = extractContent(el);
-    if (content && content.length > 5) {
-      const topicHint = content.slice(0, 50);
-      chrome.runtime.sendMessage({
-        type: "IMPORT_MEMORIES",
-        payload: {
-          source: SOURCE,
-          memories: [
-            {
-              category: "communication",
-              content: `与 ${sender} 在 ${channel} 讨论了「${topicHint}」`,
-              confidence: 0.6,
-            },
-          ],
-        },
-      });
-    }
-  }
+  // 批量持久化已处理 ID（防抖，避免频繁写 storage）
+  persistProcessedIds();
 }
 
-/**
- * 扫描当前 DOM 中所有消息列表项
- */
 function scanMessages() {
-  const messageEls = document.querySelectorAll(
-    [
-      '[data-tid="message-pane-list-item"]',
-      '[class*="message-list-item"]',
-      '[class*="messageListItem"]',
-      ".ui-chat__item",
-      '[data-scope="message"]',
-      '[class*="chatMessage"]',
-    ].join(",")
-  );
-
+  const messageEls = document.querySelectorAll(MESSAGE_SELECTORS);
   messageEls.forEach((el) => processMessage(el));
 }
 
@@ -257,29 +444,9 @@ function handleMutations(mutations) {
     for (const node of mutation.addedNodes) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
 
-      // 检查新节点自身是否是消息列表项
-      const isMessageItem =
-        node.matches?.(
-          [
-            '[data-tid="message-pane-list-item"]',
-            '[class*="message-list-item"]',
-            '[class*="messageListItem"]',
-            ".ui-chat__item",
-            '[data-scope="message"]',
-            '[class*="chatMessage"]',
-          ].join(",")
-        ) || false;
-
-      // 检查新节点内部是否包含消息列表项
+      const isMessageItem = node.matches?.(MESSAGE_SELECTORS) || false;
       const containsMessages =
-        node.querySelector?.(
-          [
-            '[data-tid="message-pane-list-item"]',
-            '[class*="message-list-item"]',
-            '[class*="messageListItem"]',
-            ".ui-chat__item",
-          ].join(",")
-        ) !== null;
+        node.querySelector?.(MESSAGE_SELECTORS) !== null;
 
       if (isMessageItem || containsMessages) {
         hasNewNodes = true;
@@ -313,14 +480,39 @@ let lastHref = location.href;
 function checkUrlChange() {
   if (location.href !== lastHref) {
     lastHref = location.href;
-    // 导航到新频道，清空去重集合（新页面消息都是新的）
-    processedIds.clear();
+    // 导航到新频道：不清空 processedIds（已持久化，增量捕获）
     // 延迟等待 React 渲染完成
     setTimeout(scanMessages, 1000);
   }
 }
 
 const urlObserver = new MutationObserver(checkUrlChange);
+
+// --- 滚动监听（捕获虚拟滚动渲染的消息）---
+
+let scrollDebounce = null;
+function handleScroll() {
+  clearTimeout(scrollDebounce);
+  scrollDebounce = setTimeout(scanMessages, 300);
+}
+
+// 监听对话区域滚动（Teams 虚拟列表只渲染可视区域，滚动时补充渲染）
+function attachScrollListener() {
+  // 新版 Teams 对话滚动容器通常有 role="main" 或 class 含 "scroll"
+  const scrollTargets = [
+    document.querySelector('[data-testid="message-pane-list"]'),
+    document.querySelector('[role="main"]'),
+    document.querySelector('[class*="scrollable"]'),
+    document.querySelector('[class*="message-list"]'),
+  ].filter(Boolean);
+
+  if (scrollTargets.length > 0) {
+    scrollTargets.forEach((el) => el.addEventListener("scroll", handleScroll, { passive: true }));
+  } else {
+    // fallback：监听 document 级滚动
+    document.addEventListener("scroll", handleScroll, { passive: true, capture: true });
+  }
+}
 
 // --- 入口 ---
 
@@ -329,13 +521,18 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => {
     startObserver();
     urlObserver.observe(document.body, { childList: true, subtree: true });
+    attachScrollListener();
     // 初次扫描（页面已有消息）
     setTimeout(scanMessages, 1500);
+    // 定期补扫（捕获虚拟滚动延迟渲染的消息，5秒一次）
+    setInterval(scanMessages, 5000);
   });
 } else {
   startObserver();
   urlObserver.observe(document.body, { childList: true, subtree: true });
+  attachScrollListener();
   setTimeout(scanMessages, 1500);
+  setInterval(scanMessages, 5000);
 }
 
 // 通知 popup：当前页面是 Teams

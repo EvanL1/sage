@@ -14,6 +14,7 @@ use crate::mirror;
 use crate::observer;
 use crate::questioner;
 use crate::store::Store;
+use crate::strategist;
 
 enum Priority {
     Immediate,
@@ -57,6 +58,9 @@ impl Router {
         self.agent = agent;
     }
 
+    pub fn agent(&self) -> &Agent { &self.agent }
+    pub fn store(&self) -> &Store { &self.store }
+
     /// 触发观察者：raw observations → 语义标注 → observer_note
     pub async fn run_observer(&self) -> Result<bool> {
         observer::annotate(&self.agent, &self.store).await
@@ -77,8 +81,13 @@ impl Router {
         questioner::ask(&self.agent, &self.store).await
     }
 
-    /// 触发记忆进化：合并重复 → 衰减过期 → 提升高频
-    pub async fn run_memory_evolution(&self) -> Result<(usize, usize, usize)> {
+    /// 触发战略家：站在月球看地球，超然的宏观结构分析（周频）
+    pub async fn run_strategist(&self) -> Result<bool> {
+        strategist::strategize(&self.agent, &self.store).await
+    }
+
+    /// 触发记忆进化：合并重复 → 精简冗长 → 衰减过期 → 提升高频
+    pub async fn run_memory_evolution(&self) -> Result<memory_evolution::EvolutionResult> {
         memory_evolution::evolve(&self.agent, &self.store).await
     }
 
@@ -182,8 +191,8 @@ impl Router {
                         .take(3)
                     {
                         let insight = line.trim().trim_start_matches('-').trim();
-                        if let Err(e) = self.store.save_memory(
-                            "report_insight", insight, type_str, 0.7,
+                        if let Err(e) = self.store.save_memory_with_visibility(
+                            "report_insight", insight, type_str, 0.7, "public",
                         ) {
                             error!("Failed to save report insight: {e}");
                         }

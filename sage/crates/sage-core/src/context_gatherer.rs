@@ -130,6 +130,97 @@ async fn gather_evening(store: &Store, calendar_source: &str) -> String {
         sections.push(format!("## 今日教练洞察\n{}", lines.join("\n")));
     }
 
+    // 今日浏览器行为（Teams 消息 + 页面访问 + 活动模式）
+    let behaviors = store.get_browser_behaviors_since(&since).unwrap_or_default();
+    if !behaviors.is_empty() {
+        let mut teams_msgs = Vec::new();
+        let mut page_visits = Vec::new();
+        let mut patterns = Vec::new();
+
+        for b in &behaviors {
+            let meta: serde_json::Value = b.metadata.as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+
+            match b.event_type.as_str() {
+                "message_received" if b.source == "teams" => {
+                    let sender = meta["sender"].as_str().unwrap_or("?");
+                    let channel = meta["channel"].as_str().unwrap_or("?");
+                    teams_msgs.push(format!("- {sender} @ {channel}"));
+                }
+                "page_visit" => {
+                    let domain = meta["domain"].as_str().unwrap_or("?");
+                    let dur = meta["duration_seconds"].as_i64().unwrap_or(0);
+                    if dur >= 30 {
+                        page_visits.push(format!("- {domain} ({dur}s)"));
+                    }
+                }
+                "activity_pattern" => {
+                    let pattern = meta["pattern"].as_str().unwrap_or("?");
+                    let domain = meta["domain"].as_str().unwrap_or("");
+                    if !domain.is_empty() {
+                        patterns.push(format!("- {pattern}: {domain}"));
+                    } else {
+                        patterns.push(format!("- {pattern}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut browser_section = String::from("## 今日浏览器活动\n");
+
+        if !teams_msgs.is_empty() {
+            // 去重统计：按 sender 分组计数
+            let mut sender_counts = std::collections::HashMap::new();
+            for b in &behaviors {
+                if b.event_type == "message_received" && b.source == "teams" {
+                    let meta: serde_json::Value = b.metadata.as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
+                    let sender = meta["sender"].as_str().unwrap_or("?").to_string();
+                    *sender_counts.entry(sender).or_insert(0usize) += 1;
+                }
+            }
+            let mut counts: Vec<_> = sender_counts.into_iter().collect();
+            counts.sort_by(|a, b| b.1.cmp(&a.1));
+            let summary: Vec<String> = counts.iter()
+                .take(10)
+                .map(|(s, c)| format!("- {s}：{c} 条消息"))
+                .collect();
+            browser_section.push_str(&format!("### Teams 通讯（共 {} 条）\n{}\n",
+                teams_msgs.len(), summary.join("\n")));
+        }
+
+        if !page_visits.is_empty() {
+            // 去重：按 domain 聚合总时长
+            let mut domain_totals = std::collections::HashMap::new();
+            for b in &behaviors {
+                if b.event_type == "page_visit" {
+                    let meta: serde_json::Value = b.metadata.as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
+                    let domain = meta["domain"].as_str().unwrap_or("?").to_string();
+                    let dur = meta["duration_seconds"].as_i64().unwrap_or(0);
+                    *domain_totals.entry(domain).or_insert(0i64) += dur;
+                }
+            }
+            let mut totals: Vec<_> = domain_totals.into_iter().collect();
+            totals.sort_by(|a, b| b.1.cmp(&a.1));
+            let top: Vec<String> = totals.iter()
+                .take(10)
+                .map(|(d, s)| format!("- {d}：{} 分钟", s / 60))
+                .collect();
+            browser_section.push_str(&format!("### 网站访问 Top 10\n{}\n", top.join("\n")));
+        }
+
+        if !patterns.is_empty() {
+            browser_section.push_str(&format!("### 活动模式\n{}\n", patterns.join("\n")));
+        }
+
+        sections.push(browser_section);
+    }
+
     if sections.is_empty() {
         return String::new();
     }

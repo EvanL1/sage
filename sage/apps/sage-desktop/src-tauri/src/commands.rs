@@ -43,14 +43,28 @@ fn extract_and_save_memories(raw: &str, store: &sage_core::store::Store) -> (Str
             continue;
         }
         let result = match mem_type {
-            "task" => store.save_memory("task", content, "chat", 1.0),
-            "insight" => store.save_memory("behavior", content, "chat", 0.8),
+            "task" => store.save_memory_with_visibility("task", content, "chat", 1.0, "private"),
+            "insight" => store.save_memory_with_visibility("behavior", content, "chat", 0.8, "private"),
             "decision" => store.append_decision("chat", content),
-            "reminder" => store.save_memory("task", &format!("[提醒] {content}"), "chat", 1.0),
-            _ => store.save_memory("behavior", content, "chat", 0.8),
+            "reminder" => store.save_memory_with_visibility("task", &format!("[提醒] {content}"), "chat", 1.0, "private"),
+            _ => store.save_memory_with_visibility("behavior", content, "chat", 0.8, "private"),
         };
-        if result.is_ok() {
+        if let Ok(memory_id) = result {
             saved += 1;
+            // 自动打标签：优先使用 LLM 提供的 tags，否则用 category 作为默认标签
+            if let Some(tags) = item["tags"].as_array() {
+                let tag_strs: Vec<&str> = tags.iter().filter_map(|t| t.as_str()).collect();
+                let _ = store.add_tags(memory_id, &tag_strs);
+            } else {
+                let category = match mem_type {
+                    "task" => "task",
+                    "insight" => "insight",
+                    "decision" => "decision",
+                    "reminder" => "reminder",
+                    _ => "chat",
+                };
+                let _ = store.add_tag(memory_id, category);
+            }
         }
     }
 
@@ -183,7 +197,7 @@ async fn generate_first_impression(
             }
             let _ = state
                 .store
-                .save_memory("insight", &trimmed, "onboarding", 0.9);
+                .save_memory_with_visibility("insight", &trimmed, "onboarding", 0.9, "public");
             trigger_memory_sync(&state.store);
             tracing::info!("Onboarding first impression 已生成并存储");
             Some(trimmed)
@@ -518,8 +532,8 @@ pub async fn chat(
         .unwrap_or("朋友")
         .to_string();
 
-    // 4. 搜索相关记忆（FTS5，最多 10 条最相关）
-    let memories = state.store.search_memories(&message, 10).map_err(map_err)?;
+    // 4. 搜索相关记忆（FTS5 seed + 图谱一跳扩展，最多 15 条）
+    let memories = state.store.search_memories_with_graph(&message, 6, 15).map_err(map_err)?;
     let memory_text = if memories.is_empty() {
         "（还没有积累足够的了解，需要通过更多对话来认识你）".to_string()
     } else {
@@ -542,7 +556,71 @@ pub async fn chat(
         format!("\n\n## 行为观察\n{}", items.join("\n"))
     };
 
-    // 4b. 加载建议反馈
+    // 4b. 加载近期浏览器行为（Teams 消息 + 页面访问 + 活动模式）
+    let browser_text = {
+        let behaviors = state.store.get_browser_behaviors_since(
+            &(chrono::Local::now() - chrono::Duration::hours(24)).to_rfc3339()
+        ).unwrap_or_default();
+        if behaviors.is_empty() {
+            String::new()
+        } else {
+            let mut teams_senders: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut domain_secs: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+            let mut patterns = Vec::new();
+
+            for b in &behaviors {
+                let meta: serde_json::Value = b.metadata.as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
+                match b.event_type.as_str() {
+                    "message_received" if b.source == "teams" => {
+                        let sender = meta["sender"].as_str().unwrap_or("?").to_string();
+                        *teams_senders.entry(sender).or_insert(0) += 1;
+                    }
+                    "page_visit" => {
+                        let domain = meta["domain"].as_str().unwrap_or("?").to_string();
+                        let dur = meta["duration_seconds"].as_i64().unwrap_or(0);
+                        *domain_secs.entry(domain).or_insert(0) += dur;
+                    }
+                    "activity_pattern" => {
+                        let p = meta["pattern"].as_str().unwrap_or("?");
+                        let d = meta["domain"].as_str().unwrap_or("");
+                        patterns.push(if d.is_empty() { p.to_string() } else { format!("{p}: {d}") });
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut parts = Vec::new();
+            if !teams_senders.is_empty() {
+                let mut sorted: Vec<_> = teams_senders.into_iter().collect();
+                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                let lines: Vec<String> = sorted.iter().take(10)
+                    .map(|(s, c)| format!("  - {s}：{c} 条")).collect();
+                parts.push(format!("Teams 消息（共 {} 条）：\n{}", behaviors.iter().filter(|b| b.event_type == "message_received" && b.source == "teams").count(), lines.join("\n")));
+            }
+            if !domain_secs.is_empty() {
+                let mut sorted: Vec<_> = domain_secs.into_iter().filter(|(_, s)| *s >= 30).collect();
+                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                let lines: Vec<String> = sorted.iter().take(8)
+                    .map(|(d, s)| format!("  - {d}：{}m", s / 60)).collect();
+                if !lines.is_empty() {
+                    parts.push(format!("网站访问：\n{}", lines.join("\n")));
+                }
+            }
+            if !patterns.is_empty() {
+                parts.push(format!("活动模式：{}", patterns.join("、")));
+            }
+
+            if parts.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n## 浏览器活动（今日）\n{}", parts.join("\n"))
+            }
+        }
+    };
+
+    // 4c. 加载建议反馈
     let suggestion_feedback = state
         .store
         .get_suggestions_with_feedback(10)
@@ -607,10 +685,10 @@ pub async fn chat(
     let mut system_prompt = String::with_capacity(4000);
     system_prompt.push_str(&skill_prompt);
     system_prompt.push_str(&format!(
-        "\n\n## 当前时间（所有时间推理以此为准）\n{} ({})\n\n## 关于 {}\n{}{}{}\n\n",
+        "\n\n## 当前时间（所有时间推理以此为准）\n{} ({})\n\n## 关于 {}\n{}{}{}{}\n\n",
         now.format("%Y-%m-%d %A %H:%M"),
         now.format("%Z UTC%:z"),
-        user_name, memory_text, obs_text, feedback_text
+        user_name, memory_text, obs_text, browser_text, feedback_text
     ));
 
     // --- 记忆写入能力（所有 skill 共享）---
@@ -618,9 +696,10 @@ pub async fn chat(
 ## 记忆写入
 你可以将重要信息持久化保存。当用户要求你「记住」「记下」「提醒我」某事，或你发现值得保存的洞察时，在回复末尾添加 JSON 块：
 ```sage-memory
-[{\"type\": \"task\", \"content\": \"准备 PULSE 拓扑图给 Bob\"}, {\"type\": \"insight\", \"content\": \"用户倾向于...\"}]
+[{\"type\": \"task\", \"content\": \"准备 PULSE 拓扑图给 Bob\", \"tags\": [\"work\", \"bob\"]}, {\"type\": \"insight\", \"content\": \"用户倾向于...\"}]
 ```
 type 可选值：task（待办任务）、insight（关于用户的洞察）、decision（用户做的决定）、reminder（定时提醒）。
+tags 可选：1-3 个短标签，用于记忆分类检索（小写英文，如 \"work\", \"health\", \"team\"）。
 **只在需要时添加，不要每次都加。** 用户不会看到这个 JSON 块。\n\n");
 
     // --- 安全协议（所有 skill 共享）---
@@ -658,8 +737,26 @@ type 可选值：task（待办任务）、insight（关于用户的洞察）、d
     let (display_response, memories_saved) = extract_and_save_memories(&raw_response, &state.store);
 
     // 11a. 轻量级 open_questions 自动回答检测
-    // 从用户消息中提取关键词，匹配 open questions 并标记为 answered
     auto_answer_open_questions(&message, &state.store);
+
+    // 11b. 新记忆写入后，后台异步建立图谱连接
+    if memories_saved > 0 {
+        let daemon = state.daemon.clone();
+        tokio::spawn(async move {
+            if let Err(e) = daemon.trigger_memory_linking().await {
+                tracing::warn!("Auto-link after chat failed: {e}");
+            }
+        });
+    }
+
+    // 11c. Hebbian 共现强化：同一 turn 被召回的记忆加强连接
+    if memories.len() >= 2 {
+        let recalled_ids: Vec<i64> = memories.iter().map(|m| m.id).collect();
+        let _ = state.store.strengthen_edges(&recalled_ids);
+    }
+
+    // 11d. 冷边衰减（30天未激活，权重 ×0.9，低于 0.1 删除）
+    let _ = state.store.decay_cold_edges(30, 0.9, 0.1);
 
     // 12. 保存 Sage 回复（只保存用户可见部分）
     state
@@ -820,7 +917,7 @@ pub async fn extract_memories(
         ) {
             let id = state
                 .store
-                .save_memory(category, content, "chat", confidence)
+                .save_memory_with_visibility(category, content, "chat", confidence, "private")
                 .map_err(map_err)?;
             saved.push(json!({
                 "id": id,
@@ -869,7 +966,7 @@ pub async fn save_assessment(
         ) {
             state
                 .store
-                .save_memory("personality", content, "assessment", confidence)
+                .save_memory_with_visibility("personality", content, "assessment", confidence, "public")
                 .map_err(map_err)?;
         }
     }
@@ -967,7 +1064,7 @@ pub async fn import_memories(
                 .unwrap_or("import");
             state
                 .store
-                .save_memory(category, content, source, confidence)
+                .save_memory_with_visibility(category, content, source, confidence, "public")
                 .map_err(map_err)?;
             count += 1;
         }
@@ -992,7 +1089,7 @@ pub async fn add_user_memory(
     }
     let id = state
         .store
-        .save_memory("user_input", &content, "user", 1.0)
+        .save_memory_with_visibility("user_input", &content, "user", 1.0, "private")
         .map_err(map_err)?;
     trigger_memory_sync(&state.store);
     Ok(id)
@@ -1023,6 +1120,127 @@ pub async fn get_latest_reports(
         }
     }
     Ok(map)
+}
+
+/// 手动触发记忆进化（去重 + 特质合成 + 精简 + 衰减 + 晋升），完成后自动同步到 Claude Code
+#[tauri::command]
+pub async fn trigger_memory_evolution(
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let r = state
+        .daemon
+        .trigger_memory_evolution()
+        .await
+        .map_err(map_err)?;
+    // 进化完成后同步到 Claude Code
+    trigger_memory_sync(&state.store);
+    Ok(json!({
+        "consolidated": r.consolidated,
+        "condensed": r.condensed,
+        "decayed": r.decayed,
+        "promoted": r.promoted,
+        "linked": r.linked,
+    }))
+}
+
+/// 手动触发战略家分析
+#[tauri::command]
+pub async fn trigger_strategist(
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let ran = state
+        .daemon
+        .trigger_strategist()
+        .await
+        .map_err(map_err)?;
+    Ok(json!({ "ran": ran }))
+}
+
+/// 获取记忆图谱数据（节点 + 边）
+#[tauri::command]
+pub async fn get_memory_graph(
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let memories = state.store.load_active_memories().map_err(map_err)?;
+    let edges = state.store.get_all_memory_edges().map_err(map_err)?;
+
+    let nodes: Vec<Value> = memories.iter().map(|m| json!({
+        "id": m.id,
+        "category": m.category,
+        "content": m.content,
+        "confidence": m.confidence,
+    })).collect();
+
+    let edge_list: Vec<Value> = edges.iter().map(|e| json!({
+        "id": e.id,
+        "from": e.from_id,
+        "to": e.to_id,
+        "relation": e.relation,
+        "weight": e.weight,
+    })).collect();
+
+    Ok(json!({
+        "nodes": nodes,
+        "edges": edge_list,
+    }))
+}
+
+/// 单独触发记忆图谱连接
+#[tauri::command]
+pub async fn trigger_memory_linking(
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let linked = state.daemon.trigger_memory_linking().await.map_err(map_err)?;
+    Ok(json!({ "linked": linked }))
+}
+
+// ─── Tag 命令 ──────────────────────────────────
+
+/// 获取所有标签及其记忆数量
+#[tauri::command]
+pub async fn get_all_tags(
+    state: State<'_, AppState>,
+) -> Result<Vec<Value>, String> {
+    let tags = state.store.get_all_tags().map_err(map_err)?;
+    Ok(tags.iter().map(|(tag, count)| json!({ "tag": tag, "count": count })).collect())
+}
+
+/// 获取某条记忆的标签
+#[tauri::command]
+pub async fn get_memory_tags(
+    state: State<'_, AppState>,
+    memory_id: i64,
+) -> Result<Vec<String>, String> {
+    state.store.get_tags(memory_id).map_err(map_err)
+}
+
+/// 给记忆添加标签
+#[tauri::command]
+pub async fn add_memory_tag(
+    state: State<'_, AppState>,
+    memory_id: i64,
+    tag: String,
+) -> Result<(), String> {
+    state.store.add_tag(memory_id, &tag).map_err(map_err)
+}
+
+/// 删除记忆的某个标签
+#[tauri::command]
+pub async fn remove_memory_tag(
+    state: State<'_, AppState>,
+    memory_id: i64,
+    tag: String,
+) -> Result<(), String> {
+    state.store.remove_tag(memory_id, &tag).map_err(map_err)
+}
+
+/// 按标签筛选记忆 ID
+#[tauri::command]
+pub async fn get_memories_by_tag(
+    state: State<'_, AppState>,
+    tag: String,
+) -> Result<Vec<i64>, String> {
+    state.store.get_memories_by_tag(&tag).map_err(map_err)
 }
 
 /// 手动触发报告生成（通过 Daemon 的 trigger_report 方法）
@@ -1092,7 +1310,7 @@ pub async fn import_raw_memories(
                 if !content.is_empty() {
                     state
                         .store
-                        .save_memory(category, content, "ai_import", 0.7)
+                        .save_memory_with_visibility(category, content, "ai_import", 0.7, "public")
                         .map_err(map_err)?;
                     count += 1;
                 }
@@ -1104,4 +1322,157 @@ pub async fn import_raw_memories(
         trigger_memory_sync(&state.store);
     }
     Ok(count)
+}
+
+/// 获取各连接/工具的状态
+#[tauri::command]
+pub fn get_connections_status(state: State<'_, AppState>) -> Result<Value, String> {
+    let now = chrono::Utc::now().timestamp();
+
+    // 1. Browser Extension — 通过 Bridge last_seen 判断
+    let bridge_last_seen = sage_core::bridge::bridge_last_seen();
+    let browser_status = if bridge_last_seen == 0 {
+        json!({ "status": "never", "label": "从未连接" })
+    } else {
+        let ago = now - bridge_last_seen;
+        if ago < 120 {
+            json!({ "status": "connected", "label": "已连接", "ago_seconds": ago })
+        } else {
+            let mins = ago / 60;
+            let label = if mins < 60 {
+                format!("{}分钟前", mins)
+            } else {
+                format!("{}小时前", mins / 60)
+            };
+            json!({ "status": "stale", "label": label, "ago_seconds": ago })
+        }
+    };
+
+    // 2. Outlook — 检查 Outlook 进程是否运行
+    let outlook_running = std::process::Command::new("pgrep")
+        .arg("-x")
+        .arg("Microsoft Outlook")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let outlook_status = if outlook_running {
+        json!({ "status": "connected", "label": "运行中" })
+    } else {
+        json!({ "status": "offline", "label": "未运行" })
+    };
+
+    // 3. Claude Code — 检查最近是否有活跃 session
+    let claude_status = {
+        let sessions_dir = dirs::home_dir()
+            .map(|h| h.join(".claude/projects"));
+        let has_recent = sessions_dir
+            .and_then(|dir| {
+                std::fs::read_dir(&dir).ok().map(|entries| {
+                    entries.filter_map(|e| e.ok()).any(|_| true)
+                })
+            })
+            .unwrap_or(false);
+        if has_recent {
+            json!({ "status": "connected", "label": "已配置" })
+        } else {
+            json!({ "status": "offline", "label": "未检测到" })
+        }
+    };
+
+    // 4. 行为数据统计
+    let behavior_count = state.store.get_browser_behaviors(1)
+        .map(|b| b.len())
+        .unwrap_or(0);
+    let behavior_status = if behavior_count > 0 {
+        json!({ "status": "connected", "label": "数据收集中" })
+    } else {
+        json!({ "status": "idle", "label": "暂无数据" })
+    };
+
+    Ok(json!({
+        "browser_extension": browser_status,
+        "outlook": outlook_status,
+        "claude_code": claude_status,
+        "behavior_tracking": behavior_status,
+    }))
+}
+
+/// 获取消息列表 — 按 channel/source 过滤
+#[tauri::command]
+pub async fn get_messages(
+    state: State<'_, AppState>,
+    channel: Option<String>,
+    source: Option<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(50);
+    let messages = if let Some(ch) = &channel {
+        state.store.get_messages_by_channel(ch, limit).map_err(map_err)?
+    } else if let Some(src) = &source {
+        state.store.get_messages_by_source(src, limit).map_err(map_err)?
+    } else {
+        state.store.get_messages_by_source("teams", limit).map_err(map_err)?
+    };
+    Ok(serde_json::json!(messages))
+}
+
+/// 获取所有消息频道列表
+#[tauri::command]
+pub async fn get_message_channels(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let channels = state.store.get_message_channels().map_err(map_err)?;
+    let result: Vec<serde_json::Value> = channels
+        .into_iter()
+        .map(|(channel, source, count)| {
+            serde_json::json!({ "channel": channel, "source": source, "count": count })
+        })
+        .collect();
+    Ok(serde_json::json!(result))
+}
+
+/// AI 消息洞察 — 分析当前频道/来源的消息并给出简要见解
+#[tauri::command]
+pub async fn summarize_messages(
+    state: State<'_, AppState>,
+    context: String,
+    label: String,
+) -> Result<String, String> {
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or_else(|| "未配置 LLM provider".to_string())?;
+
+    let agent_config = default_agent_config();
+    let provider =
+        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let prompt = format!(
+        "分析以下来自「{label}」的消息，给出简要洞察（3-5 句话）。\n\
+         关注：关键讨论主题、待办事项、需要跟进的问题、情绪/紧急程度。\n\
+         用中文回复，简洁直接。\n\n{context}"
+    );
+    let system = "你是 Sage，一个个人 AI 参谋。分析通讯消息并提供简洁的洞察和建议。不要重复消息内容，只输出你的分析。";
+
+    let resp = provider.invoke(&prompt, Some(system)).await.map_err(map_err)?;
+    Ok(resp)
+}
+
+/// Digital Evan 外部对话 — 只使用 public 记忆，只读模式
+#[tauri::command]
+pub async fn chat_external(
+    state: State<'_, AppState>,
+    message: String,
+) -> Result<String, String> {
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or_else(|| "未配置 LLM provider，请先在 Settings 中配置 API key".to_string())?;
+
+    let agent_config = default_agent_config();
+    let provider =
+        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let persona = sage_core::persona::Persona::new(std::sync::Arc::clone(&state.store));
+    persona.chat(&message, provider.as_ref()).await.map_err(map_err)
 }

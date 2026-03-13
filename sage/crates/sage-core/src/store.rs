@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
-use sage_types::{ChatMessage, FeedbackAction, Memory, ProviderConfig, Report, Suggestion, UserProfile};
+use sage_types::{ChatMessage, FeedbackAction, KnowledgeEdge, Memory, MemoryEdge, Message, ProviderConfig, Report, Suggestion, UserProfile};
 
 /// 未处理的 observation 行（含 id，供学习教练归档用）
 #[derive(Debug, Clone)]
@@ -223,6 +223,154 @@ impl Store {
             )
             .context("数据库迁移 v10（browser_behaviors 表）失败")?;
         }
+
+        if version < 11 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memory_edges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    to_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    relation TEXT NOT NULL,
+                    weight REAL NOT NULL DEFAULT 0.5,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_edges_from ON memory_edges(from_id);
+                CREATE INDEX IF NOT EXISTS idx_memory_edges_to ON memory_edges(to_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_edges_pair
+                    ON memory_edges(from_id, to_id, relation);
+                PRAGMA user_version = 11;",
+            )
+            .context("数据库迁移 v11（memory_edges 图谱表）失败")?;
+        }
+
+        if version < 12 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memory_tags (
+                    memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    tag TEXT NOT NULL,
+                    PRIMARY KEY (memory_id, tag)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag);
+                PRAGMA user_version = 12;",
+            )
+            .context("数据库迁移 v12（memory_tags 标签表）失败")?;
+        }
+
+        if version < 13 {
+            conn.execute_batch(
+                "ALTER TABLE memory_edges ADD COLUMN last_activated_at TEXT DEFAULT NULL;
+                 CREATE INDEX IF NOT EXISTS idx_memory_edges_activated ON memory_edges(last_activated_at);
+                 PRAGMA user_version = 13;",
+            )
+            .context("数据库迁移 v13（memory_edges.last_activated_at）失败")?;
+        }
+
+        if version < 14 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    content TEXT,
+                    source TEXT NOT NULL,
+                    message_type TEXT NOT NULL DEFAULT 'text',
+                    timestamp TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, timestamp DESC);
+                CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender, timestamp DESC);
+                CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source, created_at DESC);
+                PRAGMA user_version = 14;",
+            )
+            .context("数据库迁移 v14（messages 通讯消息表）失败")?;
+        }
+
+        if version < 15 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS knowledge_edges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_type TEXT NOT NULL DEFAULT 'memory',
+                    from_id INTEGER NOT NULL,
+                    to_type TEXT NOT NULL DEFAULT 'memory',
+                    to_id INTEGER NOT NULL,
+                    relation TEXT NOT NULL,
+                    weight REAL NOT NULL DEFAULT 0.5,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_edges_from ON knowledge_edges(from_type, from_id);
+                CREATE INDEX IF NOT EXISTS idx_knowledge_edges_to ON knowledge_edges(to_type, to_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_edges_pair
+                    ON knowledge_edges(from_type, from_id, to_type, to_id, relation);
+                INSERT OR IGNORE INTO knowledge_edges (from_type, from_id, to_type, to_id, relation, weight, created_at)
+                    SELECT 'memory', from_id, 'memory', to_id, relation, weight, created_at
+                    FROM memory_edges;
+                PRAGMA user_version = 15;",
+            )
+            .context("数据库迁移 v15（knowledge_edges 通用知识图谱表）失败")?;
+        }
+
+        // ── v16: memories 三层可见性 ──
+        if version < 16 {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public';
+                CREATE INDEX IF NOT EXISTS idx_memories_visibility ON memories(visibility);
+                -- 回填：chat/emotion → private，coach/mirror/questioner/observer → subconscious
+                UPDATE memories SET visibility = 'private'
+                    WHERE source IN ('chat', 'user_input')
+                       OR category IN ('emotion', 'task', 'reminder');
+                UPDATE memories SET visibility = 'subconscious'
+                    WHERE source IN ('coach', 'mirror', 'questioner', 'observer')
+                       OR category IN ('coach_insight', 'observer_note', 'mirror_reflection', 'questioner_probe');
+                PRAGMA user_version = 16;",
+            )
+            .context("数据库迁移 v16（memories visibility 三层可见性）失败")?;
+        }
+
+        if version < 17 {
+            conn.execute_batch(
+                "-- 删除重复消息：保留每组(sender, channel, source, timestamp)中 id 最小的
+                DELETE FROM messages WHERE id NOT IN (
+                    SELECT MIN(id) FROM messages GROUP BY sender, channel, source, timestamp
+                );
+                -- 添加唯一约束防止未来重复
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup
+                    ON messages(sender, channel, source, timestamp);
+                PRAGMA user_version = 17;",
+            )
+            .context("数据库迁移 v17（messages 去重 + UNIQUE 约束）失败")?;
+        }
+
+        // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                content TEXT,
+                source TEXT NOT NULL,
+                message_type TEXT NOT NULL DEFAULT 'text',
+                timestamp TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source, created_at DESC);",
+        )
+        .context("补偿创建 messages 表失败")?;
+
+        // 补偿：browser_behaviors 在 v10 插入，但旧 DB 可能已跳过该版本
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS browser_behaviors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                metadata TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_browser_behaviors_source
+                ON browser_behaviors(source, created_at DESC);",
+        )
+        .context("补偿创建 browser_behaviors 表失败")?;
 
         Ok(())
     }
@@ -842,22 +990,12 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<sage_types::Memory>> {
         let sql = format!(
-            "SELECT id, category, content, source, confidence, created_at, updated_at
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at
              FROM memories WHERE {where_clause}
              ORDER BY confidence DESC, updated_at DESC LIMIT ?1"
         );
         let mut stmt = conn.prepare(&sql).context("查询记忆失败")?;
-        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
-            Ok(sage_types::Memory {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                content: row.get(2)?,
-                source: row.get(3)?,
-                confidence: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -890,7 +1028,13 @@ impl Store {
 
     /// 生成同步区块内容
     fn generate_sync_block(&self) -> Result<String> {
-        let memories = self.load_memories()?;
+        let all_memories = self.load_memories()?;
+        // 去重：按内容去重，保留最新的（load_memories 已按 updated_at DESC）
+        let mut seen = std::collections::HashSet::new();
+        let memories: Vec<_> = all_memories
+            .into_iter()
+            .filter(|m| seen.insert(m.content.clone()))
+            .collect();
         let mut lines: Vec<String> = vec![
             "<!-- SAGE_SYNC_START -->".into(),
             "## Sage Shared Memory".into(),
@@ -920,6 +1064,7 @@ impl Store {
             let items: Vec<_> = memories
                 .iter()
                 .filter(|m| m.category == *cat)
+                .take(10) // 每类最多 10 条，防止 MEMORY.md 膨胀
                 .collect();
             if items.is_empty() {
                 continue;
@@ -933,10 +1078,11 @@ impl Store {
             lines.push(String::new());
         }
 
-        // 未列举的 category
+        // 未列举的 category（最多 15 条）
         let mut extra: Vec<_> = memories
             .iter()
             .filter(|m| !known_cats.contains(m.category.as_str()))
+            .take(15)
             .collect();
         if !extra.is_empty() {
             extra.sort_by(|a, b| a.category.cmp(&b.category));
@@ -979,13 +1125,13 @@ impl Store {
     /// 保存行为模式记忆（category="pattern"），返回新记录 id
     pub fn append_pattern(&self, category: &str, observation: &str) -> Result<i64> {
         let content = format!("[{category}] {observation}");
-        self.save_memory("pattern", &content, "router", 0.6)
+        self.save_memory_with_visibility("pattern", &content, "router", 0.6, "public")
     }
 
     /// 保存决策记忆（category="decision"），返回新记录 id
     pub fn append_decision(&self, context: &str, decision: &str) -> Result<i64> {
         let content = format!("**Context**: {context}\n**Decision**: {decision}");
-        self.save_memory("decision", &content, "router", 0.7)
+        self.save_memory_with_visibility("decision", &content, "router", 0.7, "public")
     }
 
     /// 查询今天已完成的心跳动作标题（用于 daemon 重启后恢复去重状态）
@@ -1015,7 +1161,7 @@ impl Store {
 
     /// 保存教练洞察（category="coach_insight"），返回新记录 id
     pub fn save_coach_insight(&self, insight: &str) -> Result<i64> {
-        self.save_memory("coach_insight", insight, "coach", 0.8)
+        self.save_memory_with_visibility("coach_insight", insight, "coach", 0.8, "subconscious")
     }
 
     // ─── Memory 方法 ──────────────────────────────
@@ -1111,23 +1257,27 @@ impl Store {
         Ok(())
     }
 
+    /// 从行中构建 Memory（SELECT 列顺序: id, category, content, source, confidence, visibility, created_at, updated_at）
+    fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
+        Ok(Memory {
+            id: row.get(0)?,
+            category: row.get(1)?,
+            content: row.get(2)?,
+            source: row.get(3)?,
+            confidence: row.get(4)?,
+            visibility: row.get::<_, String>(5).unwrap_or_else(|_| "public".to_string()),
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    }
+
     /// 加载所有记忆（按置信度和更新时间排序）
     pub fn load_memories(&self) -> Result<Vec<Memory>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, created_at, updated_at FROM memories ORDER BY confidence DESC, updated_at DESC",
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at FROM memories ORDER BY confidence DESC, updated_at DESC",
         ).context("准备 load_memories 查询失败")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                content: row.get(2)?,
-                source: row.get(3)?,
-                confidence: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map([], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -1151,26 +1301,54 @@ impl Store {
         let pattern = format!("%{trimmed}%");
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, created_at, updated_at
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at
              FROM memories
              WHERE content LIKE ?1 OR category LIKE ?1
              ORDER BY confidence DESC
              LIMIT ?2",
         ).context("准备 search_memories 查询失败")?;
 
-        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                content: row.get(2)?,
-                source: row.get(3)?,
-                confidence: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        }).context("执行 search_memories 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], Self::row_to_memory)
+            .context("执行 search_memories 查询失败")?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// FTS 检索 + 图谱扩展：先找 seed 记忆，再通过边拉取一跳邻居，合并去重排序
+    pub fn search_memories_with_graph(
+        &self,
+        query: &str,
+        seed_limit: usize,
+        total_limit: usize,
+    ) -> Result<Vec<Memory>> {
+        let seeds = self.search_memories(query, seed_limit)?;
+        if seeds.is_empty() {
+            return Ok(seeds);
+        }
+
+        // seed 记忆的得分 = confidence，图谱邻居的得分 = activation
+        let mut score_map: std::collections::HashMap<i64, (Memory, f64)> =
+            std::collections::HashMap::new();
+        for m in &seeds {
+            score_map.insert(m.id, (m.clone(), m.confidence));
+        }
+
+        // 对每个 seed 拉一跳图谱邻居
+        for seed in &seeds {
+            if let Ok(neighbors) = self.get_connected_memories(seed.id, 1) {
+                for (mem, activation) in neighbors {
+                    let entry = score_map.entry(mem.id).or_insert((mem.clone(), 0.0));
+                    if activation > entry.1 {
+                        entry.1 = activation;
+                    }
+                }
+            }
+        }
+
+        let mut results: Vec<(Memory, f64)> = score_map.into_values().collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(total_limit);
+        Ok(results.into_iter().map(|(m, _)| m).collect())
     }
 
     /// 删除记忆
@@ -1179,6 +1357,89 @@ impl Store {
         conn.execute("DELETE FROM memories WHERE id = ?1", rusqlite::params![id])
             .context("删除 memory 失败")?;
         Ok(())
+    }
+
+    // ─── Visibility 方法 ──────────────────────────────
+
+    /// 保存带可见性的记忆
+    pub fn save_memory_with_visibility(
+        &self,
+        category: &str,
+        content: &str,
+        source: &str,
+        confidence: f64,
+        visibility: &str,
+    ) -> Result<i64> {
+        let tier = Self::infer_tier(category);
+        let expires_at = Self::default_ttl_days(category).map(|days| {
+            (chrono::Local::now() + chrono::Duration::days(days))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        });
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?8)",
+            rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, now],
+        )
+        .context("保存 memory（带 visibility）失败")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 搜索公开记忆（Digital Evan 使用）
+    pub fn search_public_memories(&self, query: &str, limit: usize) -> Result<Vec<Memory>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return self.get_memories_by_visibility("public");
+        }
+        let pattern = format!("%{trimmed}%");
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at
+             FROM memories
+             WHERE visibility = 'public' AND (content LIKE ?1 OR category LIKE ?1)
+             ORDER BY confidence DESC
+             LIMIT ?2",
+        ).context("准备 search_public_memories 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 按可见性层级加载记忆
+    pub fn get_memories_by_visibility(&self, visibility: &str) -> Result<Vec<Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at
+             FROM memories WHERE visibility = ?1
+             ORDER BY confidence DESC, updated_at DESC",
+        ).context("准备 get_memories_by_visibility 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![visibility], Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 更新记忆可见性
+    pub fn update_memory_visibility(&self, id: i64, visibility: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET visibility = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![visibility, now, id],
+        )
+        .context("更新 memory visibility 失败")?;
+        Ok(())
+    }
+
+    /// 统计各可见性层级的记忆数量
+    pub fn count_memories_by_visibility(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT visibility, COUNT(*) FROM memories GROUP BY visibility ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     // ─── Report 方法 ──────────────────────────────
@@ -1250,19 +1511,9 @@ impl Store {
     pub fn get_memories_since(&self, since: &str) -> Result<Vec<Memory>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, created_at, updated_at FROM memories WHERE created_at >= ?1 ORDER BY created_at DESC",
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at FROM memories WHERE created_at >= ?1 ORDER BY created_at DESC",
         ).context("准备 get_memories_since 查询失败")?;
-        let rows = stmt.query_map(rusqlite::params![since], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                content: row.get(2)?,
-                source: row.get(3)?,
-                confidence: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![since], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -1281,19 +1532,9 @@ impl Store {
     pub fn get_session_summaries_since(&self, since: &str) -> Result<Vec<Memory>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, created_at, updated_at FROM memories WHERE category = 'session' AND created_at >= ?1 ORDER BY created_at DESC",
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at FROM memories WHERE category = 'session' AND created_at >= ?1 ORDER BY created_at DESC",
         ).context("准备 get_session_summaries_since 查询失败")?;
-        let rows = stmt.query_map(rusqlite::params![since], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                content: row.get(2)?,
-                source: row.get(3)?,
-                confidence: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![since], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -1315,21 +1556,11 @@ impl Store {
     pub fn load_active_memories(&self) -> Result<Vec<Memory>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, created_at, updated_at
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at
              FROM memories WHERE status = 'active'
              ORDER BY confidence DESC, updated_at DESC",
         ).context("准备 load_active_memories 查询失败")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                content: row.get(2)?,
-                source: row.get(3)?,
-                confidence: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map([], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -1482,6 +1713,402 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    // ─── Memory Graph 方法（记忆图谱） ──────────────────────────────
+
+    /// 添加记忆之间的边（连接），存在则更新权重
+    pub fn save_memory_edge(
+        &self,
+        from_id: i64,
+        to_id: i64,
+        relation: &str,
+        weight: f64,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memory_edges (from_id, to_id, relation, weight, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(from_id, to_id, relation) DO UPDATE SET weight = ?4",
+            rusqlite::params![from_id, to_id, relation, weight, now],
+        )
+        .context("保存 memory_edge 失败")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Hebbian 共现强化：同一 chat turn 被召回的记忆两两加强连接
+    pub fn strengthen_edges(&self, memory_ids: &[i64]) -> Result<usize> {
+        if memory_ids.len() < 2 {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        let mut strengthened = 0;
+
+        for i in 0..memory_ids.len() {
+            for j in (i + 1)..memory_ids.len() {
+                let (a, b) = (memory_ids[i], memory_ids[j]);
+                // 查现有边（任意方向）
+                let existing: Option<(i64, f64)> = conn.query_row(
+                    "SELECT id, weight FROM memory_edges
+                     WHERE (from_id = ?1 AND to_id = ?2) OR (from_id = ?2 AND to_id = ?1)
+                     LIMIT 1",
+                    rusqlite::params![a, b],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                ).optional()?;
+
+                match existing {
+                    Some((edge_id, w)) => {
+                        let new_w = (w + 0.05).min(1.0);
+                        conn.execute(
+                            "UPDATE memory_edges SET weight = ?1, last_activated_at = ?2 WHERE id = ?3",
+                            rusqlite::params![new_w, now, edge_id],
+                        )?;
+                    }
+                    None => {
+                        conn.execute(
+                            "INSERT INTO memory_edges (from_id, to_id, relation, weight, created_at, last_activated_at)
+                             VALUES (?1, ?2, 'co_occurred', 0.3, ?3, ?3)",
+                            rusqlite::params![a, b, now],
+                        )?;
+                    }
+                }
+                strengthened += 1;
+            }
+        }
+        Ok(strengthened)
+    }
+
+    /// 衰减长期未激活的边：weight *= decay_factor，低于阈值则删除
+    pub fn decay_cold_edges(&self, cold_days: u32, decay_factor: f64, min_weight: f64) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let threshold = format!("-{cold_days} days");
+
+        // 衰减旧边（last_activated_at 为 NULL 或超过 cold_days 天）
+        conn.execute(
+            "UPDATE memory_edges SET weight = weight * ?1
+             WHERE last_activated_at IS NULL OR last_activated_at < datetime('now', ?2)",
+            rusqlite::params![decay_factor, threshold],
+        )?;
+
+        // 清理过轻的边
+        let deleted = conn.execute(
+            "DELETE FROM memory_edges WHERE weight < ?1",
+            rusqlite::params![min_weight],
+        )?;
+
+        Ok(deleted)
+    }
+
+    /// 获取指定记忆的所有相邻边（双向）
+    pub fn get_memory_edges(&self, memory_id: i64) -> Result<Vec<MemoryEdge>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, from_id, to_id, relation, weight, created_at
+             FROM memory_edges
+             WHERE from_id = ?1 OR to_id = ?1
+             ORDER BY weight DESC",
+        ).context("准备 get_memory_edges 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![memory_id], |row| {
+            Ok(MemoryEdge {
+                id: row.get(0)?,
+                from_id: row.get(1)?,
+                to_id: row.get(2)?,
+                relation: row.get(3)?,
+                weight: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取所有边（用于图谱可视化）
+    pub fn get_all_memory_edges(&self) -> Result<Vec<MemoryEdge>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.from_id, e.to_id, e.relation, e.weight, e.created_at
+             FROM memory_edges e
+             INNER JOIN memories m1 ON e.from_id = m1.id
+             INNER JOIN memories m2 ON e.to_id = m2.id
+             WHERE m1.status = 'active' AND m2.status = 'active'
+             ORDER BY e.weight DESC",
+        ).context("准备 get_all_memory_edges 查询失败")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MemoryEdge {
+                id: row.get(0)?,
+                from_id: row.get(1)?,
+                to_id: row.get(2)?,
+                relation: row.get(3)?,
+                weight: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 删除指定的边
+    pub fn delete_memory_edge(&self, edge_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute("DELETE FROM memory_edges WHERE id = ?1", rusqlite::params![edge_id])
+            .context("删除 memory_edge 失败")?;
+        Ok(())
+    }
+
+    /// 图谱遍历：从起始记忆出发，获取 N 跳内的相关记忆（spreading activation）
+    pub fn get_connected_memories(&self, start_id: i64, max_hops: usize) -> Result<Vec<(Memory, f64)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+
+        // BFS 遍历：收集 max_hops 内的所有连接节点及其衰减权重
+        let mut visited: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+        visited.insert(start_id, 1.0);
+        let mut frontier = vec![(start_id, 1.0)];
+
+        for _hop in 0..max_hops {
+            let mut next_frontier = Vec::new();
+            for (node_id, activation) in &frontier {
+                let mut stmt = conn.prepare(
+                    "SELECT from_id, to_id, weight FROM memory_edges
+                     WHERE from_id = ?1 OR to_id = ?1",
+                ).context("图谱遍历查询失败")?;
+                let edges: Vec<(i64, i64, f64)> = stmt.query_map(
+                    rusqlite::params![node_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?.filter_map(|r| r.ok()).collect();
+
+                for (from, to, weight) in edges {
+                    let neighbor = if from == *node_id { to } else { from };
+                    let new_activation = activation * weight * 0.7; // 衰减因子 0.7
+                    if new_activation > 0.1 {
+                        let entry = visited.entry(neighbor).or_insert(0.0);
+                        if new_activation > *entry {
+                            *entry = new_activation;
+                            next_frontier.push((neighbor, new_activation));
+                        }
+                    }
+                }
+            }
+            frontier = next_frontier;
+        }
+
+        // 排除起始节点，查询记忆详情
+        visited.remove(&start_id);
+        let mut results = Vec::new();
+        for (mem_id, activation) in &visited {
+            let mem = conn.query_row(
+                "SELECT id, category, content, source, confidence, visibility, created_at, updated_at
+                 FROM memories WHERE id = ?1 AND status = 'active'",
+                rusqlite::params![mem_id],
+                Self::row_to_memory,
+            ).optional()?;
+            if let Some(m) = mem {
+                results.push((m, *activation));
+            }
+        }
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(results)
+    }
+
+    /// 统计图谱边数
+    pub fn count_memory_edges(&self) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_edges", [], |row| row.get(0),
+        ).context("统计 memory_edges 失败")?;
+        Ok(count as usize)
+    }
+
+    // ─── Knowledge Edges 方法（通用知识图谱） ──────────────────────────────
+
+    /// 保存知识图谱边（不同类型节点之间的连接），存在则更新权重
+    pub fn save_knowledge_edge(
+        &self,
+        from_type: &str,
+        from_id: i64,
+        to_type: &str,
+        to_id: i64,
+        relation: &str,
+        weight: f64,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO knowledge_edges (from_type, from_id, to_type, to_id, relation, weight, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(from_type, from_id, to_type, to_id, relation) DO UPDATE SET weight = ?6",
+            rusqlite::params![from_type, from_id, to_type, to_id, relation, weight, now],
+        )
+        .context("保存 knowledge_edge 失败")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 获取指定节点的所有连接（双向）
+    pub fn get_knowledge_edges(&self, node_type: &str, node_id: i64) -> Result<Vec<KnowledgeEdge>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, from_type, from_id, to_type, to_id, relation, weight, created_at
+             FROM knowledge_edges
+             WHERE (from_type = ?1 AND from_id = ?2) OR (to_type = ?1 AND to_id = ?2)
+             ORDER BY weight DESC",
+        ).context("准备 get_knowledge_edges 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![node_type, node_id], |row| {
+            Ok(KnowledgeEdge {
+                id: row.get(0)?,
+                from_type: row.get(1)?,
+                from_id: row.get(2)?,
+                to_type: row.get(3)?,
+                to_id: row.get(4)?,
+                relation: row.get(5)?,
+                weight: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取两种类型之间的所有连接
+    pub fn get_knowledge_edges_between_types(
+        &self,
+        from_type: &str,
+        to_type: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeEdge>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, from_type, from_id, to_type, to_id, relation, weight, created_at
+             FROM knowledge_edges
+             WHERE from_type = ?1 AND to_type = ?2
+             ORDER BY weight DESC LIMIT ?3",
+        ).context("准备 get_knowledge_edges_between_types 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![from_type, to_type, limit as i64], |row| {
+            Ok(KnowledgeEdge {
+                id: row.get(0)?,
+                from_type: row.get(1)?,
+                from_id: row.get(2)?,
+                to_type: row.get(3)?,
+                to_id: row.get(4)?,
+                relation: row.get(5)?,
+                weight: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取所有知识图谱边（用于图谱可视化）
+    pub fn get_all_knowledge_edges(&self) -> Result<Vec<KnowledgeEdge>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, from_type, from_id, to_type, to_id, relation, weight, created_at
+             FROM knowledge_edges
+             ORDER BY weight DESC",
+        ).context("准备 get_all_knowledge_edges 查询失败")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(KnowledgeEdge {
+                id: row.get(0)?,
+                from_type: row.get(1)?,
+                from_id: row.get(2)?,
+                to_type: row.get(3)?,
+                to_id: row.get(4)?,
+                relation: row.get(5)?,
+                weight: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 删除指定的知识图谱边
+    pub fn delete_knowledge_edge(&self, edge_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute("DELETE FROM knowledge_edges WHERE id = ?1", rusqlite::params![edge_id])
+            .context("删除 knowledge_edge 失败")?;
+        Ok(())
+    }
+
+    /// 统计知识图谱边数
+    pub fn count_knowledge_edges(&self) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM knowledge_edges", [], |row| row.get(0),
+        ).context("统计 knowledge_edges 失败")?;
+        Ok(count as usize)
+    }
+
+    // ─── Tag 方法 ──────────────────────────────
+
+    /// 给记忆添加标签（忽略重复）
+    pub fn add_tag(&self, memory_id: i64, tag: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
+            rusqlite::params![memory_id, tag.trim().to_lowercase()],
+        ).context("添加标签失败")?;
+        Ok(())
+    }
+
+    /// 批量给记忆添加标签
+    pub fn add_tags(&self, memory_id: i64, tags: &[&str]) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
+        )?;
+        for tag in tags {
+            let t = tag.trim().to_lowercase();
+            if !t.is_empty() {
+                stmt.execute(rusqlite::params![memory_id, t])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 获取某条记忆的所有标签
+    pub fn get_tags(&self, memory_id: i64) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT tag FROM memory_tags WHERE memory_id = ?1 ORDER BY tag",
+        )?;
+        let tags: Vec<String> = stmt.query_map([memory_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(tags)
+    }
+
+    /// 获取所有标签及其记忆数量（按数量降序）
+    pub fn get_all_tags(&self) -> Result<Vec<(String, usize)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT t.tag, COUNT(*) as cnt FROM memory_tags t
+             JOIN memories m ON t.memory_id = m.id
+             WHERE m.status = 'active'
+             GROUP BY t.tag ORDER BY cnt DESC",
+        )?;
+        let tags: Vec<(String, usize)> = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?.filter_map(|r| r.ok()).collect();
+        Ok(tags)
+    }
+
+    /// 获取带有指定标签的所有记忆 ID
+    pub fn get_memories_by_tag(&self, tag: &str) -> Result<Vec<i64>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT memory_id FROM memory_tags WHERE tag = ?1",
+        )?;
+        let ids: Vec<i64> = stmt.query_map([tag.trim().to_lowercase()], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
+    /// 删除记忆的某个标签
+    pub fn remove_tag(&self, memory_id: i64, tag: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "DELETE FROM memory_tags WHERE memory_id = ?1 AND tag = ?2",
+            rusqlite::params![memory_id, tag.trim().to_lowercase()],
+        )?;
+        Ok(())
+    }
+
     pub fn search_open_questions(&self, query: &str) -> Result<Vec<(i64, String)>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let pattern = format!("%{}%", query.trim());
@@ -1525,6 +2152,152 @@ impl Store {
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// 获取指定时间之后的浏览器行为（用于报告生成）
+    pub fn get_browser_behaviors_since(&self, since: &str) -> Result<Vec<BrowserBehaviorRow>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source, event_type, metadata, created_at
+             FROM browser_behaviors WHERE created_at >= ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![since], |row| {
+            Ok(BrowserBehaviorRow {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                event_type: row.get(2)?,
+                metadata: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 浏览器行为事件总数
+    pub fn count_browser_behaviors(&self) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM browser_behaviors",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
+    // ─── Message 方法（通讯消息）──────────────────────────────
+
+    /// 保存通讯消息
+    pub fn save_message(
+        &self,
+        sender: &str,
+        channel: &str,
+        content: Option<&str>,
+        source: &str,
+        message_type: &str,
+        timestamp: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO messages (sender, channel, content, source, message_type, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![sender, channel, content, source, message_type, timestamp],
+        )
+        .context("保存 message 失败")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 按频道查询消息
+    pub fn get_messages_by_channel(&self, channel: &str, limit: usize) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at
+             FROM messages WHERE channel = ?1 ORDER BY timestamp DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![channel, limit as i64], Self::row_to_message)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 按来源查询消息
+    pub fn get_messages_by_source(&self, source: &str, limit: usize) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at
+             FROM messages WHERE source = ?1 ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![source, limit as i64], Self::row_to_message)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 搜索消息内容
+    pub fn search_messages(&self, query: &str, limit: usize) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let pattern = format!("%{query}%");
+        let mut stmt = conn.prepare(
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at
+             FROM messages
+             WHERE content LIKE ?1 OR sender LIKE ?1 OR channel LIKE ?1
+             ORDER BY timestamp DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], Self::row_to_message)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 今日消息统计（按来源分组）
+    pub fn get_today_message_stats(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut stmt = conn.prepare(
+            "SELECT source, COUNT(*) FROM messages
+             WHERE created_at >= ?1 GROUP BY source ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![today], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取所有频道列表（含 source 和消息数）
+    pub fn get_message_channels(&self) -> Result<Vec<(String, String, i64)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT channel, source, COUNT(*) as cnt FROM messages
+             GROUP BY channel, source ORDER BY cnt DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 消息总数
+    pub fn count_messages(&self) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages", [], |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// 删除指定消息
+    pub fn delete_message(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute("DELETE FROM messages WHERE id = ?1", rusqlite::params![id])
+            .context("删除 message 失败")?;
+        Ok(())
+    }
+
+    /// 行映射辅助
+    fn row_to_message(row: &rusqlite::Row) -> rusqlite::Result<Message> {
+        Ok(Message {
+            id: row.get(0)?,
+            sender: row.get(1)?,
+            channel: row.get(2)?,
+            content: row.get(3)?,
+            source: row.get(4)?,
+            message_type: row.get(5)?,
+            timestamp: row.get(6)?,
+            created_at: row.get(7)?,
+        })
     }
 
     /// 记忆总数（活跃状态）
@@ -2651,6 +3424,138 @@ mod tests {
         assert!(notes[1].contains("note2"));
     }
 
+    // ─── Memory Graph 测试 ──────────────────────────────
+
+    #[test]
+    fn test_save_and_get_memory_edge() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "喜欢直接沟通", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("values", "重视团队协作", "chat", 0.8).unwrap();
+
+        let edge_id = store.save_memory_edge(id1, id2, "supports", 0.6).unwrap();
+        assert!(edge_id > 0);
+
+        let edges = store.get_memory_edges(id1).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_id, id1);
+        assert_eq!(edges[0].to_id, id2);
+        assert_eq!(edges[0].relation, "supports");
+        assert!((edges[0].weight - 0.6).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_edge_bidirectional_query() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+
+        store.save_memory_edge(id1, id2, "causes", 0.8).unwrap();
+
+        // 从 id2 方向也能查到
+        let edges = store.get_memory_edges(id2).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_id, id1);
+    }
+
+    #[test]
+    fn test_edge_upsert_updates_weight() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+
+        store.save_memory_edge(id1, id2, "similar", 0.5).unwrap();
+        // 同 pair+relation 再次保存应更新权重
+        store.save_memory_edge(id1, id2, "similar", 0.9).unwrap();
+
+        let edges = store.get_memory_edges(id1).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0].weight - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_edge_different_relations() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+
+        // 同一对可以有不同关系类型
+        store.save_memory_edge(id1, id2, "supports", 0.5).unwrap();
+        store.save_memory_edge(id1, id2, "co_occurred", 0.3).unwrap();
+
+        let edges = store.get_memory_edges(id1).unwrap();
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn test_get_all_memory_edges() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        let id3 = store.save_memory("values", "C", "chat", 0.8).unwrap();
+
+        store.save_memory_edge(id1, id2, "similar", 0.5).unwrap();
+        store.save_memory_edge(id2, id3, "supports", 0.7).unwrap();
+
+        let all_edges = store.get_all_memory_edges().unwrap();
+        assert_eq!(all_edges.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_memory_edge() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+
+        let edge_id = store.save_memory_edge(id1, id2, "similar", 0.5).unwrap();
+        store.delete_memory_edge(edge_id).unwrap();
+
+        let edges = store.get_memory_edges(id1).unwrap();
+        assert_eq!(edges.len(), 0);
+    }
+
+    #[test]
+    fn test_count_memory_edges() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.count_memory_edges().unwrap(), 0);
+
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        store.save_memory_edge(id1, id2, "similar", 0.5).unwrap();
+
+        assert_eq!(store.count_memory_edges().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_connected_memories_traversal() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A - 起点", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B - 一跳", "chat", 0.7).unwrap();
+        let id3 = store.save_memory("values", "C - 两跳", "chat", 0.8).unwrap();
+
+        store.save_memory_edge(id1, id2, "supports", 0.8).unwrap();
+        store.save_memory_edge(id2, id3, "causes", 0.9).unwrap();
+
+        // 1 跳：只应找到 B
+        let hop1 = store.get_connected_memories(id1, 1).unwrap();
+        assert_eq!(hop1.len(), 1);
+        assert_eq!(hop1[0].0.id, id2);
+
+        // 2 跳：应找到 B 和 C
+        let hop2 = store.get_connected_memories(id1, 2).unwrap();
+        assert_eq!(hop2.len(), 2);
+        // B 的激活度 > C 的激活度（距离更近）
+        assert!(hop2[0].1 > hop2[1].1);
+    }
+
+    #[test]
+    fn test_connected_memories_empty() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "孤立节点", "chat", 0.7).unwrap();
+
+        let result = store.get_connected_memories(id1, 3).unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
     #[test]
     fn test_coach_reads_observer_notes_over_raw_obs() {
         // 验证 load_observer_notes_recent 返回的数据可被 Coach 使用
@@ -2707,5 +3612,667 @@ mod tests {
         let mems = store.search_memories("brainstorming", 10).unwrap();
         assert_eq!(mems.len(), 1);
         assert_eq!(mems[0].source, "browser:chatgpt");
+    }
+
+    // ─── Tag 相关测试 ──────────────────────────────
+
+    #[test]
+    fn test_add_and_get_tags() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("behavior", "早起跑步", "chat", 0.8).unwrap();
+
+        store.add_tag(id, "health").unwrap();
+        store.add_tag(id, "Routine").unwrap(); // 大写应被规范化
+
+        let tags = store.get_tags(id).unwrap();
+        assert_eq!(tags, vec!["health", "routine"]); // 按字母排序，小写
+    }
+
+    #[test]
+    fn test_add_tag_idempotent() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("values", "注重团队", "chat", 0.9).unwrap();
+
+        store.add_tag(id, "leadership").unwrap();
+        store.add_tag(id, "leadership").unwrap(); // 重复添加应无报错
+        store.add_tag(id, " Leadership ").unwrap(); // trim + lowercase 后重复
+
+        let tags = store.get_tags(id).unwrap();
+        assert_eq!(tags.len(), 1);
+    }
+
+    #[test]
+    fn test_add_tags_batch() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("thinking", "系统思维", "chat", 0.7).unwrap();
+
+        store.add_tags(id, &["work", "cognition", ""]).unwrap(); // 空标签应被跳过
+
+        let tags = store.get_tags(id).unwrap();
+        assert_eq!(tags, vec!["cognition", "work"]);
+    }
+
+    #[test]
+    fn test_remove_tag() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("emotion", "对加班敏感", "chat", 0.6).unwrap();
+
+        store.add_tags(id, &["stress", "work"]).unwrap();
+        store.remove_tag(id, "stress").unwrap();
+
+        let tags = store.get_tags(id).unwrap();
+        assert_eq!(tags, vec!["work"]);
+    }
+
+    #[test]
+    fn test_get_all_tags_counts() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "跑步", "chat", 0.8).unwrap();
+        let id2 = store.save_memory("behavior", "冥想", "chat", 0.7).unwrap();
+        let id3 = store.save_memory("values", "健康优先", "chat", 0.9).unwrap();
+
+        store.add_tag(id1, "health").unwrap();
+        store.add_tag(id2, "health").unwrap();
+        store.add_tag(id3, "health").unwrap();
+        store.add_tag(id1, "morning").unwrap();
+        store.add_tag(id2, "mindfulness").unwrap();
+
+        let all = store.get_all_tags().unwrap();
+        assert_eq!(all[0], ("health".to_string(), 3)); // 最多的排第一
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_get_memories_by_tag() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "写日记", "chat", 0.8).unwrap();
+        let id2 = store.save_memory("growth", "学 Rust", "chat", 0.9).unwrap();
+
+        store.add_tag(id1, "daily").unwrap();
+        store.add_tag(id2, "daily").unwrap();
+        store.add_tag(id2, "coding").unwrap();
+
+        let daily = store.get_memories_by_tag("daily").unwrap();
+        assert_eq!(daily.len(), 2);
+        assert!(daily.contains(&id1));
+        assert!(daily.contains(&id2));
+
+        let coding = store.get_memories_by_tag("coding").unwrap();
+        assert_eq!(coding, vec![id2]);
+    }
+
+    #[test]
+    fn test_tags_cascade_on_memory_delete() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("task", "买菜", "chat", 1.0).unwrap();
+        store.add_tags(id, &["errand", "daily"]).unwrap();
+
+        store.delete_memory(id).unwrap();
+
+        // 标签应随记忆删除级联清除
+        let tags = store.get_tags(id).unwrap();
+        assert!(tags.is_empty());
+    }
+
+    // ─── Edge Cascade + 图谱鲁棒性测试 ──────────────────────────────
+
+    #[test]
+    fn test_edges_cascade_on_memory_delete() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        let id3 = store.save_memory("values", "C", "chat", 0.8).unwrap();
+
+        store.save_memory_edge(id1, id2, "supports", 0.8).unwrap();
+        store.save_memory_edge(id2, id3, "causes", 0.9).unwrap();
+        assert_eq!(store.count_memory_edges().unwrap(), 2);
+
+        // 删除 id2：应级联删除涉及 id2 的两条边
+        store.delete_memory(id2).unwrap();
+        assert_eq!(store.count_memory_edges().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_connected_memories_with_cycle() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.8).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.8).unwrap();
+        let c = store.save_memory("behavior", "C", "chat", 0.8).unwrap();
+
+        // 创建环：A → B → C → A
+        store.save_memory_edge(a, b, "causes", 0.9).unwrap();
+        store.save_memory_edge(b, c, "supports", 0.8).unwrap();
+        store.save_memory_edge(c, a, "derived_from", 0.7).unwrap();
+
+        // BFS 应正常返回，不死循环
+        let result = store.get_connected_memories(a, 5).unwrap();
+        assert_eq!(result.len(), 2); // B 和 C
+    }
+
+    #[test]
+    fn test_edge_reverse_direction_separate() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let id2 = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+
+        // A→B 和 B→A 同关系类型是不同的边（UNIQUE 约束是 from_id+to_id+relation）
+        store.save_memory_edge(id1, id2, "supports", 0.5).unwrap();
+        store.save_memory_edge(id2, id1, "supports", 0.8).unwrap();
+
+        let all = store.get_all_memory_edges().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_connected_memories_activation_decay() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "起点", "chat", 0.9).unwrap();
+        let b = store.save_memory("behavior", "一跳", "chat", 0.8).unwrap();
+        let c = store.save_memory("values", "两跳", "chat", 0.7).unwrap();
+        let d = store.save_memory("values", "三跳", "chat", 0.6).unwrap();
+
+        store.save_memory_edge(a, b, "supports", 1.0).unwrap();
+        store.save_memory_edge(b, c, "causes", 1.0).unwrap();
+        store.save_memory_edge(c, d, "supports", 1.0).unwrap();
+
+        let result = store.get_connected_memories(a, 3).unwrap();
+        // 衰减因子 0.7: B=0.7, C=0.49, D=0.343
+        // D 的激活度 0.343 > 阈值 0.1，应该存在
+        assert_eq!(result.len(), 3);
+        // 按激活度降序：B > C > D
+        assert_eq!(result[0].0.id, b);
+        assert_eq!(result[1].0.id, c);
+        assert_eq!(result[2].0.id, d);
+        // 验证衰减值
+        assert!((result[0].1 - 0.7).abs() < 0.01);
+        assert!((result[1].1 - 0.49).abs() < 0.01);
+        assert!((result[2].1 - 0.343).abs() < 0.01);
+    }
+
+    // ─── search_memories_with_graph 测试 ──────────────────────────────
+
+    #[test]
+    fn test_search_with_graph_returns_neighbors() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "每天早起跑步", "chat", 0.8).unwrap();
+        let b = store.save_memory("values", "重视健康", "chat", 0.7).unwrap();
+        // B 通过边连接 A，但 B 的 content 不包含"跑步"
+        store.save_memory_edge(a, b, "supports", 0.9).unwrap();
+
+        let results = store.search_memories_with_graph("跑步", 5, 10).unwrap();
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&a), "seed should be found");
+        assert!(ids.contains(&b), "graph neighbor should be included");
+    }
+
+    #[test]
+    fn test_search_with_graph_deduplicates() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "喜欢写代码", "chat", 0.9).unwrap();
+        let b = store.save_memory("behavior", "写代码很快乐", "chat", 0.8).unwrap();
+        // B 同时是 FTS 结果和图谱邻居
+        store.save_memory_edge(a, b, "similar", 0.8).unwrap();
+
+        let results = store.search_memories_with_graph("代码", 5, 10).unwrap();
+        let b_count = results.iter().filter(|m| m.id == b).count();
+        assert_eq!(b_count, 1, "should deduplicate");
+    }
+
+    #[test]
+    fn test_search_with_graph_respects_total_limit() {
+        let store = Store::open_in_memory().unwrap();
+        for i in 0..10 {
+            store.save_memory("behavior", &format!("测试记忆{i}"), "chat", 0.5 + i as f64 * 0.05).unwrap();
+        }
+        let results = store.search_memories_with_graph("测试", 10, 3).unwrap();
+        assert_eq!(results.len(), 3, "should respect total_limit");
+    }
+
+    // ─── strengthen_edges 测试 ──────────────────────────────
+
+    #[test]
+    fn test_strengthen_creates_new_edge() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        assert_eq!(store.count_memory_edges().unwrap(), 0);
+
+        let n = store.strengthen_edges(&[a, b]).unwrap();
+        assert_eq!(n, 1);
+
+        let edges = store.get_memory_edges(a).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].relation, "co_occurred");
+        assert!((edges[0].weight - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_strengthen_boosts_existing_edge() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        store.save_memory_edge(a, b, "supports", 0.5).unwrap();
+
+        store.strengthen_edges(&[a, b]).unwrap();
+
+        let edges = store.get_memory_edges(a).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0].weight - 0.55).abs() < 0.01, "should be 0.5 + 0.05");
+    }
+
+    #[test]
+    fn test_strengthen_caps_at_1() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        store.save_memory_edge(a, b, "causes", 0.98).unwrap();
+
+        store.strengthen_edges(&[a, b]).unwrap();
+
+        let edges = store.get_memory_edges(a).unwrap();
+        assert!((edges[0].weight - 1.0).abs() < 0.01, "should cap at 1.0");
+    }
+
+    #[test]
+    fn test_strengthen_single_id_noop() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let n = store.strengthen_edges(&[a]).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_strengthen_multiple_pairs() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        let c = store.save_memory("values", "C", "chat", 0.8).unwrap();
+
+        // 3 条记忆 → C(3,2) = 3 对
+        let n = store.strengthen_edges(&[a, b, c]).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(store.count_memory_edges().unwrap(), 3);
+    }
+
+    // ─── decay_cold_edges 测试 ──────────────────────────────
+
+    #[test]
+    fn test_decay_cold_edges_decreases_weight() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        store.save_memory_edge(a, b, "supports", 0.8).unwrap();
+        // last_activated_at 默认 NULL → 被视为冷边
+
+        store.decay_cold_edges(0, 0.5, 0.1).unwrap(); // cold_days=0 → 所有边都衰减
+
+        let edges = store.get_memory_edges(a).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0].weight - 0.4).abs() < 0.01, "0.8 * 0.5 = 0.4");
+    }
+
+    #[test]
+    fn test_decay_cold_edges_deletes_below_threshold() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        store.save_memory_edge(a, b, "similar", 0.15).unwrap();
+
+        store.decay_cold_edges(0, 0.5, 0.1).unwrap(); // 0.15 * 0.5 = 0.075 < 0.1
+
+        assert_eq!(store.count_memory_edges().unwrap(), 0, "should delete edge below threshold");
+    }
+
+    #[test]
+    fn test_decay_skips_recently_activated() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
+        let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
+        // strengthen_edges 设置 last_activated_at 为 now
+        store.strengthen_edges(&[a, b]).unwrap();
+
+        // cold_days=30 → 刚激活的边不应衰减
+        store.decay_cold_edges(30, 0.5, 0.1).unwrap();
+
+        let edges = store.get_memory_edges(a).unwrap();
+        assert!((edges[0].weight - 0.3).abs() < 0.01, "recently activated edge should not decay");
+    }
+
+    // ── Knowledge Edges 测试 ──
+
+    #[test]
+    fn test_save_and_get_knowledge_edge() {
+        let store = Store::open_in_memory().unwrap();
+        let mem_id = store.save_memory("behavior", "likes running", "chat", 0.7).unwrap();
+
+        // memory → message 的连接（message id 用 999 模拟，不需要真实存在）
+        let edge_id = store.save_knowledge_edge("memory", mem_id, "message", 999, "references", 0.8).unwrap();
+        assert!(edge_id > 0);
+
+        let edges = store.get_knowledge_edges("memory", mem_id).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_type, "memory");
+        assert_eq!(edges[0].to_type, "message");
+        assert_eq!(edges[0].relation, "references");
+    }
+
+    #[test]
+    fn test_knowledge_edge_upsert() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_knowledge_edge("memory", 1, "message", 2, "references", 0.5).unwrap();
+        store.save_knowledge_edge("memory", 1, "message", 2, "references", 0.9).unwrap();
+
+        let edges = store.get_knowledge_edges("memory", 1).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0].weight - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_knowledge_edge_different_relations() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_knowledge_edge("memory", 1, "message", 2, "references", 0.5).unwrap();
+        store.save_knowledge_edge("memory", 1, "message", 2, "triggers", 0.7).unwrap();
+
+        let edges = store.get_knowledge_edges("memory", 1).unwrap();
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn test_knowledge_edge_bidirectional_query() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_knowledge_edge("memory", 1, "message", 2, "references", 0.8).unwrap();
+
+        // 从 message 侧也能查到
+        let edges = store.get_knowledge_edges("message", 2).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_type, "memory");
+    }
+
+    #[test]
+    fn test_get_knowledge_edges_between_types() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_knowledge_edge("memory", 1, "message", 10, "references", 0.8).unwrap();
+        store.save_knowledge_edge("memory", 2, "message", 11, "triggers", 0.6).unwrap();
+        store.save_knowledge_edge("memory", 3, "observation", 20, "supports", 0.7).unwrap();
+
+        let mem_msg = store.get_knowledge_edges_between_types("memory", "message", 10).unwrap();
+        assert_eq!(mem_msg.len(), 2);
+
+        let mem_obs = store.get_knowledge_edges_between_types("memory", "observation", 10).unwrap();
+        assert_eq!(mem_obs.len(), 1);
+    }
+
+    #[test]
+    fn test_get_all_knowledge_edges() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_knowledge_edge("memory", 1, "message", 2, "references", 0.8).unwrap();
+        store.save_knowledge_edge("memory", 3, "question", 4, "answers", 0.9).unwrap();
+
+        let all = store.get_all_knowledge_edges().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_knowledge_edge() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_knowledge_edge("memory", 1, "message", 2, "references", 0.5).unwrap();
+        store.delete_knowledge_edge(id).unwrap();
+
+        assert_eq!(store.count_knowledge_edges().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_count_knowledge_edges() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.count_knowledge_edges().unwrap(), 0);
+
+        store.save_knowledge_edge("memory", 1, "message", 2, "references", 0.5).unwrap();
+        store.save_knowledge_edge("observation", 3, "memory", 4, "triggers", 0.7).unwrap();
+        assert_eq!(store.count_knowledge_edges().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_knowledge_edge_cross_type_graph() {
+        let store = Store::open_in_memory().unwrap();
+        // 构建：memory1 → message1 → memory2 的路径
+        store.save_knowledge_edge("memory", 1, "message", 10, "references", 0.9).unwrap();
+        store.save_knowledge_edge("message", 10, "memory", 2, "triggers", 0.8).unwrap();
+
+        // 从 message 10 查询应能看到两条边
+        let edges = store.get_knowledge_edges("message", 10).unwrap();
+        assert_eq!(edges.len(), 2);
+    }
+
+    // ─── Message 测试 ──────────────────────────────
+
+    #[test]
+    fn test_save_and_get_message() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_message(
+            "Alice", "#general", Some("Hello world"), "teams", "text", "2026-03-12T10:00:00",
+        ).unwrap();
+        assert!(id > 0);
+
+        let msgs = store.get_messages_by_channel("#general", 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].sender, "Alice");
+        assert_eq!(msgs[0].content, Some("Hello world".to_string()));
+        assert_eq!(msgs[0].source, "teams");
+        assert_eq!(msgs[0].message_type, "text");
+    }
+
+    #[test]
+    fn test_save_message_without_content() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_message(
+            "Bob", "#dev", None, "teams", "file", "2026-03-12T11:00:00",
+        ).unwrap();
+
+        let msgs = store.get_messages_by_channel("#dev", 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].content.is_none());
+        assert_eq!(msgs[0].message_type, "file");
+    }
+
+    #[test]
+    fn test_get_messages_by_source() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_message("A", "#ch1", Some("hi"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        store.save_message("B", "inbox", Some("email"), "email", "text", "2026-03-12T10:01:00").unwrap();
+        store.save_message("C", "#ch2", Some("yo"), "teams", "text", "2026-03-12T10:02:00").unwrap();
+
+        let teams = store.get_messages_by_source("teams", 10).unwrap();
+        assert_eq!(teams.len(), 2);
+
+        let email = store.get_messages_by_source("email", 10).unwrap();
+        assert_eq!(email.len(), 1);
+        assert_eq!(email[0].sender, "B");
+    }
+
+    #[test]
+    fn test_search_messages() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_message("Alice", "#general", Some("meeting with Bob"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        store.save_message("Carol", "#dev", Some("code review done"), "teams", "text", "2026-03-12T10:01:00").unwrap();
+
+        let found = store.search_messages("meeting", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].sender, "Alice");
+
+        // 搜索 sender
+        let found_sender = store.search_messages("Carol", 10).unwrap();
+        assert_eq!(found_sender.len(), 1);
+    }
+
+    #[test]
+    fn test_count_messages() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.count_messages().unwrap(), 0);
+
+        store.save_message("A", "#ch", Some("x"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        store.save_message("B", "#ch", Some("y"), "slack", "text", "2026-03-12T10:01:00").unwrap();
+        assert_eq!(store.count_messages().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_delete_message() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_message("A", "#ch", Some("tmp"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        store.delete_message(id).unwrap();
+        assert_eq!(store.count_messages().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_today_message_stats() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_message("A", "#ch1", Some("a"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        store.save_message("B", "#ch2", Some("b"), "teams", "text", "2026-03-12T10:01:00").unwrap();
+        store.save_message("C", "inbox", Some("c"), "email", "text", "2026-03-12T10:02:00").unwrap();
+
+        let stats = store.get_today_message_stats().unwrap();
+        // 应有 teams 和 email 两组
+        assert!(stats.len() >= 2);
+        // teams 数量最多
+        assert_eq!(stats[0].0, "teams");
+        assert_eq!(stats[0].1, 2);
+    }
+
+    #[test]
+    fn test_get_message_channels() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_message("A", "#general", Some("hi"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        store.save_message("B", "#general", Some("hey"), "teams", "text", "2026-03-12T10:01:00").unwrap();
+        store.save_message("C", "#dev", Some("PR"), "teams", "text", "2026-03-12T10:02:00").unwrap();
+        store.save_message("D", "inbox", Some("email"), "email", "text", "2026-03-12T10:03:00").unwrap();
+
+        let channels = store.get_message_channels().unwrap();
+        assert_eq!(channels.len(), 3);
+        // #general has 2 messages — should be first (ordered by count DESC)
+        assert_eq!(channels[0].0, "#general");
+        assert_eq!(channels[0].1, "teams");
+        assert_eq!(channels[0].2, 2);
+    }
+
+    #[test]
+    fn test_save_message_dedup_by_timestamp() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_message("Alice", "#general", Some("hello"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        // 相同 sender+channel+source+timestamp → 应被忽略
+        let id2 = store.save_message("Alice", "#general", Some("hello"), "teams", "text", "2026-03-12T10:00:00").unwrap();
+        // 不同时间戳 → 应正常插入
+        let id3 = store.save_message("Alice", "#general", Some("world"), "teams", "text", "2026-03-12T10:01:00").unwrap();
+
+        assert!(id1 > 0);
+        // INSERT OR IGNORE 返回 last_insert_rowid 但实际没插入
+        assert_eq!(store.count_messages().unwrap(), 2);
+        assert_ne!(id1, id3);
+        let _ = id2; // 静默使用
+    }
+
+    // ─── Visibility 测试 ──────────────────────────────
+
+    #[test]
+    fn test_save_memory_default_visibility_is_public() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory("identity", "test content", "chat", 0.8).unwrap();
+        let mems = store.load_memories().unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].visibility, "public");
+    }
+
+    #[test]
+    fn test_save_memory_with_visibility() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory_with_visibility("emotion", "feeling tired", "chat", 0.7, "private").unwrap();
+        assert!(id > 0);
+        let mems = store.load_memories().unwrap();
+        assert_eq!(mems[0].visibility, "private");
+    }
+
+    #[test]
+    fn test_search_public_memories_filters_correctly() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory_with_visibility("identity", "public fact", "onboarding", 0.9, "public").unwrap();
+        store.save_memory_with_visibility("emotion", "private feeling", "chat", 0.8, "private").unwrap();
+        store.save_memory_with_visibility("coach_insight", "subconscious pattern", "coach", 0.7, "subconscious").unwrap();
+
+        let public = store.search_public_memories("", 100).unwrap();
+        assert_eq!(public.len(), 1);
+        assert_eq!(public[0].content, "public fact");
+
+        let public_search = store.search_public_memories("fact", 100).unwrap();
+        assert_eq!(public_search.len(), 1);
+
+        // private 和 subconscious 不会出现在 public 搜索中
+        let no_match = store.search_public_memories("feeling", 100).unwrap();
+        assert!(no_match.is_empty());
+    }
+
+    #[test]
+    fn test_get_memories_by_visibility() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory_with_visibility("identity", "a", "chat", 0.9, "public").unwrap();
+        store.save_memory_with_visibility("emotion", "b", "chat", 0.8, "private").unwrap();
+        store.save_memory_with_visibility("emotion", "c", "chat", 0.7, "private").unwrap();
+        store.save_memory_with_visibility("pattern", "d", "coach", 0.6, "subconscious").unwrap();
+
+        assert_eq!(store.get_memories_by_visibility("public").unwrap().len(), 1);
+        assert_eq!(store.get_memories_by_visibility("private").unwrap().len(), 2);
+        assert_eq!(store.get_memories_by_visibility("subconscious").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_update_memory_visibility() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.save_memory("identity", "test", "chat", 0.8).unwrap();
+        assert_eq!(store.load_memories().unwrap()[0].visibility, "public");
+
+        store.update_memory_visibility(id, "private").unwrap();
+        assert_eq!(store.load_memories().unwrap()[0].visibility, "private");
+
+        store.update_memory_visibility(id, "subconscious").unwrap();
+        assert_eq!(store.load_memories().unwrap()[0].visibility, "subconscious");
+    }
+
+    #[test]
+    fn test_count_memories_by_visibility() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_memory_with_visibility("a", "x", "s", 0.9, "public").unwrap();
+        store.save_memory_with_visibility("b", "y", "s", 0.8, "public").unwrap();
+        store.save_memory_with_visibility("c", "z", "s", 0.7, "private").unwrap();
+        store.save_memory_with_visibility("d", "w", "s", 0.6, "subconscious").unwrap();
+
+        let counts = store.count_memories_by_visibility().unwrap();
+        // counts 按 COUNT DESC 排序，public=2 应排第一
+        assert_eq!(counts[0], ("public".to_string(), 2));
+        assert!(counts.iter().any(|(v, c)| v == "private" && *c == 1));
+        assert!(counts.iter().any(|(v, c)| v == "subconscious" && *c == 1));
+    }
+
+    #[test]
+    fn test_migration_backfill_visibility() {
+        let store = Store::open_in_memory().unwrap();
+        // chat source → private (by v16 backfill for new DBs, save_memory default is public)
+        // 但 open_in_memory 跑完迁移时表是空的，backfill 不会影响后续插入
+        // 验证新插入 + search 的 visibility 字段正确传递
+        store.save_memory_with_visibility("coach_insight", "pattern X", "coach", 0.8, "subconscious").unwrap();
+        let search = store.search_memories("pattern", 10).unwrap();
+        assert_eq!(search.len(), 1);
+        assert_eq!(search[0].visibility, "subconscious");
+    }
+
+    #[test]
+    fn test_graph_search_preserves_visibility() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = store.save_memory_with_visibility("identity", "node A", "chat", 0.9, "private").unwrap();
+        let id2 = store.save_memory_with_visibility("identity", "node B", "onboarding", 0.8, "public").unwrap();
+        store.save_memory_edge(id1, id2, "similar", 0.9).unwrap();
+
+        let results = store.search_memories_with_graph("node", 10, 20).unwrap();
+        assert!(results.len() >= 2);
+        // 验证 visibility 字段在图谱搜索结果中保留
+        for m in &results {
+            assert!(m.visibility == "private" || m.visibility == "public");
+        }
     }
 }

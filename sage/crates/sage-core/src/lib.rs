@@ -14,6 +14,7 @@ pub mod heartbeat;
 pub mod mirror;
 pub mod observer;
 pub mod onboarding;
+pub mod persona;
 pub mod profile;
 pub mod provider;
 pub mod memory_evolution;
@@ -23,5 +24,6 @@ pub mod router;
 pub mod skills;
 pub mod session_analyzer;
 pub mod store;
+pub mod strategist;
 
 pub use daemon::Daemon;

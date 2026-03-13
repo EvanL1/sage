@@ -130,6 +130,7 @@ function flushCurrentTab() {
         duration_seconds: duration,
         title: currentTab.title || "",
       });
+      updateDailyStats(currentTab.domain, duration);
     }
   }
 
@@ -288,7 +289,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const { type, payload } = message;
 
   if (type === "IMPORT_MEMORIES") {
-    callApi("/api/memories", "POST", payload)
+    // 浏览器数据不直写 memories，转存到 browser_behaviors 由 AI 流程提炼
+    const behaviorPayload = {
+      source: payload.source || "browser",
+      event_type: "imported_observation",
+      metadata: { memories: payload.memories },
+    };
+    callApi("/api/behaviors", "POST", behaviorPayload)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

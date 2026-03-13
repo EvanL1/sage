@@ -74,7 +74,8 @@ function updateTeamsStatus() {
           const tab = tabs[0];
           const isTeamsTab =
             tab?.url?.includes("teams.microsoft.com") ||
-            tab?.url?.includes("teams.live.com");
+            tab?.url?.includes("teams.live.com") ||
+            tab?.url?.includes("teams.cloud.microsoft");
 
           if (isTeamsTab) {
             teamsStatusBadge.textContent = "检测中…";

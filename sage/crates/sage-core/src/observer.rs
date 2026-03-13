@@ -54,7 +54,7 @@ pub async fn annotate(agent: &Agent, store: &Store) -> Result<bool> {
     for line in resp.text.lines() {
         let line = line.trim().trim_start_matches('-').trim();
         if !line.is_empty() {
-            if let Err(e) = store.save_memory("observer_note", line, "observer", 0.6) {
+            if let Err(e) = store.save_memory_with_visibility("observer_note", line, "observer", 0.6, "subconscious") {
                 tracing::error!("Observer: failed to save note: {e}");
             } else {
                 saved += 1;

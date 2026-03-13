@@ -11,6 +11,11 @@ interface Memory {
   updated_at: string;
 }
 
+interface TagInfo {
+  tag: string;
+  count: number;
+}
+
 const CATEGORY_LABELS: Record<string, string> = {
   personality: "Personality",
   identity: "Identity",
@@ -32,17 +37,55 @@ const CATEGORY_ORDER = [
   "growth", "preference", "skill", "goal", "relationship", "user_input",
 ];
 
-function MemoryItem({ memory, onDelete }: { memory: Memory; onDelete: (id: number) => void }) {
+function MemoryItem({ memory, onDelete, onTagsChange }: {
+  memory: Memory;
+  onDelete: (id: number) => void;
+  onTagsChange: () => void;
+}) {
   const [deleting, setDeleting] = useState(false);
+  const [tags, setTags] = useState<string[]>([]);
+  const [addingTag, setAddingTag] = useState(false);
+  const [newTag, setNewTag] = useState("");
+
+  useEffect(() => {
+    invoke<string[]>("get_memory_tags", { memoryId: memory.id })
+      .then(setTags)
+      .catch(() => {});
+  }, [memory.id]);
 
   const handleDelete = async () => {
     setDeleting(true);
     try {
       await invoke("delete_memory", { memoryId: memory.id });
       onDelete(memory.id);
+      onTagsChange();
     } catch (err) {
       console.error("Failed to delete memory:", err);
       setDeleting(false);
+    }
+  };
+
+  const handleAddTag = async () => {
+    const t = newTag.trim().toLowerCase();
+    if (!t || tags.includes(t)) { setNewTag(""); setAddingTag(false); return; }
+    try {
+      await invoke("add_memory_tag", { memoryId: memory.id, tag: t });
+      setTags((prev) => [...prev, t].sort());
+      setNewTag("");
+      setAddingTag(false);
+      onTagsChange();
+    } catch (err) {
+      console.error("Failed to add tag:", err);
+    }
+  };
+
+  const handleRemoveTag = async (tag: string) => {
+    try {
+      await invoke("remove_memory_tag", { memoryId: memory.id, tag });
+      setTags((prev) => prev.filter((t) => t !== tag));
+      onTagsChange();
+    } catch (err) {
+      console.error("Failed to remove tag:", err);
     }
   };
 
@@ -56,6 +99,30 @@ function MemoryItem({ memory, onDelete }: { memory: Memory; onDelete: (id: numbe
     <div className={`about-memory${deleting ? " about-memory-deleting" : ""}`}>
       <div className="about-memory-content">
         <div>{memory.content}</div>
+        <div className="about-memory-tags">
+          {tags.map((tag) => (
+            <span key={tag} className="memory-tag">
+              {tag}
+              <button className="memory-tag-remove" onClick={() => handleRemoveTag(tag)}>×</button>
+            </span>
+          ))}
+          {addingTag ? (
+            <input
+              className="memory-tag-input"
+              value={newTag}
+              onChange={(e) => setNewTag(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) handleAddTag();
+                if (e.key === "Escape") { setAddingTag(false); setNewTag(""); }
+              }}
+              onBlur={handleAddTag}
+              placeholder="tag..."
+              autoFocus
+            />
+          ) : (
+            <button className="memory-tag-add" onClick={() => setAddingTag(true)}>+</button>
+          )}
+        </div>
         <div className="about-memory-meta">
           <div className="about-confidence-bar">
             <div
@@ -90,6 +157,16 @@ function AboutYou() {
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [aiImportText, setAiImportText] = useState("");
   const [importing, setImporting] = useState(false);
+  const [allTags, setAllTags] = useState<TagInfo[]>([]);
+  const [filterTag, setFilterTag] = useState<string | null>(null);
+  const [filteredIds, setFilteredIds] = useState<Set<number> | null>(null);
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const tags = await invoke<TagInfo[]>("get_all_tags");
+      setAllTags(tags);
+    } catch { /* silent */ }
+  }, []);
 
   const fetchMemories = useCallback(async () => {
     try {
@@ -119,11 +196,27 @@ function AboutYou() {
   useEffect(() => {
     setLoading(true);
     fetchMemories();
-  }, [fetchMemories]);
+    fetchTags();
+  }, [fetchMemories, fetchTags]);
 
   const handleDelete = useCallback((id: number) => {
     setMemories((prev) => prev.filter((m) => m.id !== id));
   }, []);
+
+  const handleFilterByTag = async (tag: string | null) => {
+    if (!tag || tag === filterTag) {
+      setFilterTag(null);
+      setFilteredIds(null);
+      return;
+    }
+    setFilterTag(tag);
+    try {
+      const ids = await invoke<number[]>("get_memories_by_tag", { tag });
+      setFilteredIds(new Set(ids));
+    } catch {
+      setFilteredIds(null);
+    }
+  };
 
   // 保存用户主动输入的记忆
   const handleSaveUserInput = async () => {
@@ -222,8 +315,11 @@ function AboutYou() {
   };
 
   // 只保留已知分类，过滤掉不属于 "Who am I" 的杂项
+  const displayMemories = filteredIds
+    ? memories.filter((m) => filteredIds.has(m.id))
+    : memories;
   const grouped = CATEGORY_ORDER.reduce<Record<string, Memory[]>>((acc, cat) => {
-    const items = memories.filter((m) => m.category === cat);
+    const items = displayMemories.filter((m) => m.category === cat);
     if (items.length > 0) {
       acc[cat] = items;
     }
@@ -286,21 +382,49 @@ function AboutYou() {
         </div>
       ) : (
         <div className="about-layout">
-          {visibleCategories.length > 1 && (
-            <nav className="about-toc">
-              {visibleCategories.map((cat) => (
-                <button
-                  key={cat}
-                  className="about-toc-item"
-                  onClick={() => scrollToCategory(cat)}
-                >
-                  {CATEGORY_LABELS[cat] ?? cat}
-                  <span className="about-toc-count">{grouped[cat].length}</span>
-                </button>
-              ))}
-            </nav>
-          )}
+          <div className="about-sidebar">
+            {visibleCategories.length > 1 && (
+              <nav className="about-toc">
+                {visibleCategories.map((cat) => (
+                  <button
+                    key={cat}
+                    className="about-toc-item"
+                    onClick={() => scrollToCategory(cat)}
+                  >
+                    {CATEGORY_LABELS[cat] ?? cat}
+                    <span className="about-toc-count">{grouped[cat].length}</span>
+                  </button>
+                ))}
+              </nav>
+            )}
+            {allTags.length > 0 && (
+              <div className="tag-cloud">
+                <div className="tag-cloud-title">Tags</div>
+                <div className="tag-cloud-list">
+                  {allTags.map(({ tag, count }) => (
+                    <button
+                      key={tag}
+                      className={`tag-chip${filterTag === tag ? " tag-chip-active" : ""}`}
+                      onClick={() => handleFilterByTag(tag)}
+                    >
+                      {tag} <span className="tag-chip-count">{count}</span>
+                    </button>
+                  ))}
+                  {filterTag && (
+                    <button className="tag-chip tag-chip-clear" onClick={() => handleFilterByTag(null)}>
+                      Clear filter
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
           <div className="about-content">
+            {filterTag && (
+              <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: "var(--spacing-sm)" }}>
+                Filtering by tag: <strong>{filterTag}</strong> ({displayMemories.length} memories)
+              </div>
+            )}
             {visibleCategories.map((cat) => (
               <div
                 key={cat}
@@ -318,7 +442,7 @@ function AboutYou() {
                   <span className="about-category-count">{grouped[cat].length}</span>
                 </button>
                 {!collapsed[cat] && grouped[cat].map((memory) => (
-                  <MemoryItem key={memory.id} memory={memory} onDelete={handleDelete} />
+                  <MemoryItem key={memory.id} memory={memory} onDelete={handleDelete} onTagsChange={fetchTags} />
                 ))}
               </div>
             ))}
