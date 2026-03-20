@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/sage-desktop/src-tauri -> ../../target"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: cd apps/sage-desktop && bun install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/sage-desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "Sage ${{ github.ref_name }}"
+          releaseBody: "See the [commit log](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}) for details."
+          releaseDraft: false
+          prerelease: false
