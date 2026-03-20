@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sage Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="logo">Sage Bridge</span>
+      <span id="status-badge" class="badge badge--checking">Checking…</span>
+    </header>
+
+    <section class="info">
+      <div class="stat">
+        <span class="stat__label">Memories synced</span>
+        <span id="memory-count" class="stat__value">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat__label">Behaviors recorded</span>
+        <span id="behavior-count" class="stat__value">—</span>
+      </div>
+    </section>
+
+    <button id="sync-btn" class="btn" disabled>Sync Now</button>
+
+    <!-- AI 记忆同步区域 -->
+    <section id="memory-sync-section" class="memory-sync-section" style="display:none">
+      <div class="section-header">
+        <span class="section-title">AI Memory Sync</span>
+        <span id="memory-sync-badge" class="badge badge--checking">待同步</span>
+      </div>
+      <p class="sync-hint">访问 AI 平台设置页面时自动提取记忆</p>
+      <button id="memory-sync-btn" class="btn btn--secondary">Sync Memories</button>
+      <div id="sync-result" class="sync-result" style="display:none"></div>
+    </section>
+
+    <!-- 行为追踪控制区 -->
+    <section class="tracking-section">
+      <div class="tracking-header">
+        <span class="tracking-title">行为追踪</span>
+        <label class="toggle" title="开启或关闭浏览行为追踪">
+          <input type="checkbox" id="tracking-toggle" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="daily-stats" id="daily-stats">
+        <div class="stat">
+          <span class="stat__label">今日访问页面</span>
+          <span id="today-page-count" class="stat__value">—</span>
+        </div>
+        <div class="stat">
+          <span class="stat__label">最长停留</span>
+          <span id="today-top-domain" class="stat__value today-domain">—</span>
+        </div>
+        <div class="stat">
+          <span class="stat__label">活跃时长</span>
+          <span id="today-active-time" class="stat__value">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Teams 配置区域 -->
+    <section class="teams-section">
+      <div class="section-header">
+        <span class="section-title">Microsoft Teams</span>
+        <span id="teams-status-badge" class="badge badge--checking">未检测到</span>
+      </div>
+
+      <div class="stat">
+        <span class="stat__label">今日消息数</span>
+        <span id="teams-message-count" class="stat__value">0</span>
+      </div>
+
+      <div class="setting-row">
+        <label for="teams-capture-level" class="setting-label">捕获级别</label>
+        <select id="teams-capture-level" class="setting-select">
+          <option value="metadata">仅元数据</option>
+          <option value="summary">元数据 + 摘要</option>
+        </select>
+      </div>
+    </section>
+
+    <footer>
+      <span id="last-sync">Last sync: never</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

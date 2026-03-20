@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sage-types",
+    "crates/sage-core",
+    "crates/sage-cli",
+    "apps/sage-desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+crossterm = "=0.28.1"
+ratatui = { version = "=0.28.1", default-features = false, features = ["crossterm"] }
+
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors"] }
+reqwest = { version = "0.12", features = ["json"] }
+sage-types = { path = "crates/sage-types" }
+sage-core = { path = "crates/sage-core" }
+
+
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-deep-link = "2"

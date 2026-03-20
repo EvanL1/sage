@@ -1,0 +1,55 @@
+# Build
+target/
+dist/
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Logs
+*.log
+
+# Build artifacts
+*.zip
+
+# Tauri generated schemas (auto-regenerated on build)
+apps/sage-desktop/src-tauri/gen/
+
+# Lock files (regenerated)
+Cargo.lock
+apps/sage-desktop/bun.lock
+
+# Source icon (keep only generated sizes)
+apps/sage-desktop/src-tauri/icons/icon.png
+apps/sage-desktop/src-tauri/icons/sage-icon-1024.png
+
+# ClawHub
+.clawhub/
+
+# Worktrees
+.worktrees/
+
+# AI agent config (per-user, not project)
+.claude/
+.agents/
+.cursor/
+.windsurf/
+.codex/
+.gemini/
+.cursorrules
+.windsurfrules
+.clinerules
+AGENTS.md
+GEMINI.md
+ai-rules-sync.json

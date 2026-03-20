@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sage.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Replace with your actual path, e.g. /Users/<username>/.sage/bin/sage -->
+        <string>/Users/YOUR_USERNAME/.sage/bin/sage</string>
+        <string>--background</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <!-- Replace with your actual path -->
+    <string>/Users/YOUR_USERNAME/.sage/logs/sage.out.log</string>
+    <key>StandardErrorPath</key>
+    <!-- Replace with your actual path -->
+    <string>/Users/YOUR_USERNAME/.sage/logs/sage.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <!-- Replace with your actual home directory -->
+        <string>/Users/YOUR_USERNAME</string>
+        <key>USER</key>
+        <!-- Replace with your actual username -->
+        <string>YOUR_USERNAME</string>
+        <key>PATH</key>
+        <!-- Replace YOUR_USERNAME with your actual username -->
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/YOUR_USERNAME/.cargo/bin:/opt/homebrew/bin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+        <key>http_proxy</key>
+        <string>http://127.0.0.1:7890</string>
+        <key>https_proxy</key>
+        <string>http://127.0.0.1:7890</string>
+        <key>all_proxy</key>
+        <string>socks5://127.0.0.1:7890</string>
+    </dict>
+</dict>
+</plist>

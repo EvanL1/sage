@@ -1,0 +1,27 @@
+# Sage 配置文件示例
+# 复制为 ~/.sage/config.toml 并按需修改
+
+[daemon]
+heartbeat_interval_secs = 1800  # 30 minutes
+log_level = "info"
+
+[agent]
+provider = "claude"  # fallback CLI: "claude" | "codex" | "gemini" | "cursor"
+default_model = "sonnet"
+max_budget_usd = 0.50
+permission_mode = "bypassPermissions"
+
+[channels.email]
+enabled = true
+poll_interval_secs = 300
+
+[channels.calendar]
+enabled = true
+poll_interval_secs = 900
+
+[channels.wechat]
+enabled = false
+
+[channels.hooks]
+enabled = true
+watch_dir = "~/.claude"

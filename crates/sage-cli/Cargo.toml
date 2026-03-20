@@ -1,0 +1,20 @@
+[package]
+name = "sage-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sage"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+sage-core = { workspace = true }
+sage-types = { workspace = true }

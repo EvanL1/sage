@@ -1,0 +1,101 @@
+{
+  "manifest_version": 3,
+  "name": "Sage Bridge",
+  "version": "0.1.0",
+  "description": "Connect your AI conversations to Sage for unified memory",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["storage", "activeTab", "tabs", "webNavigation", "scripting"],
+  "host_permissions": ["http://127.0.0.1:18522/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content-scripts/claude.js", "content-scripts/ai-chat-shared.js", "content-scripts/context-inject.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/settings*"],
+      "js": ["content-scripts/claude-memory.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["content-scripts/chatgpt.js", "content-scripts/ai-chat-shared.js", "content-scripts/context-inject.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chatgpt.com/settings*", "https://chat.openai.com/settings*"],
+      "js": ["content-scripts/chatgpt-memory.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content-scripts/gemini.js", "content-scripts/ai-chat-shared.js", "content-scripts/context-inject.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/app/settings*", "https://gemini.google.com/settings*"],
+      "js": ["content-scripts/gemini-memory.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://*.teams.live.com/*",
+        "https://teams.cloud.microsoft/*",
+        "https://*.teams.cloud.microsoft/*",
+        "https://*.teams.cloud.microsoft.com/*"
+      ],
+      "js": ["content-scripts/teams.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Sage Bridge"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["content-scripts/teams-hook.js"],
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://*.teams.live.com/*",
+        "https://teams.cloud.microsoft/*",
+        "https://*.teams.cloud.microsoft/*",
+        "https://*.teams.cloud.microsoft.com/*"
+      ]
+    },
+    {
+      "resources": ["content-scripts/ai-chat-hook.js"],
+      "matches": [
+        "https://claude.ai/*",
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "content-scripts/claude-memory.js",
+        "content-scripts/chatgpt-memory.js",
+        "content-scripts/gemini-memory.js"
+      ],
+      "matches": [
+        "https://claude.ai/*",
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*"
+      ]
+    }
+  ]
+}

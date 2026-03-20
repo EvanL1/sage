@@ -1,0 +1,439 @@
+use serde_json::{json, Value};
+use tauri::State;
+
+use super::{default_agent_config, map_err};
+use crate::AppState;
+
+/// 获取消息列表 — 按 channel/source 过滤
+#[tauri::command]
+pub async fn get_messages(
+    state: State<'_, AppState>,
+    channel: Option<String>,
+    source: Option<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(50);
+    let messages = if let Some(ch) = &channel {
+        state
+            .store
+            .get_messages_by_channel(ch, limit)
+            .map_err(map_err)?
+    } else if let Some(src) = &source {
+        state
+            .store
+            .get_messages_by_source(src, limit)
+            .map_err(map_err)?
+    } else {
+        state
+            .store
+            .get_messages_by_source("teams", limit)
+            .map_err(map_err)?
+    };
+    Ok(serde_json::json!(messages))
+}
+
+/// 获取所有消息频道列表
+#[tauri::command]
+pub async fn get_message_channels(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let channels = state.store.get_message_channels().map_err(map_err)?;
+    let result: Vec<serde_json::Value> = channels
+        .into_iter()
+        .map(|(channel, source, count)| {
+            serde_json::json!({ "channel": channel, "source": source, "count": count })
+        })
+        .collect();
+    Ok(serde_json::json!(result))
+}
+
+/// AI 消息洞察 — 分析当前频道/来源的消息并给出简要见解
+#[tauri::command]
+pub async fn summarize_messages(
+    state: State<'_, AppState>,
+    context: String,
+    label: String,
+) -> Result<String, String> {
+    let lang = state.store.prompt_lang();
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or_else(|| if lang == "en" {
+            "LLM provider not configured".to_string()
+        } else {
+            "未配置 LLM provider".to_string()
+        })?;
+
+    let agent_config = default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let prompt = sage_core::prompts::cmd_analyze_message_flow_user(&lang, &label, &context);
+    let system = sage_core::prompts::cmd_analyze_message_flow_system(&lang);
+
+    let resp = provider
+        .invoke(&prompt, Some(system))
+        .await
+        .map_err(map_err)?;
+    Ok(resp)
+}
+
+/// Parse LLM channel-summary response into (summary, Vec<(priority, description)>).
+fn parse_channel_summary(resp: &str) -> (String, Vec<(String, String)>) {
+    let mut summary = String::new();
+    let mut actions: Vec<(String, String)> = Vec::new();
+    let mut in_actions = false;
+
+    for line in resp.lines() {
+        let line = line.trim();
+        if let Some(rest) = line
+            .strip_prefix("SUMMARY:")
+            .or_else(|| line.strip_prefix("摘要："))
+            .or_else(|| line.strip_prefix("摘要:"))
+        {
+            summary = rest.trim().to_string();
+            in_actions = false;
+        } else if line.starts_with("ACTIONS:") || line.starts_with("待办：") || line.starts_with("待办:") {
+            let rest = line.split_once(':').map(|(_, r)| r.trim()).unwrap_or("");
+            in_actions = !rest.eq_ignore_ascii_case("NONE") && rest != "无";
+        } else if in_actions && line.starts_with("- ") {
+            let item = line.trim_start_matches("- ").trim();
+            let (priority, desc) = if item.starts_with("[P0]") {
+                ("P0", &item[4..])
+            } else if item.starts_with("[P1]") {
+                ("P1", &item[4..])
+            } else if item.starts_with("[P2]") {
+                ("P2", &item[4..])
+            } else {
+                ("P1", item)
+            };
+            let task_content = desc.split('|').next().unwrap_or(desc).trim();
+            if !task_content.is_empty() {
+                actions.push((priority.to_string(), task_content.to_string()));
+            }
+        }
+    }
+
+    if summary.is_empty() {
+        summary = resp.to_string();
+    }
+    (summary, actions)
+}
+
+/// 频道摘要 + 待办事项提取 — 可选自动创建 Task
+#[tauri::command]
+pub async fn summarize_channel(
+    state: State<'_, AppState>,
+    channel: String,
+    source: Option<String>,
+    create_tasks: Option<bool>,
+) -> Result<Value, String> {
+    let _source = source.unwrap_or_else(|| "teams".to_string());
+    let messages = state.store.get_messages_by_channel(&channel, 100).map_err(map_err)?;
+
+    if messages.is_empty() {
+        return Ok(json!({"summary": "No messages to summarize.", "tasks_created": 0}));
+    }
+
+    let messages_text: String = messages
+        .iter()
+        .rev()
+        .map(|m| format!(
+            "[{}] {}: {}",
+            m.timestamp.chars().take(16).collect::<String>(),
+            m.sender,
+            m.content.as_deref().unwrap_or("")
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let chat_type = messages.first().map(|m| m.message_type.as_str()).unwrap_or("unknown");
+
+    let lang = state.store.prompt_lang();
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or_else(|| if lang == "en" {
+            "LLM provider not configured".to_string()
+        } else {
+            "未配置 LLM provider".to_string()
+        })?;
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &default_agent_config());
+
+    let prompt = sage_core::prompts::cmd_summarize_channel_prompt(&lang, &channel, chat_type, &messages_text);
+    let resp = provider.invoke(&prompt, None).await.map_err(map_err)?;
+
+    let (summary, actions) = parse_channel_summary(&resp);
+
+    let mut tasks_created = 0;
+    if create_tasks.unwrap_or(true) {
+        let task_source = format!("teams:{channel}");
+        let description = format!("From channel: {channel}");
+        for (priority, desc) in &actions {
+            let p = match priority.as_str() { "P0" => "urgent", "P2" => "low", _ => "normal" };
+            match state.store.create_task(desc, &task_source, None, Some(p), None, Some(&description)) {
+                Ok(_) => tasks_created += 1,
+                Err(e) => tracing::warn!("Failed to create task from channel summary: {e}"),
+            }
+        }
+    }
+
+    Ok(json!({
+        "summary": summary,
+        "actions": actions.iter().map(|(p, d)| json!({"priority": p, "description": d})).collect::<Vec<_>>(),
+        "tasks_created": tasks_created,
+        "message_count": messages.len(),
+    }))
+}
+
+/// 获取通信社交图（person ↔ person，基于共同频道通信）
+#[tauri::command]
+pub async fn get_message_graph(state: State<'_, AppState>) -> Result<Value, String> {
+    let data = state.store.get_message_graph_data().map_err(map_err)?;
+
+    let mut person_set = std::collections::HashSet::new();
+    for (a, b, _, _) in &data {
+        person_set.insert(a.clone());
+        person_set.insert(b.clone());
+    }
+
+    let mut id_map = std::collections::HashMap::new();
+    let mut next_id = 1i64;
+    let mut nodes = Vec::new();
+
+    for person in &person_set {
+        id_map.insert(person.clone(), next_id);
+        nodes.push(json!({ "id": next_id, "label": person }));
+        next_id += 1;
+    }
+
+    let edges: Vec<Value> = data
+        .iter()
+        .map(|(a, b, shared_ch, total_msgs)| {
+            json!({
+                "from": id_map[a],
+                "to": id_map[b],
+                "shared_channels": shared_ch,
+                "weight": total_msgs,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "nodes": nodes, "edges": edges }))
+}
+
+/// 获取各连接/工具的状态
+#[tauri::command]
+pub fn get_connections_status(state: State<'_, AppState>) -> Result<Value, String> {
+    let now = chrono::Utc::now().timestamp();
+    let lang = state.store.prompt_lang();
+    let en = lang == "en";
+
+    let bridge_last_seen = sage_core::bridge::bridge_last_seen();
+    let browser_status = if bridge_last_seen == 0 {
+        json!({ "status": "never", "label": if en { "Never connected" } else { "从未连接" } })
+    } else {
+        let ago = now - bridge_last_seen;
+        if ago < 120 {
+            json!({ "status": "connected", "label": if en { "Connected" } else { "已连接" }, "ago_seconds": ago })
+        } else {
+            let mins = ago / 60;
+            let label = if en {
+                if mins < 60 { format!("{}m ago", mins) } else { format!("{}h ago", mins / 60) }
+            } else if mins < 60 {
+                format!("{}分钟前", mins)
+            } else {
+                format!("{}小时前", mins / 60)
+            };
+            json!({ "status": "stale", "label": label, "ago_seconds": ago })
+        }
+    };
+
+    let outlook_running = std::process::Command::new("pgrep")
+        .arg("-x")
+        .arg("Microsoft Outlook")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let outlook_status = if outlook_running {
+        json!({ "status": "connected", "label": if en { "Running" } else { "运行中" } })
+    } else {
+        json!({ "status": "offline", "label": if en { "Not running" } else { "未运行" } })
+    };
+
+    let claude_status = {
+        let sessions_dir = dirs::home_dir().map(|h| h.join(".claude/projects"));
+        let has_recent = sessions_dir
+            .and_then(|dir| {
+                std::fs::read_dir(&dir)
+                    .ok()
+                    .map(|entries| entries.filter_map(|e| e.ok()).any(|_| true))
+            })
+            .unwrap_or(false);
+        if has_recent {
+            json!({ "status": "connected", "label": if en { "Configured" } else { "已配置" } })
+        } else {
+            json!({ "status": "offline", "label": if en { "Not detected" } else { "未检测到" } })
+        }
+    };
+
+    let behavior_count = state
+        .store
+        .get_browser_behaviors(1)
+        .map(|b| b.len())
+        .unwrap_or(0);
+    let behavior_status = if behavior_count > 0 {
+        json!({ "status": "connected", "label": if en { "Collecting data" } else { "数据收集中" } })
+    } else {
+        json!({ "status": "idle", "label": if en { "No data yet" } else { "暂无数据" } })
+    };
+
+    Ok(json!({
+        "browser_extension": browser_status,
+        "outlook": outlook_status,
+        "claude_code": claude_status,
+        "behavior_tracking": behavior_status,
+    }))
+}
+
+/// 获取建议列表
+#[tauri::command]
+pub async fn get_suggestions(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<Value>, String> {
+    let suggestions = state
+        .store
+        .get_recent_suggestions(limit.unwrap_or(50))
+        .map_err(map_err)?;
+    suggestions
+        .into_iter()
+        .map(|s| serde_json::to_value(&s).map_err(map_err))
+        .collect()
+}
+
+#[tauri::command]
+pub async fn submit_feedback(
+    state: State<'_, AppState>,
+    suggestion_id: i64,
+    action: String,
+) -> Result<Value, String> {
+    use sage_core::feedback::{FeedbackEffect, FeedbackProcessor};
+    use sage_types::FeedbackAction;
+
+    let feedback_action = match action.as_str() {
+        "useful" => FeedbackAction::Useful,
+        "not_useful" => FeedbackAction::NotUseful,
+        _ if action.starts_with("never:") => {
+            let user_complaint = action[6..].to_string();
+            // LLM 把用户吐槽 + 原始建议上下文转化为可执行规则
+            let refined = refine_negative_rule(&state, suggestion_id, &user_complaint).await;
+            FeedbackAction::NeverDoThis(refined)
+        }
+        _ if action.starts_with("correction:") => {
+            FeedbackAction::Correction(action[11..].to_string())
+        }
+        _ => {
+            let lang = state.store.prompt_lang();
+            return Err(if lang == "en" {
+                format!("Unknown feedback type: {action}")
+            } else {
+                format!("未知的反馈类型: {action}")
+            });
+        }
+    };
+
+    let processor = FeedbackProcessor::new(&state.store);
+    let effect = processor
+        .process(suggestion_id, feedback_action)
+        .map_err(map_err)?;
+
+    match effect {
+        FeedbackEffect::Recorded => Ok(json!({"effect": "recorded"})),
+        FeedbackEffect::DemotionSuggested { category, count } => {
+            Ok(json!({"effect": "demotion_suggested", "category": category, "count": count}))
+        }
+        FeedbackEffect::NegativeRuleAdded { rule } => {
+            Ok(json!({"effect": "negative_rule_added", "rule": rule}))
+        }
+    }
+}
+
+/// 用 LLM 把用户的模糊吐槽转化为具体可执行规则
+async fn refine_negative_rule(
+    state: &State<'_, AppState>,
+    suggestion_id: i64,
+    user_complaint: &str,
+) -> String {
+    // 查找原始建议内容
+    let original = state
+        .store
+        .get_recent_suggestions(500)
+        .ok()
+        .and_then(|ss| ss.into_iter().find(|s| s.id == suggestion_id))
+        .map(|s| format!("[{}] {}", s.event_source, s.response))
+        .unwrap_or_default();
+
+    if original.is_empty() {
+        return user_complaint.to_string();
+    }
+
+    // 尝试用 LLM 精炼
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = match state.store.load_provider_configs() {
+        Ok(c) => c,
+        Err(_) => return user_complaint.to_string(),
+    };
+    let (info, config) = match sage_core::discovery::select_best_provider(&discovered, &configs) {
+        Some(pair) => pair,
+        None => return user_complaint.to_string(),
+    };
+    let agent_config = default_agent_config();
+    let provider =
+        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let lang = state.store.prompt_lang();
+    let prompt = match lang.as_str() {
+        "en" => format!(
+            "The user rejected this AI suggestion:\n\"{original}\"\n\n\
+             Their complaint: \"{user_complaint}\"\n\n\
+             Convert this into ONE specific, actionable rule for the AI to follow. \
+             The rule must clearly state what NOT to do and in what context. \
+             Output only the rule, nothing else. Max 30 words."
+        ),
+        _ => format!(
+            "用户拒绝了这条 AI 建议：\n「{original}」\n\n\
+             用户的吐槽：「{user_complaint}」\n\n\
+             把用户的吐槽转化为一条具体、可执行的规则，明确说明在什么场景下不要做什么。\
+             只输出规则本身，不要其他内容。不超过30字。"
+        ),
+    };
+
+    match provider.invoke(&prompt, None).await {
+        Ok(refined) => {
+            let rule = refined.trim().to_string();
+            if rule.is_empty() { user_complaint.to_string() } else { rule }
+        }
+        Err(_) => user_complaint.to_string(),
+    }
+}
+
+#[tauri::command]
+pub async fn delete_suggestion(
+    state: State<'_, AppState>,
+    suggestion_id: i64,
+) -> Result<(), String> {
+    state
+        .store
+        .delete_suggestion(suggestion_id)
+        .map_err(map_err)
+}
+
+#[tauri::command]
+pub async fn update_suggestion(
+    state: State<'_, AppState>,
+    suggestion_id: i64,
+    response: String,
+) -> Result<(), String> {
+    state
+        .store
+        .update_suggestion_response(suggestion_id, &response)
+        .map_err(map_err)
+}
