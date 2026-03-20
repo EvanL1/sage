@@ -70,11 +70,11 @@ You work normally
 ┌─────────────────────────────────────────────────┐
 │  Sage Daemon (background, runs every N minutes) │
 │                                                 │
-│  ┌─────────┐  ┌──────────┐  ┌───────────────┐  │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
 │  │ Observer │→ │  Coach   │→ │    Mirror     │  │
 │  │ raw      │  │ behavior │  │  cognitive    │  │
 │  │ events   │  │ patterns │  │  profile      │  │
-│  └─────────┘  └──────────┘  └───────┬───────┘  │
+│  └──────────┘  └─────┬────┘  └──────┬────────┘  │
 │                      │              │           │
 │              ┌───────┴───────┐  ┌───┴────────┐  │
 │              │ Task Engine   │  │ Reflective │  │
@@ -162,7 +162,7 @@ Plugin Hook fires
 │     "content": "...",       │
 │     "priority": "high",     │
 │     "due_date": "...",      │
-│     "description": "..."   │
+│     "description": "..."    │
 │   }                         │
 │ }                           │
 └──────────────┬──────────────┘
