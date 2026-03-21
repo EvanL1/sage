@@ -2403,15 +2403,15 @@ fn test_get_signal_accept_rate_empty() {
 #[test]
 fn test_get_signal_accept_rate_mixed() {
     let store = Store::open_in_memory().unwrap();
-    // 保存 3 条信号
+    // 保存 3 条信号（使用语义差异足够大的标题，避免去重）
     let id1 = store
-        .save_task_signal("new_task", None, "任务A", "证据A", None)
+        .save_task_signal("new_task", None, "整理项目文档并发送邮件", "证据A", None)
         .unwrap();
     let id2 = store
-        .save_task_signal("new_task", None, "任务B", "证据B", None)
+        .save_task_signal("new_task", None, "去超市购买晚餐食材", "证据B", None)
         .unwrap();
     let id3 = store
-        .save_task_signal("new_task", None, "任务C", "证据C", None)
+        .save_task_signal("new_task", None, "修复登录页面的样式问题", "证据C", None)
         .unwrap();
     // 2 accepted, 1 dismissed
     store.update_signal_status(id1, "accepted").unwrap();

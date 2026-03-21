@@ -1,8 +1,14 @@
 use anyhow::{Context, Result};
 
 use super::{Store, TaskSignal};
+use crate::similarity::text_similarity;
+
+/// 语义去重阈值：相似度超过此值视为重复
+const TASK_DEDUP_THRESHOLD: f64 = 0.6;
 
 impl Store {
+    /// 创建任务，自动与 open/done/cancelled 任务语义去重。
+    /// 返回 Ok(-1) 表示检测到重复，跳过创建。
     pub fn create_task(
         &self,
         content: &str,
@@ -16,6 +22,27 @@ impl Store {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+
+        // 语义去重：与 open/done/cancelled 任务比较（deleted 的已从 DB 移除，不参与）
+        let mut stmt = conn.prepare(
+            "SELECT content FROM tasks WHERE status IN ('open', 'done', 'cancelled')",
+        )?;
+        let existing: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for existing_content in &existing {
+            if text_similarity(existing_content, content) > TASK_DEDUP_THRESHOLD {
+                tracing::debug!(
+                    "Task dedup: skip '{}' (similar to '{}')",
+                    content.chars().take(40).collect::<String>(),
+                    existing_content.chars().take(40).collect::<String>(),
+                );
+                return Ok(-1);
+            }
+        }
+
         conn.execute(
             "INSERT INTO tasks (content, source, source_id, priority, due_date, description) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![content, source, source_id, priority.unwrap_or("normal"), due_date, description],
@@ -317,15 +344,34 @@ impl Store {
                 return Ok(-1);
             }
         }
-        // 去重：new_task 类型按 title 内容去重
+        // 去重：new_task 类型按语义去重（pending signals + 现有 open/done/cancelled tasks）
         if signal_type == "new_task" {
-            let exists: bool = conn.query_row(
-                "SELECT COUNT(*) FROM task_signals WHERE signal_type = 'new_task' AND title = ?1 AND status = 'pending'",
-                rusqlite::params![title],
-                |row| row.get::<_, i64>(0),
-            ).unwrap_or(0) > 0;
-            if exists {
-                return Ok(-1);
+            // 1. 与 pending 的 new_task signals 语义比较
+            let mut sig_stmt = conn.prepare(
+                "SELECT title FROM task_signals WHERE signal_type = 'new_task' AND status = 'pending'",
+            )?;
+            let sig_titles: Vec<String> = sig_stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            for t in &sig_titles {
+                if text_similarity(t, title) > TASK_DEDUP_THRESHOLD {
+                    return Ok(-1);
+                }
+            }
+
+            // 2. 与现有 open/done/cancelled 任务语义比较
+            let mut task_stmt = conn.prepare(
+                "SELECT content FROM tasks WHERE status IN ('open', 'done', 'cancelled')",
+            )?;
+            let task_contents: Vec<String> = task_stmt
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            for c in &task_contents {
+                if text_similarity(c, title) > TASK_DEDUP_THRESHOLD {
+                    return Ok(-1);
+                }
             }
         }
         let imp = importance.unwrap_or(0.5);
@@ -387,5 +433,82 @@ impl Store {
             rusqlite::params![value.to_string()],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> Store {
+        Store::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn dedup_blocks_similar_open_task() {
+        let s = store();
+        let id1 = s.create_task("完成项目报告", "test", None, None, None, None).unwrap();
+        assert!(id1 > 0);
+        // 语义相似的任务应被去重
+        let id2 = s.create_task("完成项目的报告", "test", None, None, None, None).unwrap();
+        assert_eq!(id2, -1);
+    }
+
+    #[test]
+    fn dedup_blocks_similar_done_task() {
+        let s = store();
+        let id = s.create_task("发送周报邮件", "test", None, None, None, None).unwrap();
+        s.update_task_status(id, "done").unwrap();
+        // done 的任务也参与去重
+        let id2 = s.create_task("发送周报的邮件", "test", None, None, None, None).unwrap();
+        assert_eq!(id2, -1);
+    }
+
+    #[test]
+    fn dedup_blocks_similar_cancelled_task() {
+        let s = store();
+        let id = s.create_task("准备会议材料", "test", None, None, None, None).unwrap();
+        s.update_task_status(id, "cancelled").unwrap();
+        // cancelled 的任务也参与去重
+        let id2 = s.create_task("准备会议的材料", "test", None, None, None, None).unwrap();
+        assert_eq!(id2, -1);
+    }
+
+    #[test]
+    fn dedup_allows_after_delete() {
+        let s = store();
+        let id = s.create_task("买咖啡豆", "test", None, None, None, None).unwrap();
+        s.delete_task(id).unwrap();
+        // deleted 的任务不参与去重，可以重新创建
+        let id2 = s.create_task("买咖啡豆", "test", None, None, None, None).unwrap();
+        assert!(id2 > 0);
+    }
+
+    #[test]
+    fn dedup_allows_different_content() {
+        let s = store();
+        s.create_task("写代码", "test", None, None, None, None).unwrap();
+        // 完全不同的任务应该正常创建
+        let id2 = s.create_task("去超市买菜", "test", None, None, None, None).unwrap();
+        assert!(id2 > 0);
+    }
+
+    #[test]
+    fn signal_dedup_semantic_with_existing_tasks() {
+        let s = store();
+        s.create_task("整理项目文档", "test", None, None, None, None).unwrap();
+        // new_task signal 与现有 task 语义相似，应被去重
+        let sig_id = s.save_task_signal("new_task", None, "整理项目的文档", "test evidence", None).unwrap();
+        assert_eq!(sig_id, -1);
+    }
+
+    #[test]
+    fn signal_dedup_semantic_with_pending_signals() {
+        let s = store();
+        let sig1 = s.save_task_signal("new_task", None, "检查服务器状态", "evidence", None).unwrap();
+        assert!(sig1 > 0);
+        // 语义相似的 signal 应被去重
+        let sig2 = s.save_task_signal("new_task", None, "检查服务器的状态", "evidence", None).unwrap();
+        assert_eq!(sig2, -1);
     }
 }

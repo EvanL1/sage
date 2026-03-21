@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 // removed: getCurrentWindow — using only data-tauri-drag-region for window drag
 import { useTheme, COLOR_SCHEME_META } from "../contexts/ThemeContext";
+import ModelSwitcher from "./ModelSwitcher";
 
 const pageTitles: Record<string, string> = {
   "/": "Dashboard",
@@ -150,6 +151,7 @@ function Layout() {
       <main className="main-content">
         <div className="titlebar" data-tauri-drag-region>
           <span className="titlebar-text">{title} <span style={{fontSize:9,opacity:0.4,marginLeft:8}}>v0.1.9</span></span>
+          <ModelSwitcher />
         </div>
         <div className="main-scroll">
           <Outlet />
