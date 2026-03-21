@@ -139,6 +139,21 @@ pub fn route_chat_skill(message: &str) -> &'static str {
     "sage-chat-strategist"
 }
 
+/// 检测消息是否为页面生成请求（触发词 + 页面名词同时存在）
+pub fn is_page_gen_request(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    let triggers = [
+        "帮我做", "给我做", "生成一个", "生成一份", "创建一个", "做一个",
+        "make me", "create a", "build a", "generate a", "make a",
+    ];
+    let nouns = [
+        "看板", "dashboard", "kanban", "报告", "report", "页面", "page",
+        "视图", "view", "图表", "chart", "仪表盘", "工作台", "workbench",
+        "计时器", "timer", "pomodoro",
+    ];
+    triggers.iter().any(|t| lower.contains(t)) && nouns.iter().any(|n| lower.contains(n))
+}
+
 /// 加载 chat skill 并替换模板变量
 pub fn load_chat_skill(skill_name: &str, user_name: &str, layer: &str) -> String {
     let raw = load_skill(skill_name);

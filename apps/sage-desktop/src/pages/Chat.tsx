@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -29,6 +29,7 @@ function formatSessionDate(ts: string): string {
 function Chat() {
   const { t } = useLang();
   const location = useLocation();
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -136,7 +137,7 @@ function Chat() {
     setLoading(true);
 
     try {
-      const result = await invoke<{ response: string; session_id: string; cancelled?: boolean }>("chat", {
+      const result = await invoke<{ response: string; session_id: string; cancelled?: boolean; page_id?: number }>("chat", {
         message: text,
         sessionId: sid,
       });
@@ -155,6 +156,20 @@ function Chat() {
         created_at: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, sageMsg]);
+
+      // If backend generated a dynamic page, show a navigation card
+      if (result.page_id) {
+        const pageCard: Message = {
+          id: Date.now() + 2,
+          role: "sage",
+          content: `📄 [${t("pages.created")} — ${t("pages.title")}](/pages/${result.page_id})`,
+          session_id: result.session_id,
+          created_at: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, pageCard]);
+        // Auto-navigate after a short delay so user sees the card first
+        setTimeout(() => navigate(`/pages/${result.page_id}`), 1500);
+      }
 
       // Trigger memory extraction every 4 messages (2 rounds)
       msgCountRef.current += 2;

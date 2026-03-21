@@ -21,13 +21,52 @@ pub async fn chat(
     // 1. 生成或使用 session_id
     let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    // 2. 保存用户消息
+    // 2. 页面生成请求检测 — 在主 prompt 构建之前短路
+    if sage_core::skills::is_page_gen_request(&message) {
+        let lang = state.store.prompt_lang();
+        let discovered = sage_core::discovery::discover_providers(&state.store);
+        let configs = state.store.load_provider_configs().map_err(map_err)?;
+        if let Some((info, config)) =
+            sage_core::discovery::select_best_provider(&discovered, &configs)
+        {
+            let agent_config = super::default_agent_config();
+            let provider =
+                sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+            let system_prompt = sage_core::prompts::page_gen_system(&lang).to_string();
+            if let Ok(markdown) = provider.invoke(&message, Some(&system_prompt)).await {
+                let title = extract_page_title(&markdown);
+                if let Ok(page_id) = state.store.save_custom_page(&title, &markdown) {
+                    let reply = if lang == "en" {
+                        format!("I've generated the page **{title}** for you.")
+                    } else {
+                        format!("已为你生成页面「{title}」。")
+                    };
+                    state
+                        .store
+                        .save_chat_message("user", &message, &sid)
+                        .map_err(map_err)?;
+                    state
+                        .store
+                        .save_chat_message("sage", &reply, &sid)
+                        .map_err(map_err)?;
+                    return Ok(json!({
+                        "response": reply,
+                        "session_id": sid,
+                        "memories_saved": 0,
+                        "page_id": page_id,
+                    }));
+                }
+            }
+        }
+    }
+
+    // 3. 保存用户消息
     state
         .store
         .save_chat_message("user", &message, &sid)
         .map_err(map_err)?;
 
-    // 3. 加载 profile
+    // 4. 加载 profile
     let lang = state.store.prompt_lang();
     let profile = state.store.load_profile().map_err(map_err)?;
     let fallback_name = if lang == "en" { "friend" } else { "朋友" };
@@ -367,6 +406,16 @@ fn build_browser_text(state: &AppState, lang: &str) -> String {
         let header = if lang == "en" { "## Browser Activity (Today)" } else { "## 浏览器活动（今日）" };
         format!("\n\n{}\n{}", header, parts.join("\n"))
     }
+}
+
+/// 从 markdown 文本首行提取页面标题（去掉 `# ` 前缀）
+fn extract_page_title(markdown: &str) -> String {
+    for line in markdown.lines() {
+        if let Some(title) = line.trim().strip_prefix("# ") {
+            return title.trim().to_string();
+        }
+    }
+    "Untitled Page".to_string()
 }
 
 /// 取消正在进行的 Chat LLM 调用

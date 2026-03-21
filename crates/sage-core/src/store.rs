@@ -10,6 +10,7 @@ mod memories;
 mod messages;
 mod migrations;
 mod observations;
+mod pages;
 mod profile;
 mod providers;
 mod questions;

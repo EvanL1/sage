@@ -499,6 +499,22 @@ impl Store {
             .context("数据库迁移 v31（reflective_signals 反思信号）失败")?;
         }
 
+        // v32: Custom Pages — 用户自定义动态页面
+        if version < 32 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS custom_pages (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title       TEXT NOT NULL,
+                    markdown    TEXT NOT NULL,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_custom_pages_created ON custom_pages(created_at DESC);
+                PRAGMA user_version = 32;",
+            )
+            .context("数据库迁移 v32（custom_pages 自定义页面）失败")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

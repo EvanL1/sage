@@ -36,16 +36,18 @@ pub async fn get_feed_items(
                 (obs.clone(), String::new())
             }
         };
-        let (score, insight) = row
+        let (score, insight, summary, idea) = row
             .raw_data
             .as_deref()
             .map(|s| {
-                let mut lines = s.splitn(2, '\n');
-                let sc = lines.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
-                let ins = lines.next().unwrap_or("").trim().to_string();
-                (sc, ins)
+                let mut parts = s.splitn(4, '\n');
+                let sc = parts.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
+                let ins = parts.next().unwrap_or("").trim().to_string();
+                let sum = parts.next().unwrap_or("").trim().to_string();
+                let act = parts.next().unwrap_or("").trim().to_string();
+                (sc, ins, sum, act)
             })
-            .unwrap_or((3, String::new()));
+            .unwrap_or((3, String::new(), String::new(), String::new()));
         let dedup_key = if !url.is_empty() { url.clone() } else { title.clone() };
         if !dedup_key.is_empty() && !seen_urls.insert(dedup_key) {
             continue;
@@ -56,6 +58,8 @@ pub async fn get_feed_items(
             "url": url,
             "score": score,
             "insight": insight,
+            "summary": summary,
+            "idea": idea,
             "created_at": row.created_at,
         }));
     }
@@ -185,4 +189,71 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
     std::fs::write(&path, output).map_err(|e| format!("写入配置失败: {e}"))?;
     tracing::info!("Feed config saved to {}", path.display());
     Ok(())
+}
+
+/// 生成 Feed 每日摘要（LLM 调用）
+#[tauri::command]
+pub async fn get_feed_digest(state: State<'_, AppState>) -> Result<String, String> {
+    let lang = state.store.prompt_lang();
+    let items = state
+        .store
+        .load_feed_observations(30)
+        .map_err(map_err)?;
+    if items.is_empty() {
+        return Ok(if lang == "en" {
+            "No feed items yet. Configure sources in settings and fetch.".into()
+        } else {
+            "暂无信息源条目。请在设置中配置数据源并抓取。".into()
+        });
+    }
+
+    // Build items text for digest prompt (only score >= 3)
+    let mut lines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for row in &items {
+        let obs = &row.observation;
+        let title = if let Some(idx) = obs.rfind('|') {
+            obs[..idx].trim()
+        } else {
+            obs.as_str()
+        };
+        if !seen.insert(title.to_string()) { continue; }
+        let (score, insight) = row.raw_data.as_deref().map(|s| {
+            let mut parts = s.splitn(2, '\n');
+            let sc = parts.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
+            let ins = parts.next().unwrap_or("").trim().to_string();
+            (sc, ins)
+        }).unwrap_or((3, String::new()));
+        if score >= 3 {
+            lines.push(format!("{score} | {title} | {insight}"));
+        }
+    }
+    if lines.is_empty() {
+        return Ok(if lang == "en" {
+            "No high-quality items to summarize yet.".into()
+        } else {
+            "暂无高质量条目可供汇总。".into()
+        });
+    }
+
+    // Select provider and invoke LLM
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or(if lang == "en" {
+            "No AI provider available."
+        } else {
+            "没有可用的 AI 服务。"
+        })?;
+    let agent_config = super::default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let system = sage_core::prompts::feed_digest_system(&lang);
+    let user = sage_core::prompts::feed_digest_user(&lang, &lines.join("\n"));
+    let full_prompt = format!("{user}");
+
+    provider
+        .invoke(&full_prompt, Some(system))
+        .await
+        .map_err(map_err)
 }

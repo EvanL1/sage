@@ -93,7 +93,7 @@ impl Daemon {
             }
         };
 
-        let email = config.channels.email.enabled.then_some(EmailChannel);
+        let email = config.channels.email.enabled.then(|| EmailChannel::new());
         let calendar = config.channels.calendar.enabled.then_some(CalendarChannel);
         let hooks = config
             .channels
@@ -368,11 +368,28 @@ impl Daemon {
                     // 邮件事件写入 messages 表，供信息流页面浏览
                     // 使用邮件原始 DATE 字段作为时间戳（稳定，用于去重）
                     for ev in &events {
-                        let sender = ev
+                        let direction = ev
+                            .metadata
+                            .get("direction")
+                            .map(|s| s.as_str())
+                            .unwrap_or("received");
+                        let raw_sender = ev
                             .metadata
                             .get("from")
                             .map(|s| s.as_str())
-                            .unwrap_or("unknown");
+                            .unwrap_or("");
+                        let sender = if raw_sender.is_empty() && direction == "sent" {
+                            self.store.load_profile()
+                                .ok()
+                                .flatten()
+                                .map(|p| p.identity.name)
+                                .unwrap_or_else(|| "Me".to_string())
+                        } else if raw_sender.is_empty() {
+                            "Unknown".to_string()
+                        } else {
+                            raw_sender.to_string()
+                        };
+                        let sender = sender.as_str();
                         let subject = &ev.title;
                         let body = if ev.body.is_empty() {
                             None
@@ -385,11 +402,6 @@ impl Daemon {
                             .filter(|d| !d.is_empty())
                             .map(|d| d.to_string())
                             .unwrap_or_else(|| ev.timestamp.to_rfc3339());
-                        let direction = ev
-                            .metadata
-                            .get("direction")
-                            .map(|s| s.as_str())
-                            .unwrap_or("received");
                         if let Err(e) = self.store.save_message_with_direction(
                             sender, subject, body, "email", "email", &ts, direction,
                         ) {

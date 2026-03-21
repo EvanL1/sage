@@ -1105,6 +1105,42 @@ pub fn feed_deep_read_prompt(
     }
 }
 
+/// Feed daily digest: system prompt
+pub fn feed_digest_system(lang: &str) -> &'static str {
+    match lang {
+        "en" => "You are a personal intelligence briefing editor. \
+                 Synthesize the feed items below into a concise daily digest.\n\n\
+                 Structure your response in exactly 3 sections:\n\
+                 ## Headlines\n\
+                 3-5 bullet points of the most important items, each one sentence.\n\n\
+                 ## Patterns\n\
+                 1-2 sentences identifying cross-cutting themes or trends across items.\n\n\
+                 ## Ideas\n\
+                 2-3 concrete ideas sparked by these items — experiments, projects, \
+                 conversations, or investigations the reader could pursue. \
+                 Each idea should connect a feed item to the reader's context.\n\n\
+                 Be specific, not generic. Write in a direct, actionable tone.",
+        _ => "你是一位个人情报简报编辑。将下面的信息源条目综合成一份简洁的每日摘要。\n\n\
+              严格按以下 3 个板块输出：\n\
+              ## 要闻\n\
+              3-5 条最重要的条目，每条一句话。\n\n\
+              ## 趋势\n\
+              1-2 句话，识别跨条目的共同主题或趋势。\n\n\
+              ## 灵感\n\
+              2-3 个由这些条目激发的具体想法——实验、项目、对话或调研。\
+              每个想法应该将某条信息与读者的实际场景联系起来。\n\n\
+              要具体，不要泛泛而谈。用直接、可执行的语气书写。",
+    }
+}
+
+/// Feed daily digest: user prompt with items
+pub fn feed_digest_user(lang: &str, items_text: &str) -> String {
+    match lang {
+        "en" => format!("Here are today's feed items (score | title | insight):\n\n{items_text}"),
+        _ => format!("以下是今日的信息源条目（评分 | 标题 | 洞察）：\n\n{items_text}"),
+    }
+}
+
 /// Task extraction system prompt. Placeholder: `{today}`
 pub fn cmd_task_extraction_system_template(lang: &str) -> &'static str {
     match lang {
@@ -1206,6 +1242,48 @@ type 可选值：task（待办任务）、insight（关于用户的洞察）、d
 tags 可选：1-3 个短标签，用于记忆分类检索（小写英文，如 \"work\", \"health\", \"team\"）。\n\
 about 可选：字符串，记忆所描述的人名。当用户谈论其他人的特质、能力、偏好、行为模式时使用。留空表示关于用户自己。示例：{\"type\": \"insight\", \"content\": \"对成本敏感，决策偏保守\", \"about\": \"Sam\"}。\n\
 **只在需要时添加，不要每次都加。** 用户不会看到这个 JSON 块。\n\n",
+    }
+}
+
+// ─── Custom Page Generation ──────────────────────────────────────────────────
+
+/// Page generation system prompt — instructs the LLM to emit structured markdown with Sage components.
+pub fn page_gen_system(lang: &str) -> &'static str {
+    match lang {
+        "en" => "You generate Sage dynamic pages. Output ONLY the page markdown — no explanation, no code fences.\n\n\
+                 Start with: # <Page Title>\n\n\
+                 Available components (use PascalCase, self-closing with />, prop values in double quotes):\n\
+                 - <StatRow><Stat label=\"X\" value=\"Y\" color=\"success|warning|danger\" /></StatRow>\n\
+                 - <DataTable data=\"tasks|memories|feed\" columns=\"col1,col2\" filter=\"key=val\" limit=\"50\" />\n\
+                 - <Chart type=\"pie|bar|line\" data=\"tasks|memories|feed\" groupBy=\"category\" />\n\
+                 - <KanbanBoard data=\"tasks\" groupBy=\"status\" />\n\
+                 - <Timeline data=\"tasks|memories\" limit=\"20\" />\n\
+                 - <Progress label=\"X\" value=\"75\" max=\"100\" />\n\
+                 - <Pomodoro duration=\"25\" />\n\
+                 - <MemoryCloud limit=\"50\" />\n\n\
+                 Rules:\n\
+                 1. Use ONLY these components — do not invent new ones\n\
+                 2. data= accepts: tasks, memories, feed\n\
+                 3. Put markdown text between components for context\n\
+                 4. Keep pages focused and practical\n\
+                 5. Do NOT wrap output in code fences",
+        _ => "你负责生成 Sage 动态页面。只输出页面内容——不要解释，不要代码围栏。\n\n\
+              以 # <页面标题> 开头。\n\n\
+              可用组件（PascalCase，自关闭用 />，属性值用双引号）：\n\
+              - <StatRow><Stat label=\"X\" value=\"Y\" color=\"success|warning|danger\" /></StatRow>\n\
+              - <DataTable data=\"tasks|memories|feed\" columns=\"col1,col2\" filter=\"key=val\" limit=\"50\" />\n\
+              - <Chart type=\"pie|bar|line\" data=\"tasks|memories|feed\" groupBy=\"category\" />\n\
+              - <KanbanBoard data=\"tasks\" groupBy=\"status\" />\n\
+              - <Timeline data=\"tasks|memories\" limit=\"20\" />\n\
+              - <Progress label=\"X\" value=\"75\" max=\"100\" />\n\
+              - <Pomodoro duration=\"25\" />\n\
+              - <MemoryCloud limit=\"50\" />\n\n\
+              规则：\n\
+              1. 只使用以上组件，不要发明新组件\n\
+              2. data= 只接受：tasks, memories, feed\n\
+              3. 在组件之间用 markdown 文本提供上下文\n\
+              4. 页面应聚焦实用\n\
+              5. 不要用代码围栏包裹输出",
     }
 }
 

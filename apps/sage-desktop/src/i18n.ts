@@ -287,6 +287,18 @@ const translations = {
   "feed.arxivCategoriesLabel": { zh: "分类", en: "Categories" },
   "feed.arxivKeywordsLabel": { zh: "关键词", en: "Keywords" },
   "feed.rssFeedsLabel": { zh: "Feed URL（支持 RSSHub 路由）", en: "Feed URLs (supports RSSHub routes)" },
+  "feed.dailyBriefing": { zh: "每日简报", en: "Daily Briefing" },
+  "feed.headlines": { zh: "要闻", en: "Headlines" },
+  "feed.patterns": { zh: "趋势", en: "Patterns" },
+  "feed.ideasForYou": { zh: "灵感", en: "Ideas for You" },
+  "feed.digestLoading": { zh: "正在生成摘要…", en: "Generating digest..." },
+  "feed.digestEmpty": { zh: "暂无摘要。点击刷新生成。", en: "No digest yet. Click refresh to generate." },
+  "feed.digestError": { zh: "摘要生成失败", en: "Failed to generate digest" },
+  "feed.regenerate": { zh: "重新生成", en: "Regenerate" },
+  "feed.featured": { zh: "精选", en: "Featured" },
+  "feed.summary": { zh: "摘要", en: "Summary" },
+  "feed.idea": { zh: "灵感", en: "Idea" },
+  "feed.items": { zh: "条", en: "items" },
 
   // MemoryGraph page
   "graph.memoryGraph": { zh: "记忆图谱", en: "Memory Graph" },
@@ -476,6 +488,14 @@ const translations = {
   "about.depth.semantic": { zh: "规律", en: "Patterns" },
   "about.depth.procedural": { zh: "判断", en: "Judgments" },
   "about.depth.axiom": { zh: "信念", en: "Beliefs" },
+
+  // Pages
+  "pages.title": { zh: "页面", en: "Pages" },
+  "pages.empty": { zh: "还没有自定义页面", en: "No custom pages yet" },
+  "pages.delete": { zh: "删除", en: "Delete" },
+  "pages.generating": { zh: "正在生成页面…", en: "Generating page..." },
+  "pages.created": { zh: "页面已创建", en: "Page created" },
+  "pages.backToList": { zh: "返回列表", en: "Back to list" },
 } as const;
 
 type TranslationKey = keyof typeof translations;

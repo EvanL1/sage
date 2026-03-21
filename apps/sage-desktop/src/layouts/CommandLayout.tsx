@@ -176,17 +176,20 @@ function ConnectionsWidget() {
 
 function MessagesWidget() {
   const { t } = useLang();
-  const [msgs, setMsgs] = useState<{ sender?: string; channel?: string; content?: string; created_at?: string }[]>([]);
+  const [msgs, setMsgs] = useState<{ sender?: string; channel?: string; content?: string; created_at?: string; direction?: string }[]>([]);
+  const [userName, setUserName] = useState("Me");
   useEffect(() => {
-    invoke<{ sender?: string; channel?: string; content?: string; created_at?: string }[]>("get_messages", { limit: 8 })
+    invoke<{ sender?: string; channel?: string; content?: string; created_at?: string; direction?: string }[]>("get_messages", { limit: 8 })
       .then(setMsgs).catch(() => {});
+    invoke<{ identity?: { name?: string } } | null>("get_profile")
+      .then(p => { if (p?.identity?.name) setUserName(p.identity.name); }).catch(() => {});
   }, []);
   return (<div className="cmd-card-body">
     {msgs.slice(0, 8).map((m, i) => (
       <div key={i} className="cmd-feed-row">
         <span className="cmd-feed-dot" style={{ background: "#14b8a6" }} />
         <div className="cmd-feed-info">
-          <span className="cmd-feed-type">{m.sender ?? m.channel ?? "MSG"}</span>
+          <span className="cmd-feed-type">{(!m.sender || m.sender === "Unknown" || m.sender === "unknown") ? (m.direction === "sent" ? userName : (m.channel ?? "MSG")) : m.sender}</span>
           <span className="cmd-feed-text">{(m.content ?? "").slice(0, 60)}</span>
         </div>
       </div>

@@ -145,7 +145,13 @@ fn main() {
             commands::trigger_feed_poll,
             commands::get_feed_config,
             commands::save_feed_config,
+            commands::get_feed_digest,
             commands::test_notification,
+            commands::generate_page,
+            commands::get_custom_page,
+            commands::list_custom_pages,
+            commands::update_custom_page,
+            commands::delete_custom_page,
         ])
         .setup(move |app| {
             tray::setup_tray(app)?;
