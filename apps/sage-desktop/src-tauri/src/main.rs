@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
-mod notification;
 mod tray;
 
 use std::sync::{Arc, Mutex};
@@ -147,7 +146,6 @@ fn main() {
             commands::get_feed_config,
             commands::save_feed_config,
             commands::get_feed_digest,
-            commands::test_notification,
             commands::generate_page,
             commands::get_custom_page,
             commands::list_custom_pages,
@@ -173,14 +171,6 @@ fn main() {
         ])
         .setup(move |app| {
             tray::setup_tray(app)?;
-
-            // 初始化原生 macOS 通知（UNUserNotificationCenter + delegate）
-            notification::init(app.handle());
-
-            // 注册通知回调：sage-core 调 notify() 时通过原生 API 发送
-            sage_core::applescript::set_notify_callback(|title, body, route| {
-                notification::send(title, body, route);
-            });
 
             // 启动 daemon 事件循环
             tauri::async_runtime::spawn(async move {

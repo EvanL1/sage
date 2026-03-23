@@ -843,25 +843,6 @@ function Settings() {
               </div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{t("settings.testNotification")}</div>
-                  <div className="form-hint">{t("settings.testNotifHint")}</div>
-                </div>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={async () => {
-                    try {
-                      await invoke("test_notification", { route: "/about" });
-                      showToast("success", t("settings.notifSent"));
-                    } catch (err) {
-                      showToast("error", String(err));
-                    }
-                  }}
-                >
-                  {t("settings.sendTest")}
-                </button>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
-                <div>
                   <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{t("settings.reconcile")}</div>
                   <div className="form-hint">{t("settings.reconcileHint")}</div>
                 </div>

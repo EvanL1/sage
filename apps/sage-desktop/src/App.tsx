@@ -1,8 +1,6 @@
-import { useEffect } from "react";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { LangProvider } from "./LangContext";
-import { HashRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
-import { listen } from "@tauri-apps/api/event";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import Onboarding from "./pages/Onboarding";
@@ -19,31 +17,11 @@ import Mail from "./pages/Mail";
 import PagesList from "./pages/PagesList";
 import DynamicPage from "./pages/DynamicPage";
 
-/** 监听 Rust 端 navigate-to 事件，自动跳转到对应页面 */
-function NavigationListener() {
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    const unlisten = listen<string>("navigate-to", (event) => {
-      const route = event.payload;
-      if (route && typeof route === "string") {
-        navigate(route);
-      }
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [navigate]);
-
-  return null;
-}
-
 function App() {
   return (
     <ThemeProvider>
       <LangProvider>
       <HashRouter>
-        <NavigationListener />
         <Routes>
           <Route path="/onboarding" element={<Onboarding />} />
           <Route path="/welcome" element={<Welcome />} />

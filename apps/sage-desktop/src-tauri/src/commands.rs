@@ -200,13 +200,6 @@ pub(crate) async fn extract_and_save_memories(
     (display.trim().to_string(), saved)
 }
 
-/// 测试通知（开发用，验证通知 + 跳转是否工作）
-#[tauri::command]
-pub async fn test_notification(route: String) -> Result<(), String> {
-    sage_core::applescript::notify("Sage 测试", &format!("点击跳转到 {route}"), &route)
-        .await
-        .map_err(|e| e.to_string())
-}
 
 /// 从用户消息中提取关键词，自动匹配并回答 open_questions
 pub(crate) fn auto_answer_open_questions(message: &str, store: &sage_core::store::Store) {

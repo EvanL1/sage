@@ -45,5 +45,4 @@ sage-core = { path = "crates/sage-core" }
 tauri = { version = "2", features = ["tray-icon", "devtools"] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
-tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"

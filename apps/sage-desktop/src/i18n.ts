@@ -400,12 +400,8 @@ const translations = {
   "settings.memoryEvolution": { zh: "记忆演化", en: "Memory Evolution" },
   "settings.memoryEvolutionHint": { zh: "去重、合成特征、衰减旧记忆、提升已验证记忆", en: "Deduplicate, synthesize traits, decay stale, promote validated" },
   "settings.runNow": { zh: "立即执行", en: "Run now" },
-  "settings.evolutionNotif": { zh: "完成后会收到通知", en: "You'll receive a notification when done" },
+  "settings.evolutionNotif": { zh: "完成后会显示结果", en: "Results will be shown when done" },
 
-  "settings.testNotification": { zh: "测试通知", en: "Test Notification" },
-  "settings.testNotifHint": { zh: "发送测试通知以验证点击跳转功能", en: "Send a test notification to verify click-to-navigate works" },
-  "settings.sendTest": { zh: "发送测试", en: "Send test" },
-  "settings.notifSent": { zh: "通知已发送 — 最小化应用后点击它", en: "Notification sent — minimize app, then click it" },
 
   "settings.reconcile": { zh: "调和矛盾", en: "Reconcile" },
   "settings.reconcileHint": { zh: "扫描所有决策和洞见，标注矛盾项", en: "Scan all decisions & insights for contradictions, annotate outdated ones" },
