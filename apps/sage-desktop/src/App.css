@@ -3584,5 +3584,49 @@ body {
 .feed-item-row:hover {
   background: var(--bg-secondary);
 }
+.feed-summary, .feed-digest-markdown {
+  overflow: hidden;
+  word-break: break-word;
+}
+.feed-summary p, .feed-digest-markdown p {
+  margin: 0 0 6px;
+}
+.feed-summary p:last-child, .feed-digest-markdown p:last-child {
+  margin-bottom: 0;
+}
+.feed-summary pre, .feed-digest-markdown pre {
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+}
+.feed-summary code, .feed-digest-markdown code {
+  font-size: 0.9em;
+  word-break: break-all;
+}
+.feed-summary strong, .feed-digest-markdown strong {
+  font-weight: 600;
+}
+.feed-summary ul, .feed-summary ol,
+.feed-digest-markdown ul, .feed-digest-markdown ol {
+  padding-left: 16px;
+  margin: 4px 0;
+}
+.feed-summary li, .feed-digest-markdown li {
+  margin-bottom: 2px;
+}
+.feed-summary h1, .feed-summary h2, .feed-summary h3,
+.feed-digest-markdown h1, .feed-digest-markdown h2, .feed-digest-markdown h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+.feed-digest-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
 
 

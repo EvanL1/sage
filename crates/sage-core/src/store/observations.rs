@@ -130,6 +130,39 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// 保存 Feed 每日简报到缓存
+    pub fn save_feed_digest(&self, date: &str, content: &str) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT INTO feed_digests (date, content) VALUES (?1, ?2)
+             ON CONFLICT(date) DO UPDATE SET content = excluded.content, created_at = datetime('now')",
+            rusqlite::params![date, content],
+        )
+        .context("保存 feed digest 失败")?;
+        Ok(())
+    }
+
+    /// 读取指定日期的 Feed 简报缓存
+    pub fn get_feed_digest_for_date(&self, date: &str) -> Result<Option<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let result = conn.query_row(
+            "SELECT content FROM feed_digests WHERE date = ?1",
+            rusqlite::params![date],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(content) => Ok(Some(content)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// 获取某个日期之后的 observations 数量
     pub fn count_observations_since(&self, since: &str) -> Result<usize> {
         let conn = self

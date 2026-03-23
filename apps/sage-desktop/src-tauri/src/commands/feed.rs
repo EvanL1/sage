@@ -25,8 +25,8 @@ pub async fn get_feed_items(
     let mut result = Vec::new();
     for row in &items {
         // observation: "title|url" or "title"
-        // raw_data: "score\ninsight"
-        let (title, url) = {
+        // raw_data: "url\nscore\ninsight" (after deep_read: "url\nscore\ninsight\nsummary\nidea")
+        let (title, obs_url) = {
             let obs = &row.observation;
             if let Some(idx) = obs.rfind('|') {
                 let t = obs[..idx].trim().to_string();
@@ -36,18 +36,21 @@ pub async fn get_feed_items(
                 (obs.clone(), String::new())
             }
         };
-        let (score, insight, summary, idea) = row
+        let (url, score, insight, summary, idea) = row
             .raw_data
             .as_deref()
             .map(|s| {
-                let mut parts = s.splitn(4, '\n');
+                let mut parts = s.splitn(5, '\n');
+                let raw_url = parts.next().unwrap_or("").trim().to_string();
                 let sc = parts.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
                 let ins = parts.next().unwrap_or("").trim().to_string();
                 let sum = parts.next().unwrap_or("").trim().to_string();
                 let act = parts.next().unwrap_or("").trim().to_string();
-                (sc, ins, sum, act)
+                (raw_url, sc, ins, sum, act)
             })
-            .unwrap_or((3, String::new(), String::new(), String::new()));
+            .unwrap_or_default();
+        // URL: 优先从 raw_data 取，fallback 到 observation 解析的
+        let url = if !url.is_empty() && url.starts_with("http") { url } else { obs_url };
         let dedup_key = if !url.is_empty() { url.clone() } else { title.clone() };
         if !dedup_key.is_empty() && !seen_urls.insert(dedup_key) {
             continue;
@@ -191,14 +194,21 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
     Ok(())
 }
 
-/// 生成 Feed 每日摘要（LLM 调用）
+/// 获取今日 Feed 简报（优先读缓存，无缓存返回空）
 #[tauri::command]
 pub async fn get_feed_digest(state: State<'_, AppState>) -> Result<String, String> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    match state.store.get_feed_digest_for_date(&today).map_err(map_err)? {
+        Some(content) => Ok(content),
+        None => Ok(String::new()),
+    }
+}
+
+/// 强制重新生成 Feed 简报（LLM 调用 + 更新缓存）
+#[tauri::command]
+pub async fn regenerate_feed_digest(state: State<'_, AppState>) -> Result<String, String> {
     let lang = state.store.prompt_lang();
-    let items = state
-        .store
-        .load_feed_observations(30)
-        .map_err(map_err)?;
+    let items = state.store.load_feed_observations(30).map_err(map_err)?;
     if items.is_empty() {
         return Ok(if lang == "en" {
             "No feed items yet. Configure sources in settings and fetch.".into()
@@ -207,7 +217,6 @@ pub async fn get_feed_digest(state: State<'_, AppState>) -> Result<String, Strin
         });
     }
 
-    // Build items text for digest prompt (only score >= 3)
     let mut lines = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for row in &items {
@@ -218,8 +227,10 @@ pub async fn get_feed_digest(state: State<'_, AppState>) -> Result<String, Strin
             obs.as_str()
         };
         if !seen.insert(title.to_string()) { continue; }
+        // raw_data format: "url\nscore\ninsight\n..."
         let (score, insight) = row.raw_data.as_deref().map(|s| {
-            let mut parts = s.splitn(2, '\n');
+            let mut parts = s.splitn(3, '\n');
+            let _url = parts.next().unwrap_or("");
             let sc = parts.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
             let ins = parts.next().unwrap_or("").trim().to_string();
             (sc, ins)
@@ -236,7 +247,6 @@ pub async fn get_feed_digest(state: State<'_, AppState>) -> Result<String, Strin
         });
     }
 
-    // Select provider and invoke LLM
     let discovered = sage_core::discovery::discover_providers(&state.store);
     let configs = state.store.load_provider_configs().map_err(map_err)?;
     let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
@@ -250,10 +260,12 @@ pub async fn get_feed_digest(state: State<'_, AppState>) -> Result<String, Strin
 
     let system = sage_core::prompts::feed_digest_system(&lang);
     let user = sage_core::prompts::feed_digest_user(&lang, &lines.join("\n"));
-    let full_prompt = format!("{user}");
 
-    provider
-        .invoke(&full_prompt, Some(system))
-        .await
-        .map_err(map_err)
+    let content = provider.invoke(&user, Some(system)).await.map_err(map_err)?;
+
+    // 写入缓存
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let _ = state.store.save_feed_digest(&today, &content);
+
+    Ok(content)
 }

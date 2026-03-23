@@ -146,6 +146,7 @@ fn main() {
             commands::get_feed_config,
             commands::save_feed_config,
             commands::get_feed_digest,
+            commands::regenerate_feed_digest,
             commands::generate_page,
             commands::get_custom_page,
             commands::list_custom_pages,

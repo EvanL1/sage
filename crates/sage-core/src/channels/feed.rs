@@ -229,8 +229,21 @@ async fn fetch_and_summarise(
 ) -> Option<FeedDeepRead> {
     let char_limit = if score >= 4 { 3000 } else { 1000 };
 
+    // GitHub 仓库页面 HTML 充斥 feature flags JSON，改抓 README raw 内容
+    let fetch_url = if url.starts_with("https://github.com/") {
+        let parts: Vec<&str> = url.trim_end_matches('/').split('/').collect();
+        // github.com/user/repo → 3 段 path，追加 README
+        if parts.len() == 5 {
+            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README.md", parts[3], parts[4])
+        } else {
+            url.to_string()
+        }
+    } else {
+        url.to_string()
+    };
+
     let text = match client
-        .get(url)
+        .get(&fetch_url)
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
@@ -238,12 +251,17 @@ async fn fetch_and_summarise(
     {
         Ok(resp) => resp.text().await.ok()?,
         Err(e) => {
-            debug!("Deep read fetch failed for {url}: {e}");
+            debug!("Deep read fetch failed for {fetch_url}: {e}");
             return None;
         }
     };
 
-    let clean = strip_html_tags(&text);
+    // GitHub README 已经是 markdown，不需要 strip_html
+    let clean = if fetch_url.contains("raw.githubusercontent.com") {
+        text.clone()
+    } else {
+        strip_html_tags(&text)
+    };
     let truncated: String = clean.chars().take(char_limit).collect();
 
     if truncated.len() < 50 {

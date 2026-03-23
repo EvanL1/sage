@@ -627,9 +627,73 @@ impl Daemon {
         Ok(())
     }
 
-    /// 手动触发 Feed 抓取
+    /// 手动触发 Feed 抓取（完成后自动生成每日简报缓存）
     pub async fn trigger_feed_poll(&self) {
         self.poll_feed_channels().await;
+        self.generate_and_cache_digest().await;
+    }
+
+    /// 生成 Feed 每日简报并写入缓存
+    async fn generate_and_cache_digest(&self) {
+        let lang = self.store.prompt_lang();
+        let items = match self.store.load_feed_observations(30) {
+            Ok(items) => items,
+            Err(e) => {
+                error!("加载 feed observations 失败: {e}");
+                return;
+            }
+        };
+        if items.is_empty() {
+            return;
+        }
+
+        // 构建 digest 输入（与 Tauri command 逻辑一致）
+        let mut lines = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for row in &items {
+            let obs = &row.observation;
+            let title = if let Some(idx) = obs.rfind('|') {
+                obs[..idx].trim()
+            } else {
+                obs.as_str()
+            };
+            if !seen.insert(title.to_string()) {
+                continue;
+            }
+            let (score, insight) = row
+                .raw_data
+                .as_deref()
+                .map(|s| {
+                    // raw_data format: "url\nscore\ninsight\n..."
+                    let mut parts = s.splitn(3, '\n');
+                    let _url = parts.next().unwrap_or("");
+                    let sc = parts.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
+                    let ins = parts.next().unwrap_or("").trim().to_string();
+                    (sc, ins)
+                })
+                .unwrap_or((3, String::new()));
+            if score >= 3 {
+                lines.push(format!("{score} | {title} | {insight}"));
+            }
+        }
+        if lines.is_empty() {
+            return;
+        }
+
+        let router = self.router.lock().await;
+        let agent = router.agent();
+        let system = crate::prompts::feed_digest_system(&lang);
+        let user = crate::prompts::feed_digest_user(&lang, &lines.join("\n"));
+        match agent.invoke(&user, Some(system)).await {
+            Ok(resp) => {
+                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                if let Err(e) = self.store.save_feed_digest(&today, &resp.text) {
+                    error!("缓存 feed digest 失败: {e}");
+                }
+                info!("Feed digest 已生成并缓存（{today}）");
+            }
+            Err(e) => error!("生成 feed digest 失败: {e}"),
+        }
     }
 
     /// 轮询所有 Feed 通道，将结果写入 observations 表
