@@ -32,6 +32,30 @@ export interface ProviderConfig {
   priority: number | null;
 }
 
+export interface MessageSource {
+  id: number;
+  label: string;
+  source_type: string;
+  config: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface EmailMessage {
+  id: number;
+  source_id: number;
+  uid: string;
+  folder: string;
+  from_addr: string;
+  to_addr: string;
+  subject: string;
+  body_text: string;
+  body_html: string | null;
+  is_read: boolean;
+  date: string;
+  fetched_at: string;
+}
+
 export interface Memory {
   id: number;
   category: string;

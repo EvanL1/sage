@@ -28,6 +28,16 @@ axum = "0.7"
 tower = "0.5"
 tower-http = { version = "0.5", features = ["cors"] }
 reqwest = { version = "0.12", features = ["json"] }
+imap = "2.4"
+mailparse = "0.15"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "native-tls", "builder"] }
+native-tls = "0.2"
+base64 = "0.22"
+urlencoding = "2"
+open = "5"
+sha2 = "0.10"
+rand = "0.8"
+
 sage-types = { path = "crates/sage-types" }
 sage-core = { path = "crates/sage-core" }
 

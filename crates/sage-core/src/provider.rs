@@ -58,6 +58,20 @@ fn inject_proxy(cmd: &mut Command) {
     }
 }
 
+/// Path to an empty MCP config file — used with --strict-mcp-config to skip all MCP servers.
+/// Created once on first call, reused thereafter.
+fn empty_mcp_config_path() -> String {
+    let path = std::path::PathBuf::from(
+        std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()),
+    )
+    .join(".sage/empty-mcp.json");
+    if !path.exists() {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("/tmp")));
+        let _ = std::fs::write(&path, r#"{"mcpServers":{}}"#);
+    }
+    path.to_string_lossy().to_string()
+}
+
 use crate::config::AgentConfig;
 use sage_types::{ProviderConfig, ProviderInfo, ProviderKind};
 
@@ -113,6 +127,10 @@ impl LlmProvider for ClaudeProvider {
 
         let (model, effort) = parse_model_with_effort(&self.model);
         cmd.arg("--print")
+            // Skip all MCP servers to avoid startup timeout (serena/context7/etc take 2-5s each)
+            .arg("--strict-mcp-config")
+            .arg("--mcp-config")
+            .arg(empty_mcp_config_path())
             .arg("--model")
             .arg(model)
             .arg("--permission-mode")
@@ -139,7 +157,22 @@ impl LlmProvider for ClaudeProvider {
         let preview: String = prompt.chars().take(100).collect();
         debug!("Prompt: {preview}");
 
-        let output = cmd.output().await?;
+        let child = cmd.spawn().context("Failed to spawn Claude CLI")?;
+        let pid = child.id(); // capture PID before moving
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            child.wait_with_output(),
+        ).await {
+            Ok(result) => result.context("Claude CLI process failed")?,
+            Err(_) => {
+                // Kill the hanging process by PID
+                if let Some(pid) = pid {
+                    let _ = tokio::process::Command::new("kill").arg(pid.to_string()).output().await;
+                }
+                anyhow::bail!("Claude CLI timed out after 120s");
+            }
+        };
+
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 

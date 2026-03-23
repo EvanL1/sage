@@ -14,9 +14,9 @@ impl Store {
             message_type: row.get(5)?,
             timestamp: row.get(6)?,
             created_at: row.get(7)?,
-            direction: row
-                .get::<_, String>(8)
-                .unwrap_or_else(|_| "received".into()),
+            direction: row.get::<_, String>(8).unwrap_or_else(|_| "received".into()),
+            action_state: row.get::<_, String>(9).unwrap_or_else(|_| "pending".into()),
+            resolved_at: row.get::<_, Option<String>>(10).unwrap_or(None),
         })
     }
 
@@ -71,7 +71,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
              FROM messages WHERE channel = ?1 ORDER BY timestamp DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(
@@ -88,7 +88,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
              FROM messages WHERE source = ?1 ORDER BY created_at DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(
@@ -106,7 +106,7 @@ impl Store {
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let pattern = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
              FROM messages
              WHERE content LIKE ?1 OR sender LIKE ?1 OR channel LIKE ?1
              ORDER BY timestamp DESC LIMIT ?2",
@@ -174,5 +174,96 @@ impl Store {
         conn.execute("DELETE FROM messages WHERE id = ?1", rusqlite::params![id])
             .context("删除 message 失败")?;
         Ok(())
+    }
+
+    /// 更新消息的 action_state
+    pub fn update_message_action_state(&self, id: i64, state: &str) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let resolved_at = if state == "resolved" || state == "expired" {
+            Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
+        } else {
+            None
+        };
+        conn.execute(
+            "UPDATE messages SET action_state = ?1, resolved_at = ?2 WHERE id = ?3",
+            rusqlite::params![state, resolved_at, id],
+        )
+        .context("更新 message action_state 失败")?;
+        Ok(())
+    }
+
+    /// 获取所有超过 N 小时且状态为 pending 的已接收消息
+    pub fn get_pending_messages_older_than(&self, hours: i64) -> Result<Vec<Message>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let cutoff = (chrono::Local::now() - chrono::Duration::hours(hours))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let mut stmt = conn.prepare(
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
+             FROM messages
+             WHERE direction = 'received' AND action_state = 'pending' AND created_at < ?1
+             ORDER BY timestamp DESC LIMIT 50",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![cutoff], Self::row_to_message)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取最近 N 小时内已发送的消息（用于回复链检测）
+    pub fn get_recent_sent_messages(&self, hours: i64) -> Result<Vec<Message>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let cutoff = (chrono::Local::now() - chrono::Duration::hours(hours))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let mut stmt = conn.prepare(
+            "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
+             FROM messages
+             WHERE direction = 'sent' AND created_at > ?1
+             ORDER BY timestamp DESC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![cutoff], Self::row_to_message)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 批量将指定 ID 的消息标记为 resolved
+    pub fn resolve_messages(&self, ids: &[i64]) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let mut count = 0;
+        for id in ids {
+            count += conn.execute(
+                "UPDATE messages SET action_state = 'resolved', resolved_at = ?1 WHERE id = ?2 AND action_state = 'pending'",
+                rusqlite::params![now, id],
+            )?;
+        }
+        Ok(count)
+    }
+
+    /// 统计处于 pending 状态的已接收消息数量
+    pub fn count_pending_messages(&self) -> Result<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE direction = 'received' AND action_state = 'pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
     }
 }

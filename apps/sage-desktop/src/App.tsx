@@ -14,6 +14,8 @@ import AboutYou from "./pages/AboutYou";
 import MemoryGraph from "./pages/MemoryGraph";
 import Tasks from "./pages/Tasks";
 import FeedIntelligence from "./pages/FeedIntelligence";
+import MessageFlow from "./pages/MessageFlow";
+import Mail from "./pages/Mail";
 import PagesList from "./pages/PagesList";
 import DynamicPage from "./pages/DynamicPage";
 
@@ -52,6 +54,8 @@ function App() {
             <Route path="/graph" element={<MemoryGraph />} />
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/feed" element={<FeedIntelligence />} />
+            <Route path="/mail" element={<Mail />} />
+            <Route path="/messages" element={<MessageFlow />} />
             <Route path="/pages" element={<PagesList />} />
             <Route path="/pages/:id" element={<DynamicPage />} />
             <Route path="/history" element={<History />} />

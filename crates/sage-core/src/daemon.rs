@@ -93,7 +93,10 @@ impl Daemon {
             }
         };
 
-        let email = config.channels.email.enabled.then(|| EmailChannel::new());
+        let email = config.channels.email.enabled.then(|| {
+            let sources = store.get_message_sources_by_type("imap").unwrap_or_default();
+            EmailChannel::new(sources)
+        });
         let calendar = config.channels.calendar.enabled.then_some(CalendarChannel);
         let hooks = config
             .channels
@@ -391,10 +394,12 @@ impl Daemon {
                         };
                         let sender = sender.as_str();
                         let subject = &ev.title;
-                        let body = if ev.body.is_empty() {
+                        // 邮件正文：去签名档/引用链，减少无效上下文
+                        let cleaned_body = if ev.body.is_empty() {
                             None
                         } else {
-                            Some(ev.body.as_str())
+                            let stripped = crate::channels::email_filter::strip_signature_and_quotes(&ev.body);
+                            if stripped.is_empty() { None } else { Some(stripped) }
                         };
                         let ts = ev
                             .metadata
@@ -402,10 +407,19 @@ impl Daemon {
                             .filter(|d| !d.is_empty())
                             .map(|d| d.to_string())
                             .unwrap_or_else(|| ev.timestamp.to_rfc3339());
-                        if let Err(e) = self.store.save_message_with_direction(
-                            sender, subject, body, "email", "email", &ts, direction,
-                        ) {
-                            error!("保存邮件到 messages 失败: {e}");
+                        // 邮件分类：noise → info_only
+                        let is_noise = crate::channels::email_filter::classify(
+                            sender, subject, cleaned_body.as_deref().unwrap_or(""),
+                        ) == "noise";
+                        let msg_id = self.store.save_message_with_direction(
+                            sender, subject, cleaned_body.as_deref(), "email", "email", &ts, direction,
+                        );
+                        match msg_id {
+                            Ok(id) if is_noise && id > 0 => {
+                                let _ = self.store.update_message_action_state(id, "info_only");
+                            }
+                            Err(e) => error!("保存邮件到 messages 失败: {e}"),
+                            _ => {}
                         }
                     }
                     all_events.extend(events);
@@ -577,7 +591,7 @@ impl Daemon {
             Err(e) => error!("Guardian failed: {e}"),
         }
 
-        // Task Intelligence：每 3 tick 触发一次，对比 open tasks 与近期动态，生成建议信号
+        // Task Intelligence + Staleness Check：每 3 tick 触发一次
         {
             let should_run = {
                 let mut count = self.tick_count.lock().unwrap_or_else(|e| e.into_inner());
@@ -592,6 +606,20 @@ impl Daemon {
                     Ok(n) if n > 0 => info!("Task intelligence: {n} new signals"),
                     Ok(_) => {}
                     Err(e) => error!("Task intelligence failed: {e}"),
+                }
+
+                // 消息过时性检测：pending → resolved / expired
+                match crate::staleness::check_staleness(router.agent(), &router.store_arc())
+                    .await
+                {
+                    Ok(r) if r.resolved + r.expired > 0 => {
+                        info!(
+                            "Staleness: {} resolved, {} expired out of {} checked",
+                            r.resolved, r.expired, r.checked
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => error!("Staleness check failed: {e}"),
                 }
             }
         }

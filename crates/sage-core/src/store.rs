@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 mod bridge;
 mod context;
+mod email;
 mod graph;
 mod memories;
 mod messages;
@@ -83,8 +84,8 @@ impl Store {
     /// 打开/创建 SQLite 数据库，自动运行 schema 迁移
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path).context("打开 SQLite 数据库失败")?;
-        // 设置 WAL 模式和 busy_timeout，支持 daemon 和 desktop 并发读写
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
+        // 设置 WAL 模式、busy_timeout、启用外键约束
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")
             .context("设置 SQLite PRAGMA 失败")?;
         let store = Self {
             conn: Mutex::new(conn),

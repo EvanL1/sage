@@ -2514,3 +2514,314 @@ fn test_search_without_embedding_fallback() {
 
     assert_eq!(results.len(), 0, "没有 embedding 的记忆不应出现在向量搜索结果中");
 }
+
+// ─── Message Sources + Emails tests ──────────────────────────
+
+fn make_test_source() -> MessageSource {
+    MessageSource {
+        id: 0,
+        label: "Test Gmail".into(),
+        source_type: "imap".into(),
+        config: r#"{"imap_host":"imap.gmail.com","imap_port":993,"smtp_host":"smtp.gmail.com","smtp_port":587,"username":"test@gmail.com","password_enc":"b64:","use_tls":true,"email":"test@gmail.com"}"#.into(),
+        enabled: true,
+        created_at: String::new(),
+    }
+}
+
+#[test]
+fn test_message_source_crud() {
+    let store = Store::open_in_memory().unwrap();
+    let source = make_test_source();
+    let id = store.save_message_source(&source).unwrap();
+    assert!(id > 0);
+
+    let sources = store.get_message_sources().unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].label, "Test Gmail");
+    assert_eq!(sources[0].source_type, "imap");
+}
+
+#[test]
+fn test_message_source_update() {
+    let store = Store::open_in_memory().unwrap();
+    let source = make_test_source();
+    let id = store.save_message_source(&source).unwrap();
+
+    let mut updated = store.get_message_source(id).unwrap().unwrap();
+    updated.label = "Work Gmail".into();
+    store.save_message_source(&updated).unwrap();
+
+    let fetched = store.get_message_source(id).unwrap().unwrap();
+    assert_eq!(fetched.label, "Work Gmail");
+}
+
+#[test]
+fn test_message_source_delete_cascades_emails() {
+    let store = Store::open_in_memory().unwrap();
+    let id = store.save_message_source(&make_test_source()).unwrap();
+
+    let email = EmailMessage {
+        id: 0, source_id: id, uid: "1".into(), folder: "INBOX".into(),
+        from_addr: "a@b.com".into(), to_addr: "c@d.com".into(),
+        subject: "Test".into(), body_text: "Hello".into(), body_html: None,
+        is_read: false, date: "2026-03-22".into(), fetched_at: String::new(),
+    };
+    store.save_email(&email).unwrap();
+    assert_eq!(store.get_emails(id, "INBOX", 10).unwrap().len(), 1);
+
+    store.delete_message_source(id).unwrap();
+    assert_eq!(store.get_emails(id, "INBOX", 10).unwrap().len(), 0);
+    assert!(store.get_message_sources().unwrap().is_empty());
+}
+
+#[test]
+fn test_message_sources_by_type() {
+    let store = Store::open_in_memory().unwrap();
+    store.save_message_source(&make_test_source()).unwrap();
+
+    let mut slack = make_test_source();
+    slack.source_type = "slack".into();
+    slack.label = "Work Slack".into();
+    store.save_message_source(&slack).unwrap();
+
+    let imap_sources = store.get_message_sources_by_type("imap").unwrap();
+    assert_eq!(imap_sources.len(), 1);
+    assert_eq!(imap_sources[0].label, "Test Gmail");
+
+    let all = store.get_message_sources().unwrap();
+    assert_eq!(all.len(), 2);
+}
+
+#[test]
+fn test_email_save_and_fetch() {
+    let store = Store::open_in_memory().unwrap();
+    let sid = store.save_message_source(&make_test_source()).unwrap();
+
+    for i in 1..=5 {
+        let email = EmailMessage {
+            id: 0, source_id: sid, uid: format!("{i}"), folder: "INBOX".into(),
+            from_addr: format!("sender{i}@test.com"), to_addr: "me@test.com".into(),
+            subject: format!("Subject {i}"), body_text: format!("Body {i}"),
+            body_html: None, is_read: i % 2 == 0,
+            date: format!("2026-03-{:02}", 20 + i), fetched_at: String::new(),
+        };
+        store.save_email(&email).unwrap();
+    }
+
+    let emails = store.get_emails(sid, "INBOX", 10).unwrap();
+    assert_eq!(emails.len(), 5);
+    // Ordered by date DESC
+    assert_eq!(emails[0].subject, "Subject 5");
+}
+
+#[test]
+fn test_email_uid_dedup() {
+    let store = Store::open_in_memory().unwrap();
+    let sid = store.save_message_source(&make_test_source()).unwrap();
+
+    let email = EmailMessage {
+        id: 0, source_id: sid, uid: "42".into(), folder: "INBOX".into(),
+        from_addr: "a@b.com".into(), to_addr: "c@d.com".into(),
+        subject: "First".into(), body_text: "First body".into(),
+        body_html: None, is_read: false, date: "2026-03-22".into(),
+        fetched_at: String::new(),
+    };
+    store.save_email(&email).unwrap();
+    store.save_email(&email).unwrap(); // duplicate UID
+
+    let emails = store.get_emails(sid, "INBOX", 10).unwrap();
+    assert_eq!(emails.len(), 1);
+}
+
+#[test]
+fn test_email_mark_read() {
+    let store = Store::open_in_memory().unwrap();
+    let sid = store.save_message_source(&make_test_source()).unwrap();
+
+    let email = EmailMessage {
+        id: 0, source_id: sid, uid: "1".into(), folder: "INBOX".into(),
+        from_addr: "a@b.com".into(), to_addr: "c@d.com".into(),
+        subject: "Unread".into(), body_text: "Body".into(),
+        body_html: None, is_read: false, date: "2026-03-22".into(),
+        fetched_at: String::new(),
+    };
+    store.save_email(&email).unwrap();
+
+    let emails = store.get_emails(sid, "INBOX", 10).unwrap();
+    let eid = emails[0].id;
+    assert!(!emails[0].is_read);
+
+    store.mark_email_read(eid).unwrap();
+    let updated = store.get_email(eid).unwrap().unwrap();
+    assert!(updated.is_read);
+}
+
+#[test]
+fn test_email_search() {
+    let store = Store::open_in_memory().unwrap();
+    let sid = store.save_message_source(&make_test_source()).unwrap();
+
+    let e1 = EmailMessage {
+        id: 0, source_id: sid, uid: "1".into(), folder: "INBOX".into(),
+        from_addr: "alice@company.com".into(), to_addr: "me@test.com".into(),
+        subject: "Q1 Budget Review".into(), body_text: "Please review the budget".into(),
+        body_html: None, is_read: false, date: "2026-03-22".into(), fetched_at: String::new(),
+    };
+    let e2 = EmailMessage {
+        id: 0, source_id: sid, uid: "2".into(), folder: "INBOX".into(),
+        from_addr: "bob@other.com".into(), to_addr: "me@test.com".into(),
+        subject: "Lunch tomorrow?".into(), body_text: "Free for lunch?".into(),
+        body_html: None, is_read: false, date: "2026-03-22".into(), fetched_at: String::new(),
+    };
+    store.save_email(&e1).unwrap();
+    store.save_email(&e2).unwrap();
+
+    let results = store.search_emails("budget", 10).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].subject, "Q1 Budget Review");
+
+    let results = store.search_emails("alice", 10).unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn test_count_unread_emails() {
+    let store = Store::open_in_memory().unwrap();
+    let sid = store.save_message_source(&make_test_source()).unwrap();
+
+    for i in 1..=4 {
+        let email = EmailMessage {
+            id: 0, source_id: sid, uid: format!("{i}"), folder: "INBOX".into(),
+            from_addr: "a@b.com".into(), to_addr: "c@d.com".into(),
+            subject: format!("Mail {i}"), body_text: "body".into(),
+            body_html: None, is_read: i <= 2, // first 2 read, last 2 unread
+            date: "2026-03-22".into(), fetched_at: String::new(),
+        };
+        store.save_email(&email).unwrap();
+    }
+
+    assert_eq!(store.count_unread_emails(sid).unwrap(), 2);
+}
+
+// ─── Message Action State 测试 ─────────────────────
+
+#[test]
+fn test_message_action_state_default() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .save_message("Alice", "#general", Some("Hello"), "teams", "text", "2026-03-23T10:00:00")
+        .unwrap();
+
+    let msgs = store.get_messages_by_channel("#general", 10).unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].action_state, "pending");
+    assert!(msgs[0].resolved_at.is_none());
+}
+
+#[test]
+fn test_update_message_action_state() {
+    let store = Store::open_in_memory().unwrap();
+    let id = store
+        .save_message("Bob", "#dev", Some("Need review"), "teams", "text", "2026-03-23T10:00:00")
+        .unwrap();
+
+    store.update_message_action_state(id, "resolved").unwrap();
+
+    let msgs = store.get_messages_by_channel("#dev", 10).unwrap();
+    assert_eq!(msgs[0].action_state, "resolved");
+    assert!(msgs[0].resolved_at.is_some());
+}
+
+#[test]
+fn test_get_pending_messages_older_than() {
+    let store = Store::open_in_memory().unwrap();
+    // 使用固定时间戳确保测试不受时区影响
+    let old_time = "2020-01-01 10:00:00";
+    let future_time = "2099-12-31 23:59:59";
+    {
+        let conn = store.conn.lock().unwrap();
+        // 旧消息 — 应出现在结果中
+        conn.execute(
+            "INSERT INTO messages (sender, channel, content, source, message_type, timestamp, created_at, direction, action_state)
+             VALUES ('Alice', '#ch', 'old msg', 'teams', 'text', '2020-01-01T10:00:00', ?1, 'received', 'pending')",
+            rusqlite::params![old_time],
+        ).unwrap();
+        // 未来时间的新消息 — 不应出现在结果中
+        conn.execute(
+            "INSERT INTO messages (sender, channel, content, source, message_type, timestamp, created_at, direction, action_state)
+             VALUES ('Bob', '#ch', 'new msg', 'teams', 'text', '2099-12-31T23:59:59', ?1, 'received', 'pending')",
+            rusqlite::params![future_time],
+        ).unwrap();
+        // 已解决的旧消息 — 不应出现在结果中
+        conn.execute(
+            "INSERT INTO messages (sender, channel, content, source, message_type, timestamp, created_at, direction, action_state)
+             VALUES ('Carol', '#ch', 'resolved', 'teams', 'text', '2020-01-01T10:00:00', ?1, 'received', 'resolved')",
+            rusqlite::params![old_time],
+        ).unwrap();
+    }
+
+    let pending = store.get_pending_messages_older_than(1).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].sender, "Alice");
+}
+
+#[test]
+fn test_resolve_messages_batch() {
+    let store = Store::open_in_memory().unwrap();
+    let id1 = store
+        .save_message("A", "#ch", Some("msg1"), "teams", "text", "2026-03-23T10:00:00")
+        .unwrap();
+    let id2 = store
+        .save_message("B", "#ch", Some("msg2"), "teams", "text", "2026-03-23T10:01:00")
+        .unwrap();
+    let id3 = store
+        .save_message("C", "#ch", Some("msg3"), "teams", "text", "2026-03-23T10:02:00")
+        .unwrap();
+
+    let resolved = store.resolve_messages(&[id1, id3]).unwrap();
+    assert_eq!(resolved, 2);
+
+    // id2 应仍为 pending
+    let msgs = store.get_messages_by_channel("#ch", 10).unwrap();
+    let pending: Vec<_> = msgs.iter().filter(|m| m.action_state == "pending").collect();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, id2);
+}
+
+#[test]
+fn test_count_pending_messages() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .save_message("A", "#ch", Some("m1"), "teams", "text", "2026-03-23T10:00:00")
+        .unwrap();
+    let id2 = store
+        .save_message("B", "#ch", Some("m2"), "teams", "text", "2026-03-23T10:01:00")
+        .unwrap();
+    store
+        .save_message_with_direction("Me", "#ch", Some("sent"), "teams", "text", "2026-03-23T10:02:00", "sent")
+        .unwrap();
+
+    assert_eq!(store.count_pending_messages().unwrap(), 2);
+
+    store.update_message_action_state(id2, "resolved").unwrap();
+    assert_eq!(store.count_pending_messages().unwrap(), 1);
+}
+
+#[test]
+fn test_info_only_messages() {
+    let store = Store::open_in_memory().unwrap();
+    // info_only 消息不应计入 pending 统计
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO messages (sender, channel, content, source, message_type, timestamp, direction, action_state)
+             VALUES ('System', '#announcements', 'FYI: server maintenance', 'teams', 'text', '2026-03-23T09:00:00', 'received', 'info_only')",
+            [],
+        ).unwrap();
+    }
+    store
+        .save_message("Alice", "#ch", Some("pending msg"), "teams", "text", "2026-03-23T10:00:00")
+        .unwrap();
+
+    assert_eq!(store.count_pending_messages().unwrap(), 1);
+}

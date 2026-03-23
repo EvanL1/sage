@@ -405,6 +405,8 @@ pub struct Message {
     pub timestamp: String,    // 消息原始时间
     pub created_at: String,   // 入库时间
     pub direction: String,    // "received" | "sent"
+    pub action_state: String, // "pending" | "resolved" | "expired" | "info_only"
+    pub resolved_at: Option<String>,
 }
 
 // ─── Browser Bridge 模型 ──────────────────────────
@@ -447,6 +449,71 @@ pub struct BridgeStatusResponse {
     pub status: String,
     pub version: String,
     pub memory_count: usize,
+}
+
+// ─── Message Source 模型（通用消息源配置）────────────────
+
+/// 通用消息源配置（IMAP/SMTP/Slack/Teams 等）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageSource {
+    pub id: i64,
+    pub label: String,        // "Work Gmail", "Personal Outlook"
+    pub source_type: String,  // "imap", "exchange", "slack", ...
+    pub config: String,       // JSON blob — type-specific config
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// IMAP 类型的配置 JSON 结构
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImapSourceConfig {
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub username: String,
+    pub password_enc: String,  // base64(XOR obfuscated) — empty when using OAuth2
+    pub use_tls: bool,
+    pub email: String,         // display email address
+    /// "password" | "oauth2" — default password for backward compat
+    #[serde(default = "default_auth_type")]
+    pub auth_type: String,
+    /// OAuth2 provider: "microsoft" | "google"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_provider: Option<String>,
+    /// OAuth2 client_id (user-provided or default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_client_id: Option<String>,
+    /// OAuth2 access token (encrypted)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_access_token: Option<String>,
+    /// OAuth2 refresh token (encrypted)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_refresh_token: Option<String>,
+    /// OAuth2 token expiry (ISO-8601)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_token_expires_at: Option<String>,
+}
+
+fn default_auth_type() -> String {
+    "password".to_string()
+}
+
+/// 缓存的邮件消息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailMessage {
+    pub id: i64,
+    pub source_id: i64,       // references message_sources.id
+    pub uid: String,           // IMAP UID
+    pub folder: String,
+    pub from_addr: String,
+    pub to_addr: String,
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: Option<String>,
+    pub is_read: bool,
+    pub date: String,
+    pub fetched_at: String,
 }
 
 // ─── Report Calibration 校准 ──────────────────────────

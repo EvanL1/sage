@@ -515,6 +515,60 @@ impl Store {
             .context("数据库迁移 v32（custom_pages 自定义页面）失败")?;
         }
 
+        // v33: message_sources 通用消息源 + emails 缓存
+        if version < 33 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS message_sources (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    label       TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    config      TEXT NOT NULL DEFAULT '{}',
+                    enabled     INTEGER NOT NULL DEFAULT 1,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS emails (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id   INTEGER NOT NULL REFERENCES message_sources(id) ON DELETE CASCADE,
+                    uid         TEXT NOT NULL,
+                    folder      TEXT NOT NULL DEFAULT 'INBOX',
+                    from_addr   TEXT NOT NULL DEFAULT '',
+                    to_addr     TEXT NOT NULL DEFAULT '',
+                    subject     TEXT NOT NULL DEFAULT '',
+                    body_text   TEXT NOT NULL DEFAULT '',
+                    body_html   TEXT DEFAULT NULL,
+                    is_read     INTEGER NOT NULL DEFAULT 0,
+                    date        TEXT NOT NULL DEFAULT '',
+                    fetched_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_uid
+                    ON emails(source_id, uid, folder);
+                CREATE INDEX IF NOT EXISTS idx_emails_source_date
+                    ON emails(source_id, date DESC);
+                PRAGMA user_version = 33;",
+            )
+            .context("数据库迁移 v33（message_sources + emails 表）失败")?;
+        }
+
+        // v34: emails.dismissed — soft delete for Outlook re-fetch protection
+        if version < 34 {
+            conn.execute_batch(
+                "ALTER TABLE emails ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 34;",
+            )
+            .context("数据库迁移 v34（emails.dismissed）失败")?;
+        }
+
+        // v35: messages.action_state + resolved_at — 消息待处理状态追踪
+        if version < 35 {
+            conn.execute_batch(
+                "ALTER TABLE messages ADD COLUMN action_state TEXT NOT NULL DEFAULT 'pending';
+                 ALTER TABLE messages ADD COLUMN resolved_at TEXT;
+                 CREATE INDEX IF NOT EXISTS idx_messages_action_state ON messages(action_state, timestamp DESC);
+                 PRAGMA user_version = 35;",
+            )
+            .context("数据库迁移 v35（messages.action_state + resolved_at）失败")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

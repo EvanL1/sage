@@ -66,6 +66,9 @@ impl Router {
     pub fn store(&self) -> &Store {
         &self.store
     }
+    pub fn store_arc(&self) -> Arc<Store> {
+        Arc::clone(&self.store)
+    }
 
     /// 触发观察者：raw observations → 语义标注 → observer_note
     pub async fn run_observer(&self) -> Result<bool> {

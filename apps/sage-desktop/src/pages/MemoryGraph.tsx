@@ -64,6 +64,7 @@ function MemoryGraph() {
   const nodesRef = useRef<GraphNode[]>([]);
   const edgesRef = useRef<GraphEdge[]>([]);
   const animRef = useRef<number>(0);
+  const tempRef = useRef(1.0); // cooling temperature: 1.0 → 0
   const starsRef = useRef<{ x: number; y: number; size: number; opacity: number }[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,12 +88,13 @@ function MemoryGraph() {
       const cy = 300;
       nodesRef.current = data.nodes.map((n, i) => ({
         ...n,
-        x: cx + Math.cos((i / data.nodes.length) * Math.PI * 2) * 200 + (Math.random() - 0.5) * 40,
-        y: cy + Math.sin((i / data.nodes.length) * Math.PI * 2) * 200 + (Math.random() - 0.5) * 40,
+        x: cx + Math.cos((i / data.nodes.length) * Math.PI * 2) * (150 + Math.random() * 150) + (Math.random() - 0.5) * 60,
+        y: cy + Math.sin((i / data.nodes.length) * Math.PI * 2) * (150 + Math.random() * 150) + (Math.random() - 0.5) * 60,
         vx: 0,
         vy: 0,
       }));
       edgesRef.current = data.edges;
+      tempRef.current = 1.0; // reset temperature for new layout
       setStats({ nodes: data.nodes.length, edges: data.edges.length });
     } catch (e) {
       console.error("Failed to load graph:", e);
@@ -122,22 +124,27 @@ function MemoryGraph() {
     return -1;
   }, [screenToWorld]);
 
-  // Simulation step
+  // Simulation step with simulated annealing (temperature cools → layout stabilises)
   const simulate = useCallback(() => {
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
     if (nodes.length === 0) return;
 
+    const t = tempRef.current;
+    if (t < 0.01) return; // frozen — skip physics entirely
+    tempRef.current *= 0.995; // cool down each frame
+
     const nodeMap = new Map<number, number>();
     nodes.forEach((n, i) => nodeMap.set(n.id, i));
 
-    // Repulsion (Coulomb's law)
+    // Repulsion (Coulomb's law) — scale repulsion with node count
+    const repK = Math.min(1200, 600 + nodes.length * 3);
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const dx = nodes[i].x - nodes[j].x;
         const dy = nodes[i].y - nodes[j].y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = 800 / (dist * dist);
+        const force = repK / (dist * dist) * t;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         nodes[i].vx += fx;
@@ -148,6 +155,7 @@ function MemoryGraph() {
     }
 
     // Attraction (Hooke's law) along edges
+    const restLen = 60 + Math.sqrt(nodes.length) * 8;
     for (const e of edges) {
       const si = nodeMap.get(e.from);
       const ti = nodeMap.get(e.to);
@@ -155,7 +163,7 @@ function MemoryGraph() {
       const dx = nodes[ti].x - nodes[si].x;
       const dy = nodes[ti].y - nodes[si].y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const force = (dist - 80) * 0.03 * e.weight;
+      const force = (dist - restLen) * 0.02 * e.weight * t;
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;
       nodes[si].vx += fx;
@@ -168,14 +176,15 @@ function MemoryGraph() {
     const cx = 400;
     const cy = 300;
     for (const n of nodes) {
-      n.vx += (cx - n.x) * 0.001;
-      n.vy += (cy - n.y) * 0.001;
+      n.vx += (cx - n.x) * 0.002 * t;
+      n.vy += (cy - n.y) * 0.002 * t;
     }
 
-    // Apply velocity with damping
+    // Apply velocity with strong damping
+    const damping = 0.7 + 0.2 * (1 - t); // 0.7 hot → 0.9 cold
     for (const n of nodes) {
-      n.vx *= 0.85;
-      n.vy *= 0.85;
+      n.vx *= damping;
+      n.vy *= damping;
       n.x += n.vx;
       n.y += n.vy;
     }
@@ -392,6 +401,9 @@ function MemoryGraph() {
   }, [screenToWorld]);
 
   const handleMouseUp = useCallback(() => {
+    if (dragRef.current.type === "node") {
+      tempRef.current = Math.max(tempRef.current, 0.3); // reheat after drag
+    }
     dragRef.current = { type: null, nodeIdx: -1, startX: 0, startY: 0 };
   }, []);
 

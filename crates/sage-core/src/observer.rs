@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::agent::Agent;
-use crate::memory_integrator::{IncomingMemory, MemoryIntegrator};
+use crate::memory_integrator::{is_ephemeral_content, IncomingMemory, MemoryIntegrator};
 use crate::prompts;
 use crate::store::Store;
 
@@ -54,6 +54,7 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>) -> Result<bool> {
             source: "observer".to_string(),
             confidence: 0.6,
             about_person: None,
+            depth: Some("episodic".to_string()),
         })
         .collect();
 
@@ -77,7 +78,7 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>) -> Result<bool> {
             let mut saved = 0;
             for line in resp.text.lines() {
                 let line = line.trim().trim_start_matches('-').trim();
-                if !line.is_empty() {
+                if !line.is_empty() && !is_ephemeral_content(line) {
                     if store
                         .save_memory_with_visibility(
                             "observer_note",

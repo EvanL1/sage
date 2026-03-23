@@ -76,11 +76,81 @@ impl Store {
     /// 推断认知深度。
     /// 所有记忆默认 episodic，只有 Evolution 编译链（compile_to_semantic/procedural/axiom）
     /// 才能提升 depth。唯一例外：evolution source 的 personality 是编译产物。
-    pub(super) fn infer_depth(_category: &str, source: &str) -> &'static str {
-        match source {
-            "evolution" => "procedural", // Evolution 产出的默认是 procedural
-            _ => "episodic",             // 其他一律 episodic，等待编译
+    /// 根据 category + source + **内容语义** 推断记忆深度。
+    /// depth 由内容决定，不能仅靠 category 静态映射。
+    pub(super) fn infer_depth(category: &str, source: &str, content: &str) -> &'static str {
+        // evolution 产出已在 evolution 内部设定正确 depth
+        if source == "evolution" {
+            return "procedural";
         }
+
+        // ── 1. 明确 episodic 的 category（原始事件/通信记录）──
+        match category {
+            "observer_note" | "communication" | "session" | "report_insight" => {
+                return "episodic";
+            }
+            _ => {}
+        }
+
+        // ── 2. 内容中包含具体日期/时间 → episodic（具体事件，不是规律）──
+        if Self::has_temporal_marker(content) {
+            return "episodic";
+        }
+
+        // ── 3. 按内容特征分层 ──
+        match category {
+            // fact 总是 episodic
+            "fact" => "episodic",
+            // decision 是具体判断
+            "decision" | "recent_decisions" => "procedural",
+            // 核心认知类：短抽象原则 → axiom，否则 semantic
+            "identity" | "values" => {
+                if content.chars().count() <= 40 && !Self::has_specific_reference(content) {
+                    "axiom"
+                } else {
+                    "semantic"
+                }
+            }
+            // 人格/行为/思维模式 → semantic（规律）
+            "personality" | "behavior_patterns" | "behavior" | "thinking_style"
+            | "thinking" | "emotional_cues" | "emotion" | "growth_areas" | "growth"
+            | "strategy_insight" | "coach_insight" | "pattern" => "semantic",
+            // 其余 → semantic（宁可高估也不要全部丢进 episodic）
+            _ => "semantic",
+        }
+    }
+
+    /// 内容中是否包含具体时间标记（日期、周次、时间戳等）
+    fn has_temporal_marker(content: &str) -> bool {
+        // 2026-03-19, 03-19, 2026/03/19
+        if content.contains("202") && content.chars().any(|c| c == '-' || c == '/') {
+            // 检查是否有 YYYY-MM-DD 或 MM-DD 格式的日期
+            for word in content.split(|c: char| c.is_whitespace() || c == '，' || c == '。' || c == '、') {
+                let w = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '-' && c != '/');
+                if w.len() >= 5 {
+                    let parts: Vec<&str> = w.split(|c| c == '-' || c == '/').collect();
+                    if parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // W13, W2 等周次标记
+        for word in content.split_whitespace() {
+            if word.starts_with('W') && word.len() <= 4
+                && word[1..].chars().all(|c| c.is_ascii_digit())
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 内容中是否包含具体人/事引用（特定事件而非抽象原则）
+    fn has_specific_reference(content: &str) -> bool {
+        // 包含具体人名动作（如 "向Bob汇报"、"和Sam讨论"）
+        let markers = ["汇报", "邮件", "会议纪要", "PULSE", "项目"];
+        markers.iter().any(|m| content.contains(m))
     }
 
     /// working 层默认 TTL（天）
@@ -162,7 +232,7 @@ impl Store {
         }
 
         let tier = Self::infer_tier(category);
-        let depth = Self::infer_depth(category, source);
+        let depth = Self::infer_depth(category, source, content);
         let expires_at = Self::default_ttl_days(category).map(|days| {
             (chrono::Local::now() + chrono::Duration::days(days))
                 .format("%Y-%m-%d %H:%M:%S")
@@ -289,7 +359,7 @@ impl Store {
         }
 
         let tier = Self::infer_tier(category);
-        let depth = Self::infer_depth(category, source);
+        let depth = Self::infer_depth(category, source, content);
         let expires_at = Self::default_ttl_days(category).map(|days| {
             (chrono::Local::now() + chrono::Duration::days(days))
                 .format("%Y-%m-%d %H:%M:%S")
@@ -340,7 +410,7 @@ impl Store {
         }
 
         let tier = Self::infer_tier(category);
-        let depth = Self::infer_depth(category, source);
+        let depth = Self::infer_depth(category, source, content);
         let expires_at = Self::default_ttl_days(category).map(|days| {
             (chrono::Local::now() + chrono::Duration::days(days))
                 .format("%Y-%m-%d %H:%M:%S")

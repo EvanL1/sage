@@ -58,6 +58,7 @@ pub async fn trigger_memory_evolution(state: State<'_, AppState>) -> Result<Stri
                     (r.consolidated, "merged"),
                     (r.compiled_semantic, "→patterns"),
                     (r.compiled_axiom, "→beliefs"),
+                    (r.distilled, "distilled"),
                     (r.condensed, "condensed"),
                     (r.linked, "linked"),
                     (r.decayed, "decayed"),

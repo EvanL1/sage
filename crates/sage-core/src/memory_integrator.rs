@@ -25,6 +25,8 @@ pub struct IncomingMemory {
     pub source: String,
     pub confidence: f64,
     pub about_person: Option<String>,
+    /// LLM 指定的深度层级，覆盖 infer_depth 的推断
+    pub depth: Option<String>,
 }
 
 /// Result counts from a batch integration run.
@@ -33,6 +35,51 @@ pub struct IntegrationResult {
     pub created: usize,
     pub updated: usize,
     pub skipped: usize,
+}
+
+// ─── Pre-filter ────────────────────────────────────────────────────────────
+
+/// Returns true for content that is structural/ephemeral and should never be
+/// stored as a memory (e.g. agenda headers, bullet lists, oversized blobs).
+pub fn is_ephemeral_content(content: &str) -> bool {
+    let trimmed = content.trim();
+
+    // 1. Week-prefix pattern: "W42:" / "W42：" / "W3 :" etc.
+    if let Some(rest) = trimmed.strip_prefix('W') {
+        let digits_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        if digits_end > 0 {
+            let after = rest[digits_end..].trim_start();
+            if after.starts_with(':') || after.starts_with('：') {
+                return true;
+            }
+        }
+    }
+
+    // 2. Numbered / bulleted list: 3+ lines starting with ①-⑩ or `N.` or `N)`
+    let list_lines = trimmed.lines().filter(|l| {
+        let l = l.trim();
+        let circled = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
+        if circled.iter().any(|&c| l.starts_with(c)) {
+            return true;
+        }
+        // digit(s) followed by '.' or ')'
+        let digits_end = l.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+        if digits_end > 0 {
+            let sep = &l[digits_end..];
+            return sep.starts_with('.') || sep.starts_with(')');
+        }
+        false
+    });
+    if list_lines.count() >= 3 {
+        return true;
+    }
+
+    // 3. Content too long to be a single atomic memory
+    if trimmed.len() > 200 {
+        return true;
+    }
+
+    false
 }
 
 // ─── Integrator ────────────────────────────────────────────────────────────
@@ -64,8 +111,12 @@ impl MemoryIntegrator {
                 },
                 Err(e) => {
                     warn!("MemoryIntegrator: LLM arbitration failed for '{}', falling back to insert: {e}", entry.content);
-                    self.fallback_insert(&entry);
-                    result.created += 1;
+                    if !is_ephemeral_content(entry.content.trim()) {
+                        self.fallback_insert(&entry);
+                        result.created += 1;
+                    } else {
+                        result.skipped += 1;
+                    }
                 }
             }
         }
@@ -86,6 +137,10 @@ impl MemoryIntegrator {
     ) -> Result<Action> {
         let content = entry.content.trim();
         if content.is_empty() {
+            return Ok(Action::Skipped);
+        }
+        if is_ephemeral_content(content) {
+            debug!("MemoryIntegrator: ephemeral content, skipping '{}'", &content[..content.len().min(60)]);
             return Ok(Action::Skipped);
         }
 
@@ -174,7 +229,7 @@ impl MemoryIntegrator {
     }
 
     fn execute_create(&self, entry: &IncomingMemory) -> Result<()> {
-        if let Some(ref person) = entry.about_person {
+        let id = if let Some(ref person) = entry.about_person {
             self.store.save_memory_about_person(
                 &entry.category,
                 &entry.content,
@@ -182,14 +237,21 @@ impl MemoryIntegrator {
                 entry.confidence,
                 "public",
                 person,
-            )?;
+            )?
         } else {
             self.store.save_memory(
                 &entry.category,
                 &entry.content,
                 &entry.source,
                 entry.confidence,
-            )?;
+            )?
+        };
+        // LLM 指定的 depth 覆盖 infer_depth 的推断
+        if let Some(ref depth) = entry.depth {
+            let valid = ["episodic", "semantic", "procedural", "axiom"];
+            if valid.contains(&depth.as_str()) {
+                let _ = self.store.update_memory_depth(id, depth);
+            }
         }
         Ok(())
     }
@@ -249,6 +311,7 @@ mod tests {
             source: "test".to_string(),
             confidence: 0.8,
             about_person: None,
+            depth: None,
         }
     }
 
@@ -415,6 +478,7 @@ mod tests {
             source: "chat".to_string(),
             confidence: 0.9,
             about_person: Some("Alice".to_string()),
+            depth: None,
         };
         let result = integrator.integrate(vec![entry], &provider).await.unwrap();
         assert_eq!(result.created, 1);

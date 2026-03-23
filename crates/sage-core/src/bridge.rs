@@ -85,6 +85,7 @@ async fn import_memories_handler(
             source: source.clone(),
             confidence: e.confidence,
             about_person: None,
+            depth: None,
         })
         .collect();
 

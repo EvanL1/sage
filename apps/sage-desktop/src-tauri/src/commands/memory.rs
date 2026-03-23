@@ -87,6 +87,13 @@ pub async fn extract_memories(
                 .store
                 .save_memory_with_visibility(category, content, "chat", confidence, "private")
                 .map_err(map_err)?;
+            // LLM 指定的 depth 覆盖 infer_depth
+            if let Some(depth) = insight.get("depth").and_then(|v| v.as_str()) {
+                let valid = ["episodic", "semantic", "procedural", "axiom"];
+                if valid.contains(&depth) {
+                    let _ = state.store.update_memory_depth(id, depth);
+                }
+            }
             saved.push(json!({
                 "id": id,
                 "category": category,
@@ -302,10 +309,16 @@ pub async fn import_raw_memories(
                 obj.get("content").and_then(|v| v.as_str()),
             ) {
                 if !content.is_empty() {
-                    state
+                    let id = state
                         .store
                         .save_memory_with_visibility(category, content, "ai_import", 0.7, "public")
                         .map_err(map_err)?;
+                    if let Some(depth) = obj.get("depth").and_then(|v| v.as_str()) {
+                        let valid = ["episodic", "semantic", "procedural", "axiom"];
+                        if valid.contains(&depth) {
+                            let _ = state.store.update_memory_depth(id, depth);
+                        }
+                    }
                     count += 1;
                 }
             }
@@ -377,10 +390,10 @@ pub async fn get_daily_question(state: State<'_, AppState>) -> Result<Option<Val
     }
 }
 
-/// 获取记忆图谱数据（只含核心人格/认知记忆）
+/// 获取记忆图谱数据（全部活跃记忆）
 #[tauri::command]
 pub async fn get_memory_graph(state: State<'_, AppState>) -> Result<Value, String> {
-    let memories = state.store.load_core_memories().map_err(map_err)?;
+    let memories = state.store.load_memories().map_err(map_err)?;
     let edges = state.store.get_all_memory_edges().map_err(map_err)?;
 
     let node_ids: std::collections::HashSet<i64> = memories.iter().map(|m| m.id).collect();
@@ -393,6 +406,7 @@ pub async fn get_memory_graph(state: State<'_, AppState>) -> Result<Value, Strin
                 "category": m.category,
                 "content": m.content,
                 "confidence": m.confidence,
+                "depth": m.depth,
             })
         })
         .collect();

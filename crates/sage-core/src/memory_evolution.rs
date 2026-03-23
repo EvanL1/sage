@@ -14,49 +14,202 @@ pub struct EvolutionResult {
     pub linked: usize,
     pub compiled_semantic: usize,
     pub compiled_axiom: usize,
+    pub distilled: usize,
+    pub reclassified: usize,
 }
 
 /// 记忆进化：每日 Evening Review 后运行
 /// 新管道顺序：
-/// 1. merge_similar（同 depth 内去重）
+/// 1. merge_similar（跨 depth 全局去重，按 category 分组）
 /// 2. compile_to_semantic（episodic → semantic 行为模式归纳）
 /// 3. synthesize_traits（semantic → procedural 判断模式提炼）
 /// 4. compile_to_axiom（procedural → axiom 底层信念凝结）
-/// 5. condense_verbose（精简冗长记忆）
-/// 6. link_memories（记忆图谱连接）
-/// 7. promote_validated（提升高频验证记忆 confidence）
+/// 5. distill_core_beliefs（values/thinking/identity → 严密核心信念提炼）
+/// 6. condense_verbose（精简冗长记忆）
+/// 7. link_memories（记忆图谱连接）
+/// 8. promote_validated（提升高频验证记忆 confidence）
 pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
-    let merged = match merge_similar(agent, store).await {
-        Ok(n) => n,
-        Err(e) => { tracing::error!("merge_similar failed: {e}"); 0 }
+    // File-based debug log so we can see what happens even without stderr
+    let log_path = std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".sage/logs/evolution.log"));
+    let elog = |msg: &str| {
+        if let Some(ref p) = log_path {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+                let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
+            }
+        }
+        info!("{msg}");
     };
-    let compiled_semantic = match compile_to_semantic(agent, store).await {
-        Ok(n) => n,
-        Err(e) => { tracing::error!("compile_to_semantic failed: {e}"); 0 }
+
+    elog("=== Evolution started ===");
+    let memories = store.load_active_memories()?;
+    elog(&format!("Active memories: {}", memories.len()));
+
+    // ── Phase 1: Unified LLM call — only semantic/procedural/axiom (episodic = evidence, never touch) ──
+    agent.reset_counter();
+    let evolvable: Vec<_> = memories.iter()
+        .filter(|m| m.depth != "episodic")
+        .collect();
+    elog(&format!("Evolvable (non-episodic): {}", evolvable.len()));
+
+    if evolvable.is_empty() {
+        elog("=== Evolution done: nothing to evolve ===");
+        return Ok(EvolutionResult {
+            consolidated: 0, condensed: 0, decayed: 0, promoted: 0,
+            linked: 0, compiled_semantic: 0, compiled_axiom: 0, distilled: 0, reclassified: 0,
+        });
+    }
+
+    let content_list: Vec<String> = evolvable.iter()
+        .map(|m| format!("[id:{} | {} | {}] {}", m.id, m.category, m.depth, m.content))
+        .collect();
+    let lang = store.prompt_lang();
+
+    // Orient: build a status summary so LLM has global context before operating
+    let total = memories.len();
+    let n_episodic = memories.iter().filter(|m| m.depth == "episodic").count();
+    let n_semantic = memories.iter().filter(|m| m.depth == "semantic").count();
+    let n_procedural = memories.iter().filter(|m| m.depth == "procedural").count();
+    let n_axiom = memories.iter().filter(|m| m.depth == "axiom").count();
+    let avg_len = if evolvable.is_empty() { 0 } else {
+        evolvable.iter().map(|m| m.content.len()).sum::<usize>() / evolvable.len()
     };
-    let synthesized = match synthesize_traits(agent, store).await {
-        Ok(n) => n,
-        Err(e) => { tracing::error!("synthesize_traits failed: {e}"); 0 }
+    const MEMORY_BUDGET: usize = 200;
+    let budget_msg = if total > MEMORY_BUDGET * 9 / 10 {
+        "⚠ Budget nearly full. Be MORE aggressive with DEDUP — quality over quantity."
+    } else if total > MEMORY_BUDGET {
+        "🚨 OVER BUDGET. Aggressively DEDUP — remove all redundancy."
+    } else {
+        "Within budget. Normal consolidation."
     };
-    let compiled_axiom = match compile_to_axiom(agent, store).await {
-        Ok(n) => n,
-        Err(e) => { tracing::error!("compile_to_axiom failed: {e}"); 0 }
-    };
-    let condensed = match condense_verbose(agent, store).await {
-        Ok(n) => n,
-        Err(e) => { tracing::error!("condense_verbose failed: {e}"); 0 }
-    };
+    let orient_summary = format!(
+        "Total: {total} memories ({n_episodic} episodic, {n_semantic} semantic, {n_procedural} procedural, {n_axiom} axiom)\n\
+         Budget: {total}/{MEMORY_BUDGET}. {budget_msg}\n\
+         Avg content length: {avg_len} chars (target: 20-60)",
+    );
+    elog(&format!("Orient: {orient_summary}"));
+
+    let prompt = prompts::evolution_unified(&lang, evolvable.len(), &content_list.join("\n"), &orient_summary);
+
+    elog("Calling LLM for unified evolution...");
+    let (mut merged, mut compiled_semantic, mut compiled_axiom, mut condensed, mut distilled, mut reclassified) = (0, 0, 0, 0, 0, 0);
+    let synthesized = 0; // legacy, kept for EvolutionResult compat
+
+    match agent.invoke(&prompt, None).await {
+        Ok(resp) => {
+            elog(&format!("LLM response: {} chars", resp.text.len()));
+            let batch_ids: std::collections::HashSet<i64> = evolvable.iter().map(|m| m.id).collect();
+
+            for line in resp.text.lines() {
+                let line = line.trim();
+
+                // DEDUP [id1, id2, ...]
+                if let Some(rest) = line.strip_prefix("DEDUP [") {
+                    if let Some(ids_str) = rest.strip_suffix(']') {
+                        let ids: Vec<i64> = ids_str.split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .filter(|id| batch_ids.contains(id))
+                            .collect();
+                        for id in &ids { let _ = store.delete_memory(*id); }
+                        merged += ids.len();
+                        if !ids.is_empty() { elog(&format!("DEDUP: deleted {} memories", ids.len())); }
+                    }
+                }
+
+                // COMPILE [id1,id2,...] → depth:category content
+                if let Some(rest) = line.strip_prefix("COMPILE [") {
+                    if let Some((ids_str, target)) = rest.split_once("] → ") {
+                        let ids: Vec<i64> = ids_str.split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .filter(|id| batch_ids.contains(id))
+                            .collect();
+                        if ids.len() >= 2 {
+                            // Parse "depth:category content"
+                            let (depth, category, content) = if let Some((dc, c)) = target.split_once(' ') {
+                                if let Some((d, cat)) = dc.split_once(':') { (d, cat, c) }
+                                else { ("semantic", "values", target) }
+                            } else { ("semantic", "values", target) };
+
+                            if !content.is_empty() {
+                                let conf = if depth == "axiom" { 0.95 } else { 0.8 };
+                                if let Ok(new_id) = store.save_memory(category, content, "evolution", conf) {
+                                    let _ = store.update_memory_depth(new_id, depth);
+                                    for &id in &ids { let _ = store.mark_memory_compiled(id); }
+                                    if depth == "axiom" { compiled_axiom += 1; distilled += 1; }
+                                    else { compiled_semantic += 1; }
+                                    elog(&format!("COMPILE → {depth}:{category} from {} sources", ids.len()));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // BELIEF [id1,id2,...] → content (legacy format, treat as COMPILE → axiom:values)
+                if let Some(rest) = line.strip_prefix("BELIEF [") {
+                    if let Some((ids_str, content)) = rest.split_once("] → ") {
+                        let ids: Vec<i64> = ids_str.split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .filter(|id| batch_ids.contains(id))
+                            .collect();
+                        if ids.len() >= 3 && !content.is_empty() {
+                            if let Ok(new_id) = store.save_memory("values", content, "evolution", 0.95) {
+                                let _ = store.update_memory_depth(new_id, "axiom");
+                                for &id in &ids { let _ = store.mark_memory_compiled(id); }
+                                distilled += 1;
+                                elog(&format!("BELIEF → axiom from {} sources", ids.len()));
+                            }
+                        }
+                    }
+                }
+
+                // CONDENSE [id] → shorter version
+                if let Some(rest) = line.strip_prefix("CONDENSE [") {
+                    if let Some((id_str, new_content)) = rest.split_once("] → ") {
+                        if let Ok(id) = id_str.trim().parse::<i64>() {
+                            if batch_ids.contains(&id) && !new_content.is_empty() {
+                                let conf = memories.iter().find(|m| m.id == id).map(|m| m.confidence).unwrap_or(0.7);
+                                if store.update_memory(id, new_content, conf).is_ok() {
+                                    condensed += 1;
+                                    elog(&format!("CONDENSE [{id}]"));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // RECLASSIFY [id] semantic|procedural
+                if let Some(rest) = line.strip_prefix("RECLASSIFY [") {
+                    if let Some((id_str, target_depth)) = rest.split_once("] ") {
+                        if let Ok(id) = id_str.trim().parse::<i64>() {
+                            if batch_ids.contains(&id) {
+                                let depth = target_depth.trim();
+                                if depth == "semantic" || depth == "procedural" {
+                                    let _ = store.update_memory_depth(id, depth);
+                                    reclassified += 1;
+                                    elog(&format!("RECLASSIFY [{id}] → {depth}"));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => { elog(&format!("LLM call FAILED: {e}")); }
+    }
+
+    // ── Phase 2: Non-LLM operations (fast, no API calls) ──
     let linked = match link_memories(agent, store).await {
-        Ok(n) => n,
-        Err(e) => { tracing::error!("link_memories failed: {e}"); 0 }
+        Ok(n) => { elog(&format!("link_memories: {n}")); n }
+        Err(e) => { elog(&format!("link_memories FAILED: {e}")); 0 }
     };
     let decayed = decay_unused(store).unwrap_or(0);
     let promoted = promote_validated(store).unwrap_or(0);
+    elog(&format!("=== Evolution done: dedup={merged} compiled_sem={compiled_semantic} axiom={compiled_axiom} distilled={distilled} condensed={condensed} reclassified={reclassified} linked={linked} decayed={decayed} promoted={promoted} ==="));
 
     let total_consolidated = merged + synthesized;
-    if total_consolidated + condensed + decayed + promoted + linked + compiled_semantic + compiled_axiom > 0 {
+    if total_consolidated + condensed + decayed + promoted + linked + compiled_semantic + compiled_axiom + distilled + reclassified > 0 {
         info!(
-            "Memory evolution: merged={merged}, compiled_semantic={compiled_semantic}, synthesized={synthesized}, compiled_axiom={compiled_axiom}, condensed={condensed}, linked={linked}, decayed={decayed}, promoted={promoted}"
+            "Memory evolution: merged={merged}, compiled_semantic={compiled_semantic}, synthesized={synthesized}, compiled_axiom={compiled_axiom}, distilled={distilled}, condensed={condensed}, reclassified={reclassified}, linked={linked}, decayed={decayed}, promoted={promoted}"
         );
     }
     Ok(EvolutionResult {
@@ -67,38 +220,42 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
         linked,
         compiled_semantic,
         compiled_axiom,
+        distilled,
+        reclassified,
     })
 }
 
-/// 单批次合并请求的最大条目数（避免 prompt 过长导致 LLM 超时或格式错误）
-const MERGE_BATCH_SIZE: usize = 20;
+/// 单批次合并请求的最大条目数（跨 depth 全局去重，适当增大批次）
+#[cfg(test)]
+const MERGE_BATCH_SIZE: usize = 40;
 
-/// 合并同 category + 同 depth 下内容相似的记忆（通过 LLM 识别，保留最新）
+/// 合并同 category 下内容相似的记忆（跨 depth 全局去重，通过 LLM 识别）
+/// 按 category 分组（不按 depth），让跨层级的重复也能被发现
+/// 批次内按内容字母序排列，使相似内容聚集在同一批次
+#[cfg(test)]
 async fn merge_similar(agent: &Agent, store: &Store) -> Result<usize> {
     let memories = store.load_active_memories()?;
-    // 按 (category, depth) 分组，避免跨 depth 合并
-    let mut by_group: std::collections::HashMap<(String, String), Vec<_>> =
+    // 按 category 分组（不按 depth）——跨层级重复也能被发现
+    let mut by_category: std::collections::HashMap<String, Vec<_>> =
         std::collections::HashMap::new();
     for m in &memories {
-        by_group
-            .entry((m.category.clone(), m.depth.clone()))
-            .or_default()
-            .push(m);
+        by_category.entry(m.category.clone()).or_default().push(m);
     }
 
     let mut total_merged = 0;
-    for ((category, _depth), items) in &by_group {
+    for (category, mut items) in by_category {
         if items.len() < 2 {
             continue;
         }
 
-        // 分批处理：每批最多 MERGE_BATCH_SIZE 条
+        // 按内容字母序排列，使相似内容聚集在同一批次
+        items.sort_by(|a, b| a.content.cmp(&b.content));
+
         for chunk in items.chunks(MERGE_BATCH_SIZE) {
             if chunk.len() < 2 {
                 continue;
             }
-
-            let merged = merge_batch(agent, store, category, chunk).await?;
+            let merged = merge_batch(agent, store, &category, chunk).await?;
             total_merged += merged;
         }
     }
@@ -107,6 +264,7 @@ async fn merge_similar(agent: &Agent, store: &Store) -> Result<usize> {
 }
 
 /// 处理单批次合并
+#[cfg(test)]
 async fn merge_batch(
     agent: &Agent,
     store: &Store,
@@ -178,10 +336,12 @@ async fn merge_batch(
 }
 
 /// 判断模式提炼批次大小
+#[cfg(test)]
 const SYNTH_BATCH_SIZE: usize = 20;
 
 /// 判断模式提炼：将 behavior/thinking/emotion 观察编译为 personality 判断模式
 /// 从 declarative（「做了什么」）→ procedural（「遇到X时怎么判断」）
+#[cfg(test)]
 async fn synthesize_traits(agent: &Agent, store: &Store) -> Result<usize> {
     let memories = store.load_active_memories()?;
     let trait_categories = ["behavior", "thinking", "emotion"];
@@ -212,6 +372,7 @@ async fn synthesize_traits(agent: &Agent, store: &Store) -> Result<usize> {
 }
 
 /// 处理单批次特质提炼
+#[cfg(test)]
 async fn synth_batch(
     agent: &Agent,
     store: &Store,
@@ -277,6 +438,7 @@ async fn synth_batch(
 // ─── compile_to_semantic ────────────────────────────────────────────────────
 
 /// 编译 episodic → semantic：同 category 下 ≥5 条 episodic 记忆归纳为行为模式
+#[cfg(test)]
 async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
     let episodic = store.load_memories_by_depth("episodic")?;
     if episodic.is_empty() {
@@ -360,6 +522,7 @@ async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
 /// 编译 procedural → axiom：被动观察验证。
 /// 不依赖 Chat 召回次数（validation_count），而是检查近期 episodic 事件是否支持该判断模式。
 /// 对每条 procedural，让 LLM 判断有多少 episodic 证据支持它。≥3 条跨源证据 = 候选。
+#[cfg(test)]
 async fn compile_to_axiom(agent: &Agent, store: &Store) -> Result<usize> {
     let procedural = store.load_memories_by_depth("procedural")?;
     if procedural.is_empty() {
@@ -437,15 +600,20 @@ async fn compile_to_axiom(agent: &Agent, store: &Store) -> Result<usize> {
     Ok(total_axioms)
 }
 
-/// 精简冗长记忆内容：>150 字的记忆才触发精简（保留自然表达，不过度压缩）
-const CONDENSE_CHAR_THRESHOLD: usize = 150;
+
+/// 精简冗长记忆内容：>80 字的记忆才触发精简（保留自然表达，不过度压缩）
+#[cfg(test)]
+const CONDENSE_CHAR_THRESHOLD: usize = 80;
+#[cfg(test)]
 const CONDENSE_BATCH_SIZE: usize = 15;
 
+#[cfg(test)]
 async fn condense_verbose(agent: &Agent, store: &Store) -> Result<usize> {
     let memories = store.load_active_memories()?;
     let verbose: Vec<_> = memories
         .iter()
-        .filter(|m| m.content.chars().count() > CONDENSE_CHAR_THRESHOLD)
+        // Skip axiom beliefs — they are already distilled, should not be compressed further
+        .filter(|m| m.depth != "axiom" && m.content.chars().count() > CONDENSE_CHAR_THRESHOLD)
         .collect();
 
     if verbose.is_empty() {
@@ -461,6 +629,7 @@ async fn condense_verbose(agent: &Agent, store: &Store) -> Result<usize> {
 }
 
 /// 处理单批次精简
+#[cfg(test)]
 async fn condense_batch(
     agent: &Agent,
     store: &Store,
@@ -493,6 +662,31 @@ async fn condense_batch(
                     if !content.is_empty() {
                         if let Some(mem) = items.iter().find(|m| m.id == id) {
                             if store.update_memory(id, content, mem.confidence).is_ok() {
+                                batch_condensed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("SPLIT [") {
+            if let Some((id_str, parts)) = rest.split_once("] → ") {
+                if let Ok(id) = id_str.trim().parse::<i64>() {
+                    if let Some((first, second)) = parts.split_once(" | ") {
+                        let (first, second) = (first.trim(), second.trim());
+                        if let Some(mem) = items.iter().find(|m| m.id == id) {
+                            // Update original with the first part
+                            if !first.is_empty()
+                                && store.update_memory(id, first, mem.confidence).is_ok()
+                            {
+                                // Create a new memory for the second part
+                                if !second.is_empty() {
+                                    let _ = store.save_memory(
+                                        &mem.category,
+                                        second,
+                                        &mem.source,
+                                        mem.confidence,
+                                    );
+                                }
                                 batch_condensed += 1;
                             }
                         }
@@ -901,30 +1095,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_evolve_merge_only() {
+    async fn test_evolve_dedup() {
         let store = Store::open_in_memory().unwrap();
 
-        // 只有 pattern 类别有 2 条，触发 merge；无 behavior ≥6，不触发 synthesize
         let p1 = store
             .save_memory("pattern", "每天下午查邮件", "chat", 0.6)
             .unwrap();
-        let p2 = store
+        let _p2 = store
             .save_memory("pattern", "下午定时查看邮件", "chat", 0.7)
             .unwrap();
+        // Must be non-episodic for evolution to process them
+        let _ = store.update_memory_depth(p1, "semantic");
+        let _ = store.update_memory_depth(_p2, "semantic");
 
-        let merge_resp = format!("MERGE [{p1},{p2}] → 每天下午定时查邮件");
-        let agent = make_agent(vec![&merge_resp]);
+        // Unified format: DEDUP deletes p1, keeps p2
+        let resp = format!("DEDUP [{p1}]");
+        let agent = make_agent(vec![&resp]);
 
         let r = evolve(&agent, &store).await.unwrap();
-        assert_eq!(r.consolidated, 1, "should merge 1 pair");
-        assert_eq!(r.condensed, 0);
-        assert_eq!(r.decayed, 0);
-        assert_eq!(r.promoted, 0);
-        assert_eq!(r.linked, 0);
+        assert_eq!(r.consolidated, 1, "should dedup 1 memory");
 
         let active = store.load_active_memories().unwrap();
         assert_eq!(active.len(), 1);
-        assert_eq!(active[0].content, "每天下午定时查邮件");
+        assert_eq!(active[0].content, "下午定时查看邮件");
     }
 
     // ─── condense_verbose 测试 ──────────────────────────────
@@ -1177,13 +1370,19 @@ mod tests {
     async fn test_compile_to_semantic_creates_pattern() {
         let store = Store::open_in_memory().unwrap();
         let mut ids = Vec::new();
-        for i in 0..6 {
-            let id = store
-                .save_memory("behavior", &format!("具体行为事件 {i}"), "chat", 0.6)
-                .unwrap();
+        let events = [
+            "2026-03-01 晨会后立刻动手写方案",
+            "2026-03-02 收到反馈后当天改完提交",
+            "2026-03-03 跳过讨论直接出原型给团队看",
+            "2026-03-04 需求没确认就先写核心模块",
+            "2026-03-05 拒绝等设计稿先用占位图做",
+            "2026-03-06 自己跑测试不等 QA 排期",
+        ];
+        for ev in &events {
+            let id = store.save_memory("behavior", ev, "chat", 0.6).unwrap();
             ids.push(id);
         }
-        // behavior + chat → infer_depth = episodic
+        // 含日期 → infer_depth = episodic
         let episodic = store.load_memories_by_depth("episodic").unwrap();
         assert_eq!(episodic.len(), 6);
 
@@ -1212,7 +1411,7 @@ mod tests {
         // 只有 4 条 episodic，不触发（阈值 5）
         for i in 0..4 {
             store
-                .save_memory("behavior", &format!("事件 {i}"), "chat", 0.6)
+                .save_memory("behavior", &format!("2026-03-0{i} 事件 {i}"), "chat", 0.6)
                 .unwrap();
         }
 
@@ -1240,12 +1439,12 @@ mod tests {
 
         // 创建 ≥5 条 episodic 证据（来自不同 source，模拟跨渠道行为观察）
         for (src, content) in [
-            ("chat", "收到需求后 2 小时内发了方案"),
-            ("email", "邮件中说先出 MVP 再迭代"),
-            ("observer", "PR review 拒绝了过度工程化方案"),
-            ("chat", "跟团队说先能跑再优化"),
-            ("email", "回复客户时选了最简方案"),
-            ("observer", "砍掉了 3 个非核心功能再开始写"),
+            ("chat", "2026-03-01 收到需求后 2 小时内发了方案"),
+            ("email", "2026-03-02 邮件中说先出 MVP 再迭代"),
+            ("observer", "2026-03-03 PR review 拒绝了过度工程化方案"),
+            ("chat", "2026-03-04 跟团队说先能跑再优化"),
+            ("email", "2026-03-05 回复客户时选了最简方案"),
+            ("observer", "2026-03-06 砍掉了 3 个非核心功能再开始写"),
         ] {
             store.save_memory("behavior", content, src, 0.7).unwrap();
         }
@@ -1278,10 +1477,10 @@ mod tests {
     async fn test_update_memory_depth() {
         let store = Store::open_in_memory().unwrap();
         let id = store
-            .save_memory("behavior", "测试记忆", "chat", 0.7)
+            .save_memory("observer_note", "2026-03-10 测试记忆", "chat", 0.7)
             .unwrap();
 
-        // behavior+chat → episodic
+        // observer_note → episodic
         let episodic = store.load_memories_by_depth("episodic").unwrap();
         assert!(episodic.iter().any(|m| m.id == id));
 

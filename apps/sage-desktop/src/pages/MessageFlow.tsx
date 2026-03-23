@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLang } from "../LangContext";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface Message {
   id: number;
@@ -408,6 +410,8 @@ function MessageFlow() {
   const [selectedMsg, setSelectedMsg] = useState<Message | null>(null);
   const [aiInsight, setAiInsight] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [situation, setSituation] = useState<string | null>(null);
+  const [situationLoading, setSituationLoading] = useState(false);
 
   const initDone = useRef(false);
 
@@ -680,6 +684,62 @@ function MessageFlow() {
           </button>
         </div>
 
+        {/* Situation card — 处境纵览 */}
+        <div style={{
+          padding: "var(--spacing-sm) var(--spacing-md)",
+          borderBottom: "1px solid var(--border)",
+          display: "flex", alignItems: "center", gap: "var(--spacing-sm)",
+        }}>
+          <button
+            onClick={async () => {
+              setSituationLoading(true);
+              setSituation(null);
+              try {
+                const result = await invoke<string>("get_situation_summary");
+                setSituation(result);
+              } catch (e) {
+                setSituation("Failed to generate: " + String(e));
+              } finally {
+                setSituationLoading(false);
+              }
+            }}
+            disabled={situationLoading}
+            style={{
+              padding: "4px 12px", fontSize: 11, borderRadius: "var(--radius)",
+              border: "1px solid var(--accent)", background: "var(--accent-light)",
+              color: "var(--accent)", cursor: situationLoading ? "wait" : "pointer",
+              fontWeight: 600, whiteSpace: "nowrap",
+            }}
+          >
+            {situationLoading ? "Analyzing..." : "Situation"}
+          </button>
+          {situation && (
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              Generated just now
+            </span>
+          )}
+        </div>
+        {situation && (
+          <div style={{
+            margin: "0 var(--spacing-md)", padding: "var(--spacing-sm) var(--spacing-md)",
+            background: "var(--surface)", borderRadius: "var(--radius)",
+            border: "1px solid var(--border)", fontSize: 12, lineHeight: 1.7,
+            color: "var(--text)", position: "relative", whiteSpace: "pre-wrap",
+            maxHeight: 300, overflowY: "auto",
+          }}>
+            <button
+              onClick={() => setSituation(null)}
+              style={{ position: "absolute", top: 4, right: 8, background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "var(--text-tertiary)", padding: 0, lineHeight: 1 }}
+            >
+              x
+            </button>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Situation
+            </div>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{situation}</ReactMarkdown>
+          </div>
+        )}
+
         {/* AI Insight panel */}
         {aiInsight && (
           <div style={{
@@ -698,7 +758,7 @@ function MessageFlow() {
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
               {t("msg.convSummary")}
             </div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{aiInsight}</div>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiInsight}</ReactMarkdown>
           </div>
         )}
 
@@ -780,6 +840,24 @@ function MessageFlow() {
                       }}>
                         {msg.content || <span style={{ opacity: 0.5, fontStyle: "italic" }}>{t("msg.noContent")}</span>}
                       </div>
+                      {selectedMsg?.id === msg.id && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await invoke("delete_message", { messageId: msg.id, subject: msg.channel }).catch(() => {});
+                            setMessages(prev => prev.filter(m => m.id !== msg.id));
+                            setSelectedMsg(null);
+                          }}
+                          style={{
+                            fontSize: 10, padding: "2px 6px", borderRadius: 4,
+                            border: "1px solid var(--error)", background: "transparent",
+                            color: "var(--error-text)", cursor: "pointer", alignSelf: "flex-start",
+                            marginTop: 2,
+                          }}
+                        >
+                          delete
+                        </button>
+                      )}
                     </div>
                   </div>
                   );

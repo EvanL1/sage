@@ -7,11 +7,13 @@ pub mod pages;
 pub mod profile;
 pub mod providers;
 pub mod reports;
+pub mod email;
 pub mod tasks;
 
 // Re-export everything so main.rs invoke_handler paths don't change
 pub use chat::*;
 pub use dashboard::*;
+pub use email::*;
 pub use feed::*;
 pub use memory::*;
 pub use messages::*;
@@ -134,12 +136,14 @@ pub(crate) async fn extract_and_save_memories(
         };
         tags_map.push((final_content.clone(), tag_list));
 
+        let depth = item["depth"].as_str().map(String::from);
         entries.push(sage_core::memory_integrator::IncomingMemory {
             content: final_content,
             category: category.to_string(),
             source: "chat".to_string(),
             confidence,
             about_person,
+            depth,
         });
     }
 
@@ -165,23 +169,29 @@ pub(crate) async fn extract_and_save_memories(
     } else {
         saved = entries.len();
         for entry in &entries {
-            if let Some(ref person) = entry.about_person {
-                let _ = store.save_memory_about_person(
+            let id = if let Some(ref person) = entry.about_person {
+                store.save_memory_about_person(
                     &entry.category,
                     &entry.content,
                     "chat",
                     entry.confidence,
                     "private",
                     person,
-                );
+                )
             } else {
-                let _ = store.save_memory_with_visibility(
+                store.save_memory_with_visibility(
                     &entry.category,
                     &entry.content,
                     "chat",
                     entry.confidence,
                     "private",
-                );
+                )
+            };
+            if let (Ok(id), Some(ref depth)) = (&id, &entry.depth) {
+                let valid = ["episodic", "semantic", "procedural", "axiom"];
+                if valid.contains(&depth.as_str()) {
+                    let _ = store.update_memory_depth(*id, depth);
+                }
             }
         }
     }

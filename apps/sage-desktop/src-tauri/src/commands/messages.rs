@@ -183,6 +183,64 @@ pub async fn summarize_channel(
     }))
 }
 
+/// 处境纵览 — 通讯维度的实时态势感知
+#[tauri::command]
+pub async fn get_situation_summary(state: State<'_, AppState>) -> Result<String, String> {
+    let lang = state.store.prompt_lang();
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or_else(|| "LLM provider not configured".to_string())?;
+
+    let agent_config = default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    // Gather: recent 48h messages + open tasks
+    let recent_msgs = state.store.get_messages_by_source("email", 30).map_err(map_err)?;
+    let teams_msgs = state.store.get_messages_by_source("teams", 30).map_err(map_err)?;
+    let open_tasks = state.store.list_tasks(Some("open"), 20).map_err(map_err)?;
+    let in_progress = state.store.list_tasks(Some("in_progress"), 10).map_err(map_err)?;
+
+    let mut context = String::new();
+
+    if !recent_msgs.is_empty() || !teams_msgs.is_empty() {
+        context.push_str("## 近期通讯（48小时内）\n");
+        for msg in recent_msgs.iter().chain(teams_msgs.iter()).take(40) {
+            let dir = if msg.direction == "sent" { "→发出" } else { "←收到" };
+            let preview: String = msg.content.as_deref().unwrap_or("").chars().take(100).collect();
+            context.push_str(&format!(
+                "- [{}][{}] {} | {} | {}\n",
+                msg.source, dir, msg.sender, msg.channel, preview
+            ));
+        }
+    }
+
+    if !open_tasks.is_empty() || !in_progress.is_empty() {
+        context.push_str("\n## 当前任务\n");
+        // tuple: (id, content, status, priority, due_date, source, created_at, updated_at, outcome, verification, description)
+        for task in in_progress.iter().chain(open_tasks.iter()).take(15) {
+            context.push_str(&format!("- [{}][{}] {}\n", task.2, task.3, task.1));
+        }
+    }
+
+    if context.is_empty() {
+        return Ok(if lang == "en" { "No recent communications or tasks." } else { "暂无近期通讯和任务。" }.into());
+    }
+
+    let prompt = if lang == "en" {
+        format!("Based on the following recent communications and tasks, generate a situational awareness briefing.\n\
+                 Focus on: who is waiting for a response, what has been handled, what needs attention.\n\
+                 Be concise — bullet points, no fluff. Use the person's perspective (\"you\").\n\n{context}")
+    } else {
+        format!("基于以下近期通讯和任务，生成一份**处境纵览**。\n\
+                 重点关注：谁在等我回复、什么事已处理、什么需要注意。\n\
+                 与任务进度对照：哪些通讯和任务有关联。\n\
+                 简洁——用要点，不废话。站在「我」的视角。\n\n{context}")
+    };
+
+    provider.invoke(&prompt, None).await.map_err(map_err)
+}
+
 /// 获取通信社交图（person ↔ person，基于共同频道通信）
 #[tauri::command]
 pub async fn get_message_graph(state: State<'_, AppState>) -> Result<Value, String> {

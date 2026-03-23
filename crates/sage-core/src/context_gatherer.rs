@@ -109,11 +109,12 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
             sections.push(format!("{email_header}\n{}", lines.join("\n")));
         }
     }
-    // 备选：如果 store 无邮件数据，尝试直接扫描 Outlook
+    // 备选：如果 store 无邮件数据，尝试 IMAP 直扫
     let email_marker = sec(lang, "近期邮件", "Recent Emails");
     if !sections.iter().any(|s| s.contains(email_marker)) {
-        let fallback_email_header = sec(lang, "## 近期邮件（Outlook 直扫）", "## Recent Emails (Outlook direct scan)");
-        match crate::channels::email::scan_recent_emails(14).await {
+        let fallback_email_header = sec(lang, "## 近期邮件（IMAP 直扫）", "## Recent Emails (IMAP scan)");
+        let email_sources = store.get_message_sources_by_type("imap").unwrap_or_default();
+        match crate::channels::email::scan_recent_emails(&email_sources, 14).await {
             Ok(digest) if !digest.is_empty() => {
                 sections.push(format!("{fallback_email_header}\n{digest}"));
             }
