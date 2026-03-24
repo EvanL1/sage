@@ -350,7 +350,7 @@ fn parse_deep_read_response(text: &str) -> Option<FeedDeepRead> {
 }
 
 /// Simple HTML tag stripper using find() for UTF-8 safety.
-fn strip_html_tags(input: &str) -> String {
+pub fn strip_html_tags(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut r = input;
 

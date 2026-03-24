@@ -311,7 +311,7 @@ pub async fn unarchive_feed_item(
     state.store.unarchive_feed_item(observation_id).map_err(map_err)
 }
 
-/// 深入学习 feed 条目：抓取 URL → LLM 提取记忆 → 存入 memories
+/// 深入学习 feed 条目：全方位研究 → LLM 提取记忆 → 存入 memories
 #[tauri::command]
 pub async fn deep_learn_feed_item(
     state: State<'_, AppState>,
@@ -319,7 +319,6 @@ pub async fn deep_learn_feed_item(
     url: String,
     title: String,
 ) -> Result<String, String> {
-    // 标记为学习中
     state.store.mark_feed_learning(observation_id).map_err(map_err)?;
 
     let lang = state.store.prompt_lang();
@@ -330,36 +329,21 @@ pub async fn deep_learn_feed_item(
     let agent_config = super::default_agent_config();
     let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
 
-    // 抓取内容
-    let client = reqwest::Client::builder()
-        .user_agent("Sage/1.0")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
+    let client = build_http_client();
 
-    // GitHub 仓库用 README
-    let fetch_url = if url.starts_with("https://github.com/") {
-        let parts: Vec<&str> = url.trim_end_matches('/').split('/').collect();
-        if parts.len() == 5 {
-            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README.md", parts[3], parts[4])
-        } else {
-            url.clone()
-        }
+    // 根据 URL 类型采集不同深度的内容
+    let content = if is_github_repo(&url) {
+        gather_github_repo(&client, &url).await
     } else {
-        url.clone()
+        gather_web_content(&client, &url, &title).await
     };
 
-    let text = client.get(&fetch_url).send().await
-        .map_err(|e| format!("抓取失败: {e}"))?
-        .text().await
-        .map_err(|e| format!("读取内容失败: {e}"))?;
-
-    let content: String = text.chars().take(5000).collect();
     if content.len() < 50 {
-        return Err("内容太短，无法学习".into());
+        let _ = state.store.unarchive_feed_item(observation_id);
+        return Err("内容太少，无法深入学习".into());
     }
 
-    // 用 memory extraction prompt 提取记忆
+    // LLM 提取记忆
     let existing = state.store.load_memories().unwrap_or_default();
     let existing_text = if existing.is_empty() {
         "（暂无）".to_string()
@@ -369,26 +353,170 @@ pub async fn deep_learn_feed_item(
             .collect::<Vec<_>>().join("\n")
     };
     let conversation = format!(
-        "User: 我想深入了解这个项目/文章：{title}\n\n以下是内容：\n{content}"
+        "User: 我想深入了解：{title}\n\n以下是采集到的详细资料：\n{content}"
     );
     let system = sage_core::prompts::cmd_extract_memories_system(&lang);
     let prompt = sage_core::prompts::cmd_extract_memories_user(&lang, &existing_text, &conversation);
 
     let resp = provider.invoke(&prompt, Some(system)).await.map_err(map_err)?;
-
-    // 从 LLM 返回中提取记忆内容（用于展示）
     let learned_items = parse_memory_items(&resp);
 
     let store_arc = std::sync::Arc::clone(&state.store);
     let (_, count) = super::extract_and_save_memories(&resp, &store_arc).await;
-
-    // 标记为已学习并归档
     let _ = state.store.mark_feed_learned(observation_id);
 
-    // 返回 JSON：count + 具体学到的内容
     Ok(serde_json::to_string(&json!({
         "count": count,
         "title": title,
         "items": learned_items,
     })).unwrap_or_default())
+}
+
+// ─── Deep Learn Helpers ─────────────────────────────────
+
+fn build_http_client() -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .user_agent("Sage/1.0 (Personal AI Advisor)")
+        .timeout(std::time::Duration::from_secs(15));
+    // 中国网络代理
+    for &(key, default_val) in &[
+        ("http_proxy", "http://127.0.0.1:7890"),
+        ("https_proxy", "http://127.0.0.1:7890"),
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            if let Ok(proxy) = reqwest::Proxy::all(&val) {
+                builder = builder.proxy(proxy);
+                break;
+            }
+        } else if let Ok(proxy) = reqwest::Proxy::all(default_val) {
+            builder = builder.proxy(proxy);
+            break;
+        }
+    }
+    builder.build().unwrap_or_default()
+}
+
+fn is_github_repo(url: &str) -> bool {
+    if !url.starts_with("https://github.com/") { return false; }
+    let parts: Vec<&str> = url.trim_end_matches('/').split('/').collect();
+    parts.len() == 5 // github.com / owner / repo
+}
+
+/// GitHub 仓库深度采集：元信息 + 文件树 + README + 关键源码
+async fn gather_github_repo(client: &reqwest::Client, url: &str) -> String {
+    let parts: Vec<&str> = url.trim_end_matches('/').split('/').collect();
+    let (owner, repo) = (parts[3], parts[4]);
+    let mut sections = Vec::new();
+
+    // 1. Repo 元信息（description, stars, language, topics）
+    if let Ok(resp) = client
+        .get(format!("https://api.github.com/repos/{owner}/{repo}"))
+        .header("Accept", "application/vnd.github.v3+json")
+        .send().await
+    {
+        if let Ok(info) = resp.json::<serde_json::Value>().await {
+            let desc = info["description"].as_str().unwrap_or("");
+            let stars = info["stargazers_count"].as_u64().unwrap_or(0);
+            let lang = info["language"].as_str().unwrap_or("unknown");
+            let topics: Vec<&str> = info["topics"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            sections.push(format!(
+                "## 项目概览\n- 名称: {owner}/{repo}\n- 描述: {desc}\n- Stars: {stars}\n- 主语言: {lang}\n- 标签: {}",
+                topics.join(", ")
+            ));
+        }
+    }
+
+    // 2. 文件树结构（仅展示前 80 个条目，截断过深路径）
+    if let Ok(resp) = client
+        .get(format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"))
+        .header("Accept", "application/vnd.github.v3+json")
+        .send().await
+    {
+        if let Ok(tree) = resp.json::<serde_json::Value>().await {
+            if let Some(items) = tree["tree"].as_array() {
+                let paths: Vec<&str> = items.iter()
+                    .filter_map(|it| it["path"].as_str())
+                    .filter(|p| p.matches('/').count() < 4) // 不超过 3 层深
+                    .take(80)
+                    .collect();
+                sections.push(format!("## 文件结构（{}个文件）\n```\n{}\n```", items.len(), paths.join("\n")));
+            }
+        }
+    }
+
+    // 3. README
+    if let Ok(resp) = client
+        .get(format!("https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md"))
+        .send().await
+    {
+        if let Ok(text) = resp.text().await {
+            let readme: String = text.chars().take(3000).collect();
+            if readme.len() > 50 {
+                sections.push(format!("## README\n{readme}"));
+            }
+        }
+    }
+
+    // 4. 关键源码文件（Cargo.toml / package.json / main 入口）
+    let key_files = [
+        "Cargo.toml", "package.json", "pyproject.toml", "go.mod",
+        "src/main.rs", "src/lib.rs", "src/index.ts", "src/index.js",
+        "main.go", "app/main.py",
+    ];
+    for file in key_files {
+        if let Ok(resp) = client
+            .get(format!("https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{file}"))
+            .send().await
+        {
+            if resp.status().is_success() {
+                if let Ok(text) = resp.text().await {
+                    let truncated: String = text.chars().take(1500).collect();
+                    if truncated.len() > 20 {
+                        sections.push(format!("## {file}\n```\n{truncated}\n```"));
+                    }
+                }
+            }
+        }
+    }
+
+    let full = sections.join("\n\n");
+    // 总体截断到 8000 字符（LLM 上下文限制）
+    full.chars().take(8000).collect()
+}
+
+/// 非 GitHub URL：抓取页面内容 + 用 LLM 搜索相关背景
+async fn gather_web_content(client: &reqwest::Client, url: &str, title: &str) -> String {
+    let mut sections = Vec::new();
+
+    // 1. 直接抓取页面内容
+    if let Ok(resp) = client.get(url).send().await {
+        if let Ok(text) = resp.text().await {
+            let clean = sage_core::channels::feed::strip_html_tags(&text);
+            let truncated: String = clean.chars().take(5000).collect();
+            if truncated.len() > 50 {
+                sections.push(format!("## 原文内容\n{truncated}"));
+            }
+        }
+    }
+
+    // 2. 用 DuckDuckGo Lite 搜索相关信息（无需 API key）
+    let raw_query = format!("{title} site:reddit.com OR site:news.ycombinator.com");
+    let query: String = url::form_urlencoded::byte_serialize(raw_query.as_bytes()).collect();
+    if let Ok(resp) = client
+        .get(format!("https://lite.duckduckgo.com/lite/?q={query}"))
+        .send().await
+    {
+        if let Ok(text) = resp.text().await {
+            let clean = sage_core::channels::feed::strip_html_tags(&text);
+            let snippets: String = clean.chars().take(2000).collect();
+            if snippets.len() > 100 {
+                sections.push(format!("## 网络讨论\n{snippets}"));
+            }
+        }
+    }
+
+    let full = sections.join("\n\n");
+    full.chars().take(8000).collect()
 }
