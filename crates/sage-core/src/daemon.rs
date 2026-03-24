@@ -682,6 +682,7 @@ impl Daemon {
 
         let router = self.router.lock().await;
         let agent = router.agent();
+        agent.reset_counter();
         let system = crate::prompts::feed_digest_system(&lang);
         let user = crate::prompts::feed_digest_user(&lang, &lines.join("\n"));
         match agent.invoke(&user, Some(system)).await {

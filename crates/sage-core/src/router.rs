@@ -254,6 +254,7 @@ impl Router {
             return Ok(());
         }
 
+        self.agent.reset_counter();
         let resp = self.agent.invoke(&prompt, Some(&system)).await?;
 
         if let Err(e) = self
@@ -349,6 +350,7 @@ impl Router {
             return Ok(());
         }
 
+        self.agent.reset_counter();
         let resp = self.agent.invoke(&prompt, Some(&system)).await?;
 
         if let Err(e) = self
