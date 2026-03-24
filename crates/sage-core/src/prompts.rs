@@ -48,7 +48,7 @@ define_prompts! {
         "cmd_analyze_message_flow_user", "cmd_analyze_message_flow_system",
         "cmd_summarize_channel", "cmd_dashboard_brief_system",
         "cmd_task_extraction_system", "cmd_verification_system",
-        "feed_filter", "feed_deep_read", "feed_digest_system", "feed_digest_user",
+        "feed_filter", "feed_deep_read", "feed_deep_note", "feed_digest_system", "feed_digest_user",
         "chat_memory_write_protocol", "chat_safety_protocol",
         "page_gen_system",
     ],
@@ -477,6 +477,13 @@ pub fn feed_deep_read_prompt(
         .replace("{project_section}", project_section)
         .replace("{sentence_count}", sentence_count)
         .replace("{truncated}", truncated)
+}
+
+/// 深度阅读笔记 prompt
+pub fn feed_deep_note_prompt(lang: &str, title: &str, content: &str) -> String {
+    p("feed_deep_note", lang)
+        .replace("{title}", title)
+        .replace("{content}", content)
 }
 
 pub fn feed_digest_system(lang: &str) -> &'static str { s("feed_digest_system", lang) }

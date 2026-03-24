@@ -365,14 +365,53 @@ pub async fn deep_learn_feed_item(
     let (_, count) = super::extract_and_save_memories(&resp, &store_arc).await;
     let _ = state.store.mark_feed_learned(observation_id);
 
+    // 生成阅读笔记并存文件
+    let note = generate_and_save_note(&provider, &lang, observation_id, &title, &content).await;
+
     Ok(serde_json::to_string(&json!({
         "count": count,
         "title": title,
         "items": learned_items,
+        "note": note.unwrap_or_default(),
     })).unwrap_or_default())
 }
 
+/// 读取已保存的阅读笔记
+#[tauri::command]
+pub async fn get_feed_note(observation_id: i64) -> Result<String, String> {
+    let path = notes_path(observation_id);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(_) => Ok(String::new()),
+    }
+}
+
 // ─── Deep Learn Helpers ─────────────────────────────────
+
+/// 笔记文件路径：~/.sage/data/notes/{id}.md
+fn notes_path(observation_id: i64) -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(format!(".sage/data/notes/{observation_id}.md"))
+}
+
+/// 调用 LLM 生成阅读笔记并写入文件
+async fn generate_and_save_note(
+    provider: &Box<dyn sage_core::provider::LlmProvider>,
+    lang: &str,
+    observation_id: i64,
+    title: &str,
+    content: &str,
+) -> Option<String> {
+    let prompt = sage_core::prompts::feed_deep_note_prompt(lang, title, content);
+    let note = provider.invoke(&prompt, None).await.ok()?;
+    let path = notes_path(observation_id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, &note);
+    Some(note)
+}
 
 fn build_http_client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder()

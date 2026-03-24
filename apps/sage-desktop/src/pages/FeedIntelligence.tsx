@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-shell";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatTime } from "../utils/time";
@@ -143,6 +143,8 @@ function FeedIntelligence() {
   const [showArchived, setShowArchived] = useState(false);
   const [learningIds, setLearningIds] = useState<Set<number>>(new Set());
   const [learnedResults, setLearnedResults] = useState<Record<number, string[]>>({});
+  const [noteContents, setNoteContents] = useState<Record<number, string>>({});
+  const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
 
   const loadItems = useCallback(() => {
     invoke<FeedItem[]>("get_feed_items", { limit: 100 }).then(setItems).catch(console.error);
@@ -155,6 +157,18 @@ function FeedIntelligence() {
   }, []);
 
   useEffect(() => { loadItems(); loadConfig(); loadDigest(); }, [loadItems, loadConfig, loadDigest]);
+
+  // 加载已学习条目的阅读笔记
+  useEffect(() => {
+    const learnedItems = items.filter(it => it.action === "learned");
+    if (!learnedItems.length) return;
+    learnedItems.forEach(it => {
+      if (noteContents[it.id] !== undefined) return; // 已加载
+      invoke<string>("get_feed_note", { observationId: it.id }).then(note => {
+        if (note) setNoteContents(prev => ({ ...prev, [it.id]: note }));
+      }).catch(() => {});
+    });
+  }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const update = <K extends keyof FeedConfig>(key: K, val: FeedConfig[K]) => {
     if (!config) return;
@@ -202,10 +216,14 @@ function FeedIntelligence() {
       const raw = await invoke<string>("deep_learn_feed_item", {
         observationId: it.id, url: it.url, title: it.title,
       });
-      const result = JSON.parse(raw) as { count: number; items: string[] };
+      const result = JSON.parse(raw) as { count: number; items: string[]; note?: string };
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, action: "learned" } : x));
       if (result.items?.length) {
         setLearnedResults(prev => ({ ...prev, [it.id]: result.items }));
+      }
+      if (result.note) {
+        setNoteContents(prev => ({ ...prev, [it.id]: result.note! }));
+        setExpandedNotes(prev => new Set(prev).add(it.id)); // 新学习的默认展开
       }
     } catch (e) {
       alert(`学习失败: ${e}`);
@@ -459,7 +477,18 @@ function FeedIntelligence() {
                       cursor: it.url ? "pointer" : "default",
                       overflow: "hidden", wordBreak: "break-word",
                     }}
-                      onClick={() => it.url && open(it.url).catch(console.error)}
+                      onClick={async () => {
+                        if (!it.url) return;
+                        const label = `feed-${it.id}`;
+                        try {
+                          const existing = await WebviewWindow.getByLabel(label);
+                          if (existing) { await existing.setFocus(); return; }
+                        } catch { /* window already closed */ }
+                        new WebviewWindow(label, {
+                          url: it.url, title: it.title,
+                          width: 1200, height: 800, resizable: true,
+                        });
+                      }}
                     >
                       {it.title}
                       {it.url && (
@@ -522,6 +551,40 @@ function FeedIntelligence() {
                           {mem}
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {/* Reading note */}
+                  {noteContents[it.id] && (
+                    <div style={{ marginTop: 6 }}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedNotes(prev => {
+                            const n = new Set(prev);
+                            n.has(it.id) ? n.delete(it.id) : n.add(it.id);
+                            return n;
+                          });
+                        }}
+                        style={{
+                          ...S.ghostBtn, fontSize: 10, padding: "2px 6px",
+                          color: "#10b981", display: "flex", alignItems: "center", gap: 4,
+                        }}
+                      >
+                        <span style={{ transform: expandedNotes.has(it.id) ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
+                        📖 阅读笔记
+                      </button>
+                      {expandedNotes.has(it.id) && (
+                        <div style={{
+                          marginTop: 4, padding: "8px 10px",
+                          background: "rgba(16, 185, 129, 0.05)",
+                          border: "1px solid rgba(16, 185, 129, 0.15)",
+                          borderRadius: 6, fontSize: 12, lineHeight: 1.6,
+                          color: "var(--text-secondary)",
+                        }}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{noteContents[it.id]}</ReactMarkdown>
+                        </div>
+                      )}
                     </div>
                   )}
 
