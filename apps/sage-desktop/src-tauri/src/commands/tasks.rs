@@ -225,7 +225,79 @@ pub async fn complete_task(
         );
     }
 
+    // 从用户的 outcome 中提取记忆（后台异步，不阻塞 UI）
+    if let Some(ref outcome_text) = outcome {
+        if !outcome_text.trim().is_empty() {
+            let store = Arc::clone(&state.store);
+            let outcome_text = outcome_text.clone();
+            // 读取 task 标题用于构建上下文
+            let task_title = store
+                .get_task(task_id)
+                .ok()
+                .flatten()
+                .map(|(content, ..)| content)
+                .unwrap_or_default();
+            tauri::async_runtime::spawn(async move {
+                learn_from_task_outcome(store, &task_title, &outcome_text).await;
+            });
+        }
+    }
+
     Ok(())
+}
+
+/// 从任务完成时用户的回答中提取记忆
+async fn learn_from_task_outcome(
+    store: Arc<sage_core::store::Store>,
+    task_title: &str,
+    outcome: &str,
+) {
+    let lang = store.prompt_lang();
+    let discovered = sage_core::discovery::discover_providers(&store);
+    let configs = match store.load_provider_configs() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let Some((info, config)) =
+        sage_core::discovery::select_best_provider(&discovered, &configs)
+    else {
+        return;
+    };
+    let agent_config = super::default_agent_config();
+    let provider =
+        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    // 构造 existing memories 文本
+    let existing = store.load_memories().unwrap_or_default();
+    let existing_text = if existing.is_empty() {
+        "（暂无）".to_string()
+    } else {
+        existing
+            .iter()
+            .take(30)
+            .map(|m| format!("[{}] {} (置信度: {:.1})", m.category, m.content, m.confidence))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // 构造 conversation 上下文
+    let conversation = format!(
+        "Sage: 请处理这个任务：{task_title}\nUser: {outcome}"
+    );
+    let system = sage_core::prompts::cmd_extract_memories_system(&lang);
+    let prompt =
+        sage_core::prompts::cmd_extract_memories_user(&lang, &existing_text, &conversation);
+
+    match provider.invoke(&prompt, Some(system)).await {
+        Ok(resp) => {
+            let (_, count) =
+                super::extract_and_save_memories(&resp, &store).await;
+            if count > 0 {
+                tracing::info!("从任务完成中提取了 {count} 条记忆");
+            }
+        }
+        Err(e) => tracing::warn!("任务记忆提取失败: {e}"),
+    }
 }
 
 #[tauri::command]
