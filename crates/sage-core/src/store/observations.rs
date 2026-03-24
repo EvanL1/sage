@@ -163,6 +163,93 @@ impl Store {
         }
     }
 
+    /// 归档 feed 条目
+    pub fn archive_feed_item(&self, observation_id: i64, category: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT INTO feed_actions (observation_id, action, category)
+             VALUES (?1, 'archived', ?2)
+             ON CONFLICT(observation_id) DO UPDATE SET action = 'archived', category = COALESCE(excluded.category, feed_actions.category)",
+            rusqlite::params![observation_id, category],
+        ).context("归档 feed 条目失败")?;
+        Ok(())
+    }
+
+    /// 取消归档
+    pub fn unarchive_feed_item(&self, observation_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "DELETE FROM feed_actions WHERE observation_id = ?1",
+            rusqlite::params![observation_id],
+        ).context("取消归档失败")?;
+        Ok(())
+    }
+
+    /// 标记 feed 条目为已学习
+    pub fn mark_feed_learned(&self, observation_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT INTO feed_actions (observation_id, action)
+             VALUES (?1, 'learned')
+             ON CONFLICT(observation_id) DO UPDATE SET action = 'learned'",
+            rusqlite::params![observation_id],
+        ).context("标记已学习失败")?;
+        Ok(())
+    }
+
+    /// 标记 feed 条目为学习中
+    pub fn mark_feed_learning(&self, observation_id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT INTO feed_actions (observation_id, action)
+             VALUES (?1, 'learning')
+             ON CONFLICT(observation_id) DO UPDATE SET action = 'learning'",
+            rusqlite::params![observation_id],
+        ).context("标记学习中失败")?;
+        Ok(())
+    }
+
+    /// 获取所有 feed actions（归档/学习状态）
+    pub fn get_feed_actions(&self) -> Result<std::collections::HashMap<i64, (String, Option<String>)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT observation_id, action, category FROM feed_actions"
+        ).context("查询 feed_actions 失败")?;
+        let mut map = std::collections::HashMap::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+        })?;
+        for row in rows {
+            let (id, action, category) = row?;
+            map.insert(id, (action, category));
+        }
+        Ok(map)
+    }
+
+    /// 获取已归档的 observation IDs（用于 digest 排除）
+    pub fn get_archived_feed_ids(&self) -> Result<std::collections::HashSet<i64>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT observation_id FROM feed_actions WHERE action IN ('archived', 'learned')"
+        )?;
+        let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
+    /// 更新 feed 条目的分类
+    pub fn set_feed_category(&self, observation_id: i64, category: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT INTO feed_actions (observation_id, action, category)
+             VALUES (?1, 'archived', ?2)
+             ON CONFLICT(observation_id) DO UPDATE SET category = excluded.category",
+            rusqlite::params![observation_id, category],
+        ).context("设置分类失败")?;
+        Ok(())
+    }
+
     /// 获取某个日期之后的 observations 数量
     pub fn count_observations_since(&self, since: &str) -> Result<usize> {
         let conn = self

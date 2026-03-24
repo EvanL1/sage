@@ -15,6 +15,8 @@ interface FeedItem {
   summary: string;
   idea: string;
   created_at: string;
+  action: string;   // "" | "archived" | "learning" | "learned"
+  category: string | null;
 }
 
 interface FeedConfig {
@@ -138,6 +140,8 @@ function FeedIntelligence() {
   const [digest, setDigest] = useState<string | null>(null);
   const [digestLoading, setDigestLoading] = useState(false);
   const [briefingOpen, setBriefingOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [learningIds, setLearningIds] = useState<Set<number>>(new Set());
 
   const loadItems = useCallback(() => {
     invoke<FeedItem[]>("get_feed_items", { limit: 100 }).then(setItems).catch(console.error);
@@ -183,29 +187,61 @@ function FeedIntelligence() {
     setDigestLoading(false);
   };
 
+  const handleArchive = async (id: number) => {
+    await invoke("archive_feed_item", { observationId: id }).catch(console.error);
+    setItems(prev => prev.map(it => it.id === id ? { ...it, action: "archived" } : it));
+  };
+  const handleUnarchive = async (id: number) => {
+    await invoke("unarchive_feed_item", { observationId: id }).catch(console.error);
+    setItems(prev => prev.map(it => it.id === id ? { ...it, action: "" } : it));
+  };
+  const handleDeepLearn = async (it: FeedItem) => {
+    setLearningIds(prev => new Set(prev).add(it.id));
+    try {
+      const msg = await invoke<string>("deep_learn_feed_item", {
+        observationId: it.id, url: it.url, title: it.title,
+      });
+      setItems(prev => prev.map(x => x.id === it.id ? { ...x, action: "learned" } : x));
+      alert(msg);
+    } catch (e) {
+      alert(`学习失败: ${e}`);
+    }
+    setLearningIds(prev => { const n = new Set(prev); n.delete(it.id); return n; });
+  };
+
   const enabledCount = config
     ? [config.reddit.enabled, config.hackernews.enabled, config.github.enabled, config.arxiv.enabled, config.rss.enabled].filter(Boolean).length
     : 0;
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return items;
-    const q = search.toLowerCase();
-    return items.filter(it =>
-      it.title.toLowerCase().includes(q) || it.insight.toLowerCase().includes(q) ||
-      (it.summary || "").toLowerCase().includes(q)
-    );
-  }, [items, search]);
+    let list = items;
+    // 搜索过滤
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(it =>
+        it.title.toLowerCase().includes(q) || it.insight.toLowerCase().includes(q) ||
+        (it.summary || "").toLowerCase().includes(q)
+      );
+    }
+    // 归档过滤
+    if (!showArchived) {
+      list = list.filter(it => !it.action || it.action === "learning");
+    } else {
+      list = list.filter(it => it.action === "archived" || it.action === "learned");
+    }
+    return list;
+  }, [items, search, showArchived]);
 
   // 按分数降序排列
   const sorted = useMemo(() => [...filtered].sort((a, b) => b.score - a.score), [filtered]);
 
-  // Mini dashboard stats
   const stats = useMemo(() => {
-    const total = items.length;
-    const high = items.filter(it => it.score >= 4).length;
-    const withSummary = items.filter(it => it.summary).length;
-    const avgScore = total > 0 ? (items.reduce((s, it) => s + it.score, 0) / total).toFixed(1) : "—";
-    return { total, high, withSummary, avgScore };
+    const active = items.filter(it => !it.action || it.action === "learning");
+    const archived = items.filter(it => it.action === "archived" || it.action === "learned");
+    const high = active.filter(it => it.score >= 4).length;
+    const learned = items.filter(it => it.action === "learned").length;
+    const avgScore = active.length > 0 ? (active.reduce((s, it) => s + it.score, 0) / active.length).toFixed(1) : "—";
+    return { active: active.length, archived: archived.length, high, learned, avgScore };
   }, [items]);
 
   // Split items into two columns (interleaved by rank to keep both columns balanced)
@@ -224,6 +260,13 @@ function FeedIntelligence() {
         <input type="text" placeholder={t("feed.searchPlaceholder")}
           value={search} onChange={(e) => setSearch(e.target.value)}
           style={{ ...S.input, flex: 1, padding: "8px 12px", fontSize: 13 }} />
+        <button onClick={() => setShowArchived(!showArchived)}
+          style={{
+            ...S.btn(showArchived), fontSize: 11, padding: "6px 10px",
+            opacity: stats.archived > 0 ? 1 : 0.5,
+          }}>
+          {showArchived ? `返回新闻` : `已归档 (${stats.archived})`}
+        </button>
         <button onClick={handlePoll} disabled={polling || enabledCount === 0}
           style={{ ...S.btn(enabledCount > 0 && !polling), opacity: enabledCount === 0 ? 0.5 : 1 }}>
           {polling ? t("feed.fetching") : t("feed.fetchNow")}
@@ -300,9 +343,9 @@ function FeedIntelligence() {
         gap: 12, marginBottom: 16,
       }}>
         {[
-          { label: "今日条目", value: stats.total, icon: "📊", color: "var(--text)" },
+          { label: "未读条目", value: stats.active, icon: "📊", color: "var(--text)" },
           { label: "高分推荐", value: stats.high, icon: "⭐", color: "var(--accent)" },
-          { label: "深度阅读", value: stats.withSummary, icon: "📖", color: "#10b981" },
+          { label: "已学习", value: stats.learned, icon: "🧠", color: "#10b981" },
           { label: "平均分", value: stats.avgScore, icon: "📈", color: "var(--text-secondary)" },
         ].map((s) => (
           <div key={s.label} style={{
@@ -457,8 +500,47 @@ function FeedIntelligence() {
                     </div>
                   )}
 
-                  <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 5 }}>
-                    {formatTime(it.created_at)}
+                  {/* Action bar */}
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    marginTop: 6, paddingTop: 4, borderTop: "1px solid var(--border)",
+                  }}>
+                    <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                      {formatTime(it.created_at)}
+                      {it.action === "learned" && <span style={{ marginLeft: 6, color: "#10b981" }}>🧠 已学习</span>}
+                      {it.action === "archived" && <span style={{ marginLeft: 6 }}>📦 已归档</span>}
+                    </span>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {/* 深入学习 */}
+                      {it.url && it.action !== "learned" && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeepLearn(it); }}
+                          disabled={learningIds.has(it.id)}
+                          style={{
+                            ...S.ghostBtn, fontSize: 10, padding: "2px 6px",
+                            color: learningIds.has(it.id) ? "var(--text-tertiary)" : "#10b981",
+                          }}
+                        >
+                          {learningIds.has(it.id) ? "学习中..." : "🔬 深入学习"}
+                        </button>
+                      )}
+                      {/* 归档/取消归档 */}
+                      {!showArchived ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleArchive(it.id); }}
+                          style={{ ...S.ghostBtn, fontSize: 10, padding: "2px 6px" }}
+                        >
+                          ✓ 已知
+                        </button>
+                      ) : (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleUnarchive(it.id); }}
+                          style={{ ...S.ghostBtn, fontSize: 10, padding: "2px 6px", color: "var(--accent)" }}
+                        >
+                          ↩ 恢复
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}

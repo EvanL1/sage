@@ -21,6 +21,7 @@ regex = "1"
 tauri-plugin-shell = "2.3.5"
 tauri-plugin-deep-link = { workspace = true }
 url = "2"
+reqwest = { workspace = true }
 
 [build-dependencies]
 tauri-build = { workspace = true }

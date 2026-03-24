@@ -647,10 +647,12 @@ impl Daemon {
             return;
         }
 
-        // 构建 digest 输入（与 Tauri command 逻辑一致）
+        // 构建 digest 输入（排除已归档条目）
+        let archived_ids = self.store.get_archived_feed_ids().unwrap_or_default();
         let mut lines = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for row in &items {
+            if archived_ids.contains(&row.id) { continue; }
             let obs = &row.observation;
             let title = if let Some(idx) = obs.rfind('|') {
                 obs[..idx].trim()

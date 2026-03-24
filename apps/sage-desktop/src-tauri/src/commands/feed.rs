@@ -20,6 +20,7 @@ pub async fn get_feed_items(
         .store
         .load_feed_observations(limit.unwrap_or(50))
         .map_err(map_err)?;
+    let actions = state.store.get_feed_actions().unwrap_or_default();
     // 按 URL 去重，保留最新（items 已按 created_at DESC 排序）
     let mut seen_urls = std::collections::HashSet::new();
     let mut result = Vec::new();
@@ -55,6 +56,9 @@ pub async fn get_feed_items(
         if !dedup_key.is_empty() && !seen_urls.insert(dedup_key) {
             continue;
         }
+        let (action, category) = actions.get(&row.id)
+            .map(|(a, c)| (a.as_str(), c.as_deref()))
+            .unwrap_or(("", None));
         result.push(json!({
             "id": row.id,
             "title": title,
@@ -64,6 +68,8 @@ pub async fn get_feed_items(
             "summary": summary,
             "idea": idea,
             "created_at": row.created_at,
+            "action": action,
+            "category": category,
         }));
     }
     Ok(result)
@@ -217,9 +223,11 @@ pub async fn regenerate_feed_digest(state: State<'_, AppState>) -> Result<String
         });
     }
 
+    let archived_ids = state.store.get_archived_feed_ids().unwrap_or_default();
     let mut lines = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for row in &items {
+        if archived_ids.contains(&row.id) { continue; }
         let obs = &row.observation;
         let title = if let Some(idx) = obs.rfind('|') {
             obs[..idx].trim()
@@ -268,4 +276,97 @@ pub async fn regenerate_feed_digest(state: State<'_, AppState>) -> Result<String
     let _ = state.store.save_feed_digest(&today, &content);
 
     Ok(content)
+}
+
+/// 归档 feed 条目
+#[tauri::command]
+pub async fn archive_feed_item(
+    state: State<'_, AppState>,
+    observation_id: i64,
+    category: Option<String>,
+) -> Result<(), String> {
+    state.store.archive_feed_item(observation_id, category.as_deref()).map_err(map_err)
+}
+
+/// 取消归档
+#[tauri::command]
+pub async fn unarchive_feed_item(
+    state: State<'_, AppState>,
+    observation_id: i64,
+) -> Result<(), String> {
+    state.store.unarchive_feed_item(observation_id).map_err(map_err)
+}
+
+/// 深入学习 feed 条目：抓取 URL → LLM 提取记忆 → 存入 memories
+#[tauri::command]
+pub async fn deep_learn_feed_item(
+    state: State<'_, AppState>,
+    observation_id: i64,
+    url: String,
+    title: String,
+) -> Result<String, String> {
+    // 标记为学习中
+    state.store.mark_feed_learning(observation_id).map_err(map_err)?;
+
+    let lang = state.store.prompt_lang();
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or("没有可用的 AI 服务")?;
+    let agent_config = super::default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    // 抓取内容
+    let client = reqwest::Client::builder()
+        .user_agent("Sage/1.0")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
+
+    // GitHub 仓库用 README
+    let fetch_url = if url.starts_with("https://github.com/") {
+        let parts: Vec<&str> = url.trim_end_matches('/').split('/').collect();
+        if parts.len() == 5 {
+            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README.md", parts[3], parts[4])
+        } else {
+            url.clone()
+        }
+    } else {
+        url.clone()
+    };
+
+    let text = client.get(&fetch_url).send().await
+        .map_err(|e| format!("抓取失败: {e}"))?
+        .text().await
+        .map_err(|e| format!("读取内容失败: {e}"))?;
+
+    let content: String = text.chars().take(5000).collect();
+    if content.len() < 50 {
+        return Err("内容太短，无法学习".into());
+    }
+
+    // 用 memory extraction prompt 提取记忆
+    let existing = state.store.load_memories().unwrap_or_default();
+    let existing_text = if existing.is_empty() {
+        "（暂无）".to_string()
+    } else {
+        existing.iter().take(30)
+            .map(|m| format!("[{}] {} (置信度: {:.1})", m.category, m.content, m.confidence))
+            .collect::<Vec<_>>().join("\n")
+    };
+    let conversation = format!(
+        "User: 我想深入了解这个项目/文章：{title}\n\n以下是内容：\n{content}"
+    );
+    let system = sage_core::prompts::cmd_extract_memories_system(&lang);
+    let prompt = sage_core::prompts::cmd_extract_memories_user(&lang, &existing_text, &conversation);
+
+    let resp = provider.invoke(&prompt, Some(system)).await.map_err(map_err)?;
+
+    let store_arc = std::sync::Arc::clone(&state.store);
+    let (_, count) = super::extract_and_save_memories(&resp, &store_arc).await;
+
+    // 标记为已学习并归档
+    let _ = state.store.mark_feed_learned(observation_id);
+
+    Ok(format!("已从「{title}」中提取 {count} 条记忆"))
 }

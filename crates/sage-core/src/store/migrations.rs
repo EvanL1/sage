@@ -583,6 +583,22 @@ impl Store {
             .context("数据库迁移 v36（feed_digests 表）失败")?;
         }
 
+        if version < 37 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS feed_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    observation_id INTEGER NOT NULL UNIQUE,
+                    action TEXT NOT NULL DEFAULT 'archived',
+                    category TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_feed_actions_obs ON feed_actions(observation_id);
+                CREATE INDEX IF NOT EXISTS idx_feed_actions_action ON feed_actions(action);
+                PRAGMA user_version = 37;",
+            )
+            .context("数据库迁移 v37（feed_actions 表）失败")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (
