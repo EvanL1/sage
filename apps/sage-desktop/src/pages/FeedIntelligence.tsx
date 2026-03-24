@@ -142,6 +142,7 @@ function FeedIntelligence() {
   const [briefingOpen, setBriefingOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [learningIds, setLearningIds] = useState<Set<number>>(new Set());
+  const [learnedResults, setLearnedResults] = useState<Record<number, string[]>>({});
 
   const loadItems = useCallback(() => {
     invoke<FeedItem[]>("get_feed_items", { limit: 100 }).then(setItems).catch(console.error);
@@ -198,11 +199,14 @@ function FeedIntelligence() {
   const handleDeepLearn = async (it: FeedItem) => {
     setLearningIds(prev => new Set(prev).add(it.id));
     try {
-      const msg = await invoke<string>("deep_learn_feed_item", {
+      const raw = await invoke<string>("deep_learn_feed_item", {
         observationId: it.id, url: it.url, title: it.title,
       });
+      const result = JSON.parse(raw) as { count: number; items: string[] };
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, action: "learned" } : x));
-      alert(msg);
+      if (result.items?.length) {
+        setLearnedResults(prev => ({ ...prev, [it.id]: result.items }));
+      }
     } catch (e) {
       alert(`学习失败: ${e}`);
     }
@@ -497,6 +501,27 @@ function FeedIntelligence() {
                       borderRadius: "0 6px 6px 0", color: "var(--text)", wordBreak: "break-word",
                     }}>
                       💡 {it.idea}
+                    </div>
+                  )}
+
+                  {/* Learned results */}
+                  {learnedResults[it.id] && (
+                    <div style={{
+                      marginTop: 6, padding: "6px 10px",
+                      background: "rgba(16, 185, 129, 0.08)",
+                      border: "1px solid rgba(16, 185, 129, 0.2)",
+                      borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+                    }}>
+                      <div style={{ fontWeight: 600, color: "#10b981", marginBottom: 4 }}>🧠 学习结果</div>
+                      {learnedResults[it.id].map((mem, i) => (
+                        <div key={i} style={{
+                          color: "var(--text-secondary)", paddingLeft: 8,
+                          borderLeft: "2px solid rgba(16, 185, 129, 0.3)",
+                          marginBottom: 3,
+                        }}>
+                          {mem}
+                        </div>
+                      ))}
                     </div>
                   )}
 

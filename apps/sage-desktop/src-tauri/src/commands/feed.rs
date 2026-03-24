@@ -4,6 +4,20 @@ use tauri::State;
 use super::map_err;
 use crate::AppState;
 
+/// 从 LLM 返回的 sage-memory 块中提取记忆内容文本
+fn parse_memory_items(raw: &str) -> Vec<String> {
+    let marker = "```sage-memory";
+    let Some(start) = raw.find(marker) else { return vec![] };
+    let json_start = start + marker.len();
+    let Some(end) = raw[json_start..].find("```") else { return vec![] };
+    let json_str = raw[json_start..json_start + end].trim();
+    let items: Vec<Value> = serde_json::from_str(json_str).unwrap_or_default();
+    items.iter()
+        .filter_map(|it| it["content"].as_str().map(String::from))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 fn config_path() -> Result<std::path::PathBuf, String> {
     dirs::home_dir()
         .map(|h| h.join(".sage/config.toml"))
@@ -362,11 +376,19 @@ pub async fn deep_learn_feed_item(
 
     let resp = provider.invoke(&prompt, Some(system)).await.map_err(map_err)?;
 
+    // 从 LLM 返回中提取记忆内容（用于展示）
+    let learned_items = parse_memory_items(&resp);
+
     let store_arc = std::sync::Arc::clone(&state.store);
     let (_, count) = super::extract_and_save_memories(&resp, &store_arc).await;
 
     // 标记为已学习并归档
     let _ = state.store.mark_feed_learned(observation_id);
 
-    Ok(format!("已从「{title}」中提取 {count} 条记忆"))
+    // 返回 JSON：count + 具体学到的内容
+    Ok(serde_json::to_string(&json!({
+        "count": count,
+        "title": title,
+        "items": learned_items,
+    })).unwrap_or_default())
 }
