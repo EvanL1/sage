@@ -4,20 +4,7 @@ const behaviorCount = document.getElementById("behavior-count");
 const syncBtn = document.getElementById("sync-btn");
 const lastSync = document.getElementById("last-sync");
 
-// AI 记忆同步相关 DOM
-const memorySyncSection = document.getElementById("memory-sync-section");
-const memorySyncBadge = document.getElementById("memory-sync-badge");
-const memorySyncBtn = document.getElementById("memory-sync-btn");
-const syncResult = document.getElementById("sync-result");
 
-// 支持记忆同步的 AI 平台页面 URL 前缀
-const AI_MEMORY_PAGES = [
-  "https://claude.ai/settings",
-  "https://chatgpt.com/settings",
-  "https://chat.openai.com/settings",
-  "https://gemini.google.com/app/settings",
-  "https://gemini.google.com/settings",
-];
 
 // 追踪相关元素
 const trackingToggle = document.getElementById("tracking-toggle");
@@ -135,34 +122,94 @@ chrome.runtime.sendMessage({ type: "CHECK_STATUS" }, (response) => {
   }
 });
 
-// --- Sync 按钮 ---
+// --- Sync 按钮：检测已打开的 AI 平台标签页，直接同步 ---
+
+// 平台 → 设置页 URL 映射
+const AI_PLATFORMS = [
+  { name: "Claude", base: "https://claude.ai/", settings: "https://claude.ai/settings/capabilities?modal=memory" },
+  { name: "ChatGPT", base: "https://chatgpt.com/", settings: "https://chatgpt.com/settings" },
+  { name: "ChatGPT", base: "https://chat.openai.com/", settings: "https://chat.openai.com/settings" },
+  { name: "Gemini", base: "https://gemini.google.com/", settings: "https://gemini.google.com/app/settings" },
+];
 
 syncBtn.addEventListener("click", () => {
   syncBtn.disabled = true;
-  syncBtn.textContent = "Syncing…";
+  syncBtn.textContent = "同步中…";
 
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0];
-    if (!tab?.id) {
-      syncBtn.disabled = false;
-      syncBtn.textContent = "Sync Now";
+  chrome.tabs.query({}, (tabs) => {
+    // 按平台分组，优先找设置页，否则找任意页（后面导航到设置页）
+    const byPlatform = new Map(); // name → { tabId, isSettings }
+    for (const tab of tabs) {
+      if (!tab?.id || !tab.url) continue;
+      for (const p of AI_PLATFORMS) {
+        if (!tab.url.startsWith(p.base)) continue;
+        const isSettings = tab.url.startsWith(p.settings.split("?")[0]);
+        const existing = byPlatform.get(p.name);
+        // 设置页优先
+        if (!existing || (!existing.isSettings && isSettings)) {
+          byPlatform.set(p.name, { tabId: tab.id, name: p.name, settings: p.settings, isSettings });
+        }
+        break;
+      }
+    }
+
+    if (byPlatform.size === 0) {
+      syncBtn.textContent = "未检测到 AI 平台";
+      setTimeout(() => { syncBtn.textContent = "Sync Now"; syncBtn.disabled = false; }, 2000);
       return;
     }
 
+    const targets = [...byPlatform.values()];
+    syncBtn.textContent = `同步 ${targets.map(t => t.name).join(", ")}…`;
+
+    let done = 0;
+    const results = [];
+    for (const t of targets) {
+      if (t.isSettings) {
+        // 已经在设置页，直接触发
+        _triggerSync(t.tabId, t.name, results, () => { if (++done >= targets.length) _onAllDone(results); });
+      } else {
+        // 导航到设置页，等加载后触发
+        chrome.tabs.update(t.tabId, { url: t.settings }, () => {
+          const onUpdated = (id, info) => {
+            if (id !== t.tabId || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+            // 等 content script 注入 + DOM 渲染
+            setTimeout(() => {
+              _triggerSync(t.tabId, t.name, results, () => { if (++done >= targets.length) _onAllDone(results); });
+            }, 5000);
+          };
+          chrome.tabs.onUpdated.addListener(onUpdated);
+        });
+      }
+    }
+  });
+
+  function _triggerSync(tabId, name, results, cb) {
+    chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => typeof window.__sageSyncMemories === "function" ? window.__sageSyncMemories() : false,
+    }, (res) => {
+      const ok = !chrome.runtime.lastError && res?.[0]?.result;
+      results.push({ name, ok });
+      cb();
+    });
+  }
+
+  function _onAllDone(results) {
     setTimeout(() => {
       chrome.runtime.sendMessage({ type: "CHECK_STATUS" }, (res) => {
-        syncBtn.textContent = "Sync Now";
         if (res?.ok) {
           setConnected(res.data);
           lastSync.textContent = `Last sync: ${formatTime(new Date().toISOString())}`;
           chrome.storage.local.set({ lastSync: new Date().toISOString() });
-        } else {
-          setDisconnected(res?.error);
-          syncBtn.disabled = false;
         }
       });
-    }, 1200);
-  });
+      const ok = [...new Set(results.filter(r => r.ok).map(r => r.name))];
+      syncBtn.textContent = ok.length > 0 ? `✓ ${ok.join(", ")} 已同步` : "未检测到记忆";
+      setTimeout(() => { syncBtn.textContent = "Sync Now"; syncBtn.disabled = false; }, 3000);
+    }, 3000);
+  }
 });
 
 // --- 恢复上次同步时间 ---
@@ -219,85 +266,3 @@ chrome.storage.local.get(["dailyStats"], (result) => {
 // --- 初始化 Teams 状态 ---
 updateTeamsStatus();
 
-// ── AI Memory Sync 功能 ──────────────────────────────────────────────────────
-
-function _isAiMemoryPage(url) {
-  if (!url) return false;
-  return AI_MEMORY_PAGES.some((prefix) => url.startsWith(prefix));
-}
-
-function _showSyncResult(msg, isError) {
-  syncResult.textContent = msg;
-  syncResult.className = isError ? "sync-result sync-result--error" : "sync-result";
-  syncResult.style.display = "block";
-  setTimeout(() => {
-    syncResult.style.display = "none";
-  }, 4000);
-}
-
-// 检查当前标签是否是 AI 平台记忆页面
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  const tab = tabs[0];
-  if (!tab?.url) return;
-
-  if (_isAiMemoryPage(tab.url)) {
-    memorySyncSection.style.display = "flex";
-
-    // 更新 badge 显示平台名
-    const platform = tab.url.includes("claude.ai") ? "Claude"
-      : tab.url.includes("chatgpt.com") || tab.url.includes("openai.com") ? "ChatGPT"
-      : tab.url.includes("gemini.google.com") ? "Gemini"
-      : "AI";
-    memorySyncBadge.textContent = platform + " 设置页";
-    memorySyncBadge.className = "badge badge--connected";
-  }
-});
-
-memorySyncBtn.addEventListener("click", () => {
-  memorySyncBtn.disabled = true;
-  memorySyncBtn.textContent = "同步中…";
-
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0];
-    if (!tab?.id) {
-      memorySyncBtn.disabled = false;
-      memorySyncBtn.textContent = "Sync Memories";
-      return;
-    }
-
-    // 向 content script 发送手动触发指令
-    chrome.scripting.executeScript(
-      {
-        target: { tabId: tab.id },
-        func: () => {
-          if (typeof window.__sageSyncMemories === "function") {
-            return window.__sageSyncMemories();
-          }
-          return false;
-        },
-      },
-      (results) => {
-        memorySyncBtn.disabled = false;
-        memorySyncBtn.textContent = "Sync Memories";
-
-        if (chrome.runtime.lastError) {
-          _showSyncResult("错误: " + chrome.runtime.lastError.message, true);
-          return;
-        }
-
-        const triggered = results?.[0]?.result;
-        if (triggered) {
-          _showSyncResult("记忆提取已触发，稍后将同步到 Sage", false);
-          // 延迟刷新 memory count
-          setTimeout(() => {
-            chrome.runtime.sendMessage({ type: "CHECK_STATUS" }, (res) => {
-              if (res?.ok) setConnected(res.data);
-            });
-          }, 2000);
-        } else {
-          _showSyncResult("未检测到记忆列表，请先打开 AI 设置页面", true);
-        }
-      }
-    );
-  });
-});

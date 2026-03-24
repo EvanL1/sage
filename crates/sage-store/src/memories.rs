@@ -956,7 +956,9 @@ impl Store {
             return Ok(true); // 空内容视为重复，不插入
         }
         // 取前 80 个字符做相似度查询（足够判断语义重叠）
-        let prefix = &content[..content.len().min(80)];
+        let mut end = content.len().min(80);
+        while end < content.len() && !content.is_char_boundary(end) { end += 1; }
+        let prefix = &content[..end];
         let pattern = format!("%{prefix}%");
         let conn = self
             .conn

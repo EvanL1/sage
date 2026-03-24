@@ -139,7 +139,7 @@ export default function NebulaLayout({ data }: { data: DashData }) {
             <span className="nebula-card-label">{TYPE_LABEL[c.category] ?? "INFO"}</span>
             <button className="nebula-pin-btn" onClick={(e) => handlePin(c, e)} title="Pin to Command">📌</button>
           </div>
-          <div className="nebula-card-text"><ReactMarkdown remarkPlugins={[remarkGfm]}>{c.content}</ReactMarkdown></div>
+          <div className="nebula-card-text md-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{c.content}</ReactMarkdown></div>
         </div>
       ))}
     </div>

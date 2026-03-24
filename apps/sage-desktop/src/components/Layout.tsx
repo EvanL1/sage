@@ -42,9 +42,12 @@ function Layout() {
 
   return (
     <div className="app-layout">
+      <div className="titlebar" data-tauri-drag-region>
+        <span className="titlebar-text">{title} <span style={{fontSize:9,opacity:0.4,marginLeft:8}}>v0.1.9</span></span>
+        <ModelSwitcher />
+      </div>
+      <div className="app-body">
       <aside className="sidebar">
-        <div className="sidebar-drag" data-tauri-drag-region />
-
         <div className="sidebar-top">
           <div className="sidebar-logo" title="Sage">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -170,14 +173,11 @@ function Layout() {
       </aside>
 
       <main className="main-content">
-        <div className="titlebar" data-tauri-drag-region>
-          <span className="titlebar-text">{title} <span style={{fontSize:9,opacity:0.4,marginLeft:8}}>v0.1.9</span></span>
-          <ModelSwitcher />
-        </div>
         <div className="main-scroll">
           <Outlet />
         </div>
       </main>
+      </div>
     </div>
   );
 }

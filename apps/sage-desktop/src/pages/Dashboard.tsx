@@ -1,12 +1,10 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { DisplayItem, DashStats, ReportData, DashData } from "../layouts/types";
-import type { ProviderInfo, ProviderConfig } from "../types";
-import { PROVIDER_MODELS, getModelShortName } from "../providerModels";
 import { useLang } from "../LangContext";
 
 import CommandLayout from "../layouts/CommandLayout";
@@ -38,135 +36,6 @@ class LayoutErrorBoundary extends React.Component<
 
 const VALID_LAYOUTS = new Set<string>(LAYOUT_KEYS);
 
-/* ─── Model Selector (Cursor-like) ─── */
-function ModelSelector() {
-  const { t } = useLang();
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [configs, setConfigs] = useState<ProviderConfig[]>([]);
-  const [open, setOpen] = useState(false);
-  const [activeProvider, setActiveProvider] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    Promise.all([
-      invoke<ProviderInfo[]>("discover_providers"),
-      invoke<ProviderConfig[]>("get_provider_configs"),
-    ]).then(([p, c]) => {
-      setProviders(p);
-      setConfigs(c);
-      // Find the first Ready provider by priority
-      const sorted = [...p].sort((a, b) => a.priority - b.priority);
-      const first = sorted.find(pr => pr.status === "Ready");
-      if (first) setActiveProvider(first.id);
-    }).catch(() => {});
-  }, []);
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  const readyProviders = providers.filter(p => p.status === "Ready").sort((a, b) => a.priority - b.priority);
-  const configMap = Object.fromEntries(configs.map(c => [c.provider_id, c]));
-  const activeConfig = activeProvider ? configMap[activeProvider] : null;
-  const activeInfo = readyProviders.find(p => p.id === activeProvider);
-
-  const currentModel = activeConfig?.model || "";
-  const displayName = activeInfo
-    ? `${activeInfo.display_name} · ${getModelShortName(activeInfo.id, currentModel)}`
-    : t("dashboard.noProvider");
-
-  const handleSelectModel = async (providerId: string, modelValue: string) => {
-    const existing = configMap[providerId];
-    await invoke("save_provider_config", {
-      config: {
-        provider_id: providerId,
-        api_key: existing?.api_key ?? null,
-        model: modelValue || null,
-        base_url: existing?.base_url ?? null,
-        enabled: true,
-        priority: existing?.priority ?? null,
-      } satisfies ProviderConfig,
-    });
-    // Update local state
-    setConfigs(prev => {
-      const next = prev.filter(c => c.provider_id !== providerId);
-      next.push({ ...existing!, provider_id: providerId, model: modelValue || null });
-      return next;
-    });
-    setOpen(false);
-  };
-
-  if (providers.length === 0) {
-    return (
-      <div className="model-selector">
-        <button className="model-selector-trigger" disabled style={{ opacity: 0.5 }}>
-          <span className="model-selector-dot" style={{ background: "var(--text-tertiary)" }} />
-          <span className="model-selector-label">{t("loading")}</span>
-        </button>
-      </div>
-    );
-  }
-
-  if (readyProviders.length === 0) {
-    return (
-      <div className="model-selector">
-        <button className="model-selector-trigger" disabled style={{ opacity: 0.6 }}>
-          <span className="model-selector-dot" style={{ background: "var(--warning, #eab308)" }} />
-          <span className="model-selector-label">{t("dashboard.noProvider")}</span>
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="model-selector" ref={ref}>
-      <button className="model-selector-trigger" onClick={() => setOpen(!open)}>
-        <span className="model-selector-dot" />
-        <span className="model-selector-label">{displayName}</span>
-        <span className="model-selector-chevron">{open ? "▴" : "▾"}</span>
-      </button>
-      {open && (
-        <div className="model-selector-dropdown">
-          {readyProviders.map(p => {
-            const isActive = p.id === activeProvider;
-            const models = PROVIDER_MODELS[p.id] || [];
-            const pConfig = configMap[p.id];
-            const pModel = pConfig?.model || "";
-            return (
-              <div key={p.id} className={`msd-provider${isActive ? " active" : ""}`}>
-                <div className="msd-provider-name" onClick={() => setActiveProvider(p.id)}>
-                  {p.display_name}
-                  {isActive && <span className="msd-active-badge">{t("dashboard.providerActive")}</span>}
-                </div>
-                {models.length > 0 && (
-                  <div className="msd-models">
-                    {models.slice(0, 8).map(m => (
-                      <button key={m.value}
-                        className={`msd-model${pModel === m.value ? " selected" : ""}`}
-                        onClick={() => handleSelectModel(p.id, m.value)}>
-                        {m.label.replace(/ \(推荐\)| \(默认\)| \(recommended\)| \(default\)/g, "")}
-                      </button>
-                    ))}
-                    {models.length > 8 && (
-                      <span className="msd-more">+{models.length - 8} more in Settings</span>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Dashboard() {
   const navigate = useNavigate();
   const { t } = useLang();
@@ -175,7 +44,8 @@ function Dashboard() {
     return VALID_LAYOUTS.has(saved) ? saved : "command";
   });
   const [stats, setStats] = useState<DashStats | null>(null);
-  const [depthCounts, setDepthCounts] = useState<Record<string, number>>({});
+  // depthCounts 暂不在 topbar 展示，数据仍加载以备后用
+  const [, setDepthCounts] = useState<Record<string, number>>({});
   const [report, setReport] = useState<{ type: string; data: ReportData } | null>(null);
   const [items, setItems] = useState<DisplayItem[]>([]);
   const [curated, setCurated] = useState<DisplayItem[]>([]);
@@ -263,13 +133,6 @@ function Dashboard() {
 
   const data: DashData = { stats, report, items, curated, reportLoading, triggerReport, openExpanded };
 
-  const depthConfig: { key: string; labelKey: "dashboard.depthBeliefs" | "dashboard.depthJudgments" | "dashboard.depthPatterns" | "dashboard.depthEvents"; color: string }[] = [
-    { key: "axiom",      labelKey: "dashboard.depthBeliefs",   color: "#d97706" },
-    { key: "procedural", labelKey: "dashboard.depthJudgments", color: "#7c3aed" },
-    { key: "semantic",   labelKey: "dashboard.depthPatterns",  color: "#2563eb" },
-    { key: "episodic",   labelKey: "dashboard.depthEvents",    color: "#9ca3af" },
-  ];
-
   const layoutLabels: Record<LayoutKey, string> = {
     command: t("dashboard.layoutCommand"),
     nebula:  t("dashboard.layoutNebula"),
@@ -286,30 +149,7 @@ function Dashboard() {
   return (
     <div className="tl-page">
       <div className="tl-topbar">
-        <div className="tl-stats">
-          {stats && (
-            <>
-              <span className="tl-stat">{stats.memories}<small>{t("dashboard.statMem")}</small></span>
-              <span className="tl-stat">{stats.edges}<small>{t("dashboard.statLink")}</small></span>
-              <span className="tl-stat">{stats.sessions}<small>{t("dashboard.statConv")}</small></span>
-            </>
-          )}
-          {Object.keys(depthCounts).length > 0 && (
-            <span style={{ fontSize: 11, color: "var(--text-tertiary)", marginLeft: "var(--spacing-sm)", display: "flex", alignItems: "center", gap: 4 }}>
-              {depthConfig
-                .filter(({ key }) => depthCounts[key])
-                .map(({ key, labelKey, color }, i, arr) => (
-                  <React.Fragment key={key}>
-                    <span style={{ color }}>{t(labelKey)}</span>
-                    <span style={{ color: "var(--text-tertiary)" }}>{depthCounts[key]}</span>
-                    {i < arr.length - 1 && <span style={{ opacity: 0.4 }}>·</span>}
-                  </React.Fragment>
-                ))}
-            </span>
-          )}
-        </div>
         <div className="tl-actions">
-          <ModelSelector />
           <div className="dash-layout-switcher">
             {LAYOUT_KEYS.map((key) => (
               <button key={key} className={`dash-layout-btn${layout === key ? " active" : ""}`}

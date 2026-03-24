@@ -2451,7 +2451,7 @@ fn test_kv_store_upsert() {
 
 #[test]
 fn test_embed_roundtrip() {
-    use crate::store::memories::{bytes_to_embed, embed_to_bytes};
+    use crate::memories::{bytes_to_embed, embed_to_bytes};
     let original = vec![1.0f32, 0.5, -0.25, 3.14, 0.0];
     let bytes = embed_to_bytes(&original);
     let recovered = bytes_to_embed(&bytes);
@@ -2463,7 +2463,7 @@ fn test_embed_roundtrip() {
 
 #[test]
 fn test_cosine_similarity_identical() {
-    use crate::store::memories::cosine_similarity;
+    use crate::memories::cosine_similarity;
     let v = vec![0.6f32, 0.8, 0.0];
     let sim = cosine_similarity(&v, &v);
     assert!((sim - 1.0).abs() < 1e-6, "相同向量相似度应为 1.0，实际 {sim}");
@@ -2471,7 +2471,7 @@ fn test_cosine_similarity_identical() {
 
 #[test]
 fn test_cosine_similarity_orthogonal() {
-    use crate::store::memories::cosine_similarity;
+    use crate::memories::cosine_similarity;
     let a = vec![1.0f32, 0.0, 0.0];
     let b = vec![0.0f32, 1.0, 0.0];
     let sim = cosine_similarity(&a, &b);

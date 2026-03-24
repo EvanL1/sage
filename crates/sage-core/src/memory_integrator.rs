@@ -140,7 +140,9 @@ impl MemoryIntegrator {
             return Ok(Action::Skipped);
         }
         if is_ephemeral_content(content) {
-            debug!("MemoryIntegrator: ephemeral content, skipping '{}'", &content[..content.len().min(60)]);
+            let mut e = content.len().min(60);
+            while e < content.len() && !content.is_char_boundary(e) { e += 1; }
+            debug!("MemoryIntegrator: ephemeral content, skipping '{}'", &content[..e]);
             return Ok(Action::Skipped);
         }
 

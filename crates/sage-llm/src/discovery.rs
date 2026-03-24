@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use sage_types::{ProviderConfig, ProviderInfo, ProviderKind, ProviderStatus};
 use serde_json::Value;
 
-use crate::store::Store;
+use sage_store::Store;
 
 /// CLI provider 定义：(id, display_name, binary_name, priority)
 const CLI_PROVIDERS: &[(&str, &str, &str, u8)] = &[

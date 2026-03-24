@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { open } from "@tauri-apps/plugin-shell";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatTime } from "../utils/time";
@@ -20,10 +20,10 @@ interface FeedItem {
 }
 
 interface FeedConfig {
-  user_interests: string;
+  user_interests: string[];
   reddit: { enabled: boolean; subreddits: string[]; poll_interval_secs: number };
   hackernews: { enabled: boolean; min_score: number; poll_interval_secs: number };
-  github: { enabled: boolean; trending_language: string; poll_interval_secs: number };
+  github: { enabled: boolean; trending_languages: string[]; poll_interval_secs: number };
   arxiv: { enabled: boolean; categories: string[]; keywords: string[]; poll_interval_secs: number };
   rss: { enabled: boolean; feeds: string[]; poll_interval_secs: number };
 }
@@ -140,6 +140,7 @@ function FeedIntelligence() {
   const [digest, setDigest] = useState<string | null>(null);
   const [digestLoading, setDigestLoading] = useState(false);
   const [briefingOpen, setBriefingOpen] = useState(false);
+  const [sortBy, setSortBy] = useState<"score" | "time">("score");
   const [showArchived, setShowArchived] = useState(false);
   const [learningIds, setLearningIds] = useState<Set<number>>(new Set());
   const [learnedResults, setLearnedResults] = useState<Record<number, string[]>>({});
@@ -245,21 +246,23 @@ function FeedIntelligence() {
         (it.summary || "").toLowerCase().includes(q)
       );
     }
-    // 归档过滤
+    // 归档过滤（learned 留在活跃列表，不算归档）
     if (!showArchived) {
-      list = list.filter(it => !it.action || it.action === "learning");
+      list = list.filter(it => !it.action || it.action === "learning" || it.action === "learned");
     } else {
-      list = list.filter(it => it.action === "archived" || it.action === "learned");
+      list = list.filter(it => it.action === "archived");
     }
     return list;
   }, [items, search, showArchived]);
 
   // 按分数降序排列
-  const sorted = useMemo(() => [...filtered].sort((a, b) => b.score - a.score), [filtered]);
+  const sorted = useMemo(() => [...filtered].sort((a, b) =>
+    sortBy === "score" ? b.score - a.score : b.created_at.localeCompare(a.created_at)
+  ), [filtered, sortBy]);
 
   const stats = useMemo(() => {
-    const active = items.filter(it => !it.action || it.action === "learning");
-    const archived = items.filter(it => it.action === "archived" || it.action === "learned");
+    const active = items.filter(it => !it.action || it.action === "learning" || it.action === "learned");
+    const archived = items.filter(it => it.action === "archived");
     const high = active.filter(it => it.score >= 4).length;
     const learned = items.filter(it => it.action === "learned").length;
     const avgScore = active.length > 0 ? (active.reduce((s, it) => s + it.score, 0) / active.length).toFixed(1) : "—";
@@ -289,6 +292,18 @@ function FeedIntelligence() {
           }}>
           {showArchived ? `返回新闻` : `已归档 (${stats.archived})`}
         </button>
+        <span style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+          <button onClick={() => setSortBy("score")}
+            style={{ fontSize: 10, padding: "4px 8px", border: "none", cursor: "pointer",
+              background: sortBy === "score" ? "var(--accent)" : "transparent",
+              color: sortBy === "score" ? "#fff" : "var(--text-secondary)",
+            }}>分数</button>
+          <button onClick={() => setSortBy("time")}
+            style={{ fontSize: 10, padding: "4px 8px", border: "none", cursor: "pointer",
+              background: sortBy === "time" ? "var(--accent)" : "transparent",
+              color: sortBy === "time" ? "#fff" : "var(--text-secondary)",
+            }}>时间</button>
+        </span>
         <button onClick={handlePoll} disabled={polling || enabledCount === 0}
           style={{ ...S.btn(enabledCount > 0 && !polling), opacity: enabledCount === 0 ? 0.5 : 1 }}>
           {polling ? t("feed.fetching") : t("feed.fetchNow")}
@@ -310,9 +325,16 @@ function FeedIntelligence() {
       {showConfig && config && (
         <div style={{ marginBottom: 20, padding: 16, borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)" }}>
           <div style={S.section}>
-            <label style={S.label}>{t("feed.userInterestsLabel")}</label>
-            <input style={S.input} value={config.user_interests}
-              onChange={(e) => update("user_interests", e.target.value)}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <label style={S.label}>{t("feed.userInterestsLabel")}</label>
+              <button onClick={async () => {
+                try {
+                  const items = await invoke<string[]>("summarize_user_interests");
+                  if (items.length) update("user_interests", items);
+                } catch (e) { console.error(e); }
+              }} style={{ ...S.btn(), fontSize: 10, padding: "2px 8px" }}>从记忆总结</button>
+            </div>
+            <TagInput values={config.user_interests} onChange={(v) => update("user_interests", v)}
               placeholder={t("feed.userInterestsPlaceholder")} />
           </div>
           <div style={S.sourceCard}>
@@ -332,8 +354,8 @@ function FeedIntelligence() {
             <div style={S.toggle}><span style={{ fontSize: 13, fontWeight: 500 }}>GitHub Trending</span>
               <Toggle on={config.github.enabled} onChange={(v) => updateSource("github", "enabled", v)} /></div>
             {config.github.enabled && (<div style={{ marginTop: 8 }}><label style={S.label}>{t("feed.githubLangLabel")}</label>
-              <input style={{ ...S.input, width: 120 }} value={config.github.trending_language}
-                onChange={(e) => updateSource("github", "trending_language", e.target.value)} placeholder="e.g. rust" /></div>)}
+              <TagInput values={config.github.trending_languages}
+                onChange={(v) => updateSource("github", "trending_languages", v)} placeholder="e.g. Rust" /></div>)}
           </div>
           <div style={S.sourceCard}>
             <div style={S.toggle}><span style={{ fontSize: 13, fontWeight: 500 }}>arXiv</span>
@@ -477,18 +499,7 @@ function FeedIntelligence() {
                       cursor: it.url ? "pointer" : "default",
                       overflow: "hidden", wordBreak: "break-word",
                     }}
-                      onClick={async () => {
-                        if (!it.url) return;
-                        const label = `feed-${it.id}`;
-                        try {
-                          const existing = await WebviewWindow.getByLabel(label);
-                          if (existing) { await existing.setFocus(); return; }
-                        } catch { /* window already closed */ }
-                        new WebviewWindow(label, {
-                          url: it.url, title: it.title,
-                          width: 1200, height: 800, resizable: true,
-                        });
-                      }}
+                      onClick={() => it.url && open(it.url).catch(console.error)}
                     >
                       {it.title}
                       {it.url && (
@@ -575,7 +586,7 @@ function FeedIntelligence() {
                         📖 阅读笔记
                       </button>
                       {expandedNotes.has(it.id) && (
-                        <div style={{
+                        <div className="md-content" style={{
                           marginTop: 4, padding: "8px 10px",
                           background: "rgba(16, 185, 129, 0.05)",
                           border: "1px solid rgba(16, 185, 129, 0.15)",

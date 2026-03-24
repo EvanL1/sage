@@ -26,31 +26,7 @@ pub struct MemoryConfig {
     pub base_dir: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct AgentConfig {
-    #[serde(default = "default_provider")]
-    pub provider: String,
-    pub claude_binary: String,
-    #[serde(default)]
-    pub codex_binary: String,
-    #[serde(default)]
-    pub gemini_binary: String,
-    pub default_model: String,
-    pub project_dir: String,
-    pub max_budget_usd: f64,
-    pub permission_mode: String,
-    /// 单个 Agent 实例最多调用 LLM 的次数（护栏，防止无限循环）
-    #[serde(default = "default_max_iterations")]
-    pub max_iterations: usize,
-}
-
-fn default_max_iterations() -> usize {
-    10
-}
-
-fn default_provider() -> String {
-    "claude".into()
-}
+pub use sage_llm::AgentConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelsConfig {
@@ -99,7 +75,7 @@ pub struct ToggleConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct FeedConfig {
     #[serde(default)]
-    pub user_interests: String,
+    pub user_interests: Vec<String>,
     #[serde(default)]
     pub reddit: RedditFeedConfig,
     #[serde(default)]
@@ -131,7 +107,7 @@ pub struct GitHubFeedConfig {
     #[serde(default = "default_feed_poll_7200")]
     pub poll_interval_secs: u64,
     #[serde(default)]
-    pub trending_language: String,
+    pub trending_languages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -214,7 +190,7 @@ impl Default for GitHubFeedConfig {
         Self {
             enabled: false,
             poll_interval_secs: default_feed_poll_7200(),
-            trending_language: String::new(),
+            trending_languages: Vec::new(),
         }
     }
 }
@@ -258,22 +234,6 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             base_dir: "~/.sage/memory".into(),
-        }
-    }
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            provider: "claude".into(),
-            claude_binary: "claude".into(),
-            codex_binary: String::new(),
-            gemini_binary: String::new(),
-            default_model: "sonnet".into(),
-            project_dir: "~".into(),
-            max_budget_usd: 0.50,
-            permission_mode: "bypassPermissions".into(),
-            max_iterations: 10,
         }
     }
 }

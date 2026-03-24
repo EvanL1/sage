@@ -151,6 +151,7 @@ fn main() {
             commands::unarchive_feed_item,
             commands::deep_learn_feed_item,
             commands::get_feed_note,
+            commands::summarize_user_interests,
             commands::generate_page,
             commands::get_custom_page,
             commands::list_custom_pages,

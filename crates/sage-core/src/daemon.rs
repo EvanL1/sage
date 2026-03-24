@@ -126,7 +126,7 @@ impl Daemon {
         });
         let mut feed_channels: Vec<Box<dyn InputChannel>> = Vec::new();
         let feed_cfg = &config.channels.feed;
-        let interests = feed_cfg.user_interests.clone();
+        let interests = feed_cfg.user_interests.join(", ");
         // Personality summary: top identity/personality memories joined, or empty
         let personality = store
             .search_memories("identity personality traits", 5)

@@ -7,7 +7,7 @@ mod bridge;
 mod context;
 mod email;
 mod graph;
-mod memories;
+pub mod memories;
 mod messages;
 mod migrations;
 mod observations;
@@ -18,7 +18,9 @@ mod questions;
 mod reflective;
 mod reports;
 mod sessions;
+pub mod similarity;
 mod suggestions;
+pub mod time_normalizer;
 mod tasks;
 
 #[cfg(test)]

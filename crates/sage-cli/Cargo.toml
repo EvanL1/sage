@@ -8,8 +8,8 @@ name = "sage"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = { workspace = true }
-crossterm = { workspace = true }
+ratatui = { version = "=0.28.1", default-features = false, features = ["crossterm"] }
+crossterm = "=0.28.1"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

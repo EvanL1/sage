@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 sage-types = { workspace = true }
+sage-store = { workspace = true }
+sage-llm = { workspace = true }
+sage-channels = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -12,14 +15,9 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
-rusqlite = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
-imap = { workspace = true }
-mailparse = { workspace = true }
-lettre = { workspace = true }
-native-tls = { workspace = true }
 base64 = { workspace = true }
 urlencoding = { workspace = true }
 open = { workspace = true }

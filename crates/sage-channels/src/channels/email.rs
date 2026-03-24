@@ -116,7 +116,7 @@ impl ImapClient {
             let enc_token = self.config.oauth_access_token.as_deref()
                 .ok_or_else(|| anyhow!("No OAuth2 access token"))?;
             let access_token = deobfuscate(enc_token)?;
-            let sasl_token = crate::oauth2::build_xoauth2_token(&self.config.email, &access_token);
+            let sasl_token = format!("user={}\x01auth=Bearer {access_token}\x01\x01", self.config.email);
             let auth = XOAuth2 { token: STANDARD.encode(sasl_token.as_bytes()) };
             client
                 .authenticate("XOAUTH2", &auth)

@@ -35,43 +35,32 @@ pub async fn get_feed_items(
         .load_feed_observations(limit.unwrap_or(50))
         .map_err(map_err)?;
     let actions = state.store.get_feed_actions().unwrap_or_default();
+
+    // 构建 URL→action 映射：同一 URL 的任意 observation 有 action 都算
+    let mut url_actions: std::collections::HashMap<String, (String, Option<String>)> =
+        std::collections::HashMap::new();
+    for row in &items {
+        if let Some((action, cat)) = actions.get(&row.id) {
+            let url = extract_url(row);
+            if !url.is_empty() {
+                url_actions.entry(url).or_insert_with(|| (action.clone(), cat.clone()));
+            }
+        }
+    }
+
     // 按 URL 去重，保留最新（items 已按 created_at DESC 排序）
     let mut seen_urls = std::collections::HashSet::new();
     let mut result = Vec::new();
     for row in &items {
-        // observation: "title|url" or "title"
-        // raw_data: "url\nscore\ninsight" (after deep_read: "url\nscore\ninsight\nsummary\nidea")
-        let (title, obs_url) = {
-            let obs = &row.observation;
-            if let Some(idx) = obs.rfind('|') {
-                let t = obs[..idx].trim().to_string();
-                let u = obs[idx + 1..].trim().to_string();
-                if u.starts_with("http") { (t, u) } else { (obs.clone(), String::new()) }
-            } else {
-                (obs.clone(), String::new())
-            }
-        };
-        let (url, score, insight, summary, idea) = row
-            .raw_data
-            .as_deref()
-            .map(|s| {
-                let mut parts = s.splitn(5, '\n');
-                let raw_url = parts.next().unwrap_or("").trim().to_string();
-                let sc = parts.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
-                let ins = parts.next().unwrap_or("").trim().to_string();
-                let sum = parts.next().unwrap_or("").trim().to_string();
-                let act = parts.next().unwrap_or("").trim().to_string();
-                (raw_url, sc, ins, sum, act)
-            })
-            .unwrap_or_default();
-        // URL: 优先从 raw_data 取，fallback 到 observation 解析的
-        let url = if !url.is_empty() && url.starts_with("http") { url } else { obs_url };
+        let (title, url, score, insight, summary, idea) = parse_feed_row(row);
         let dedup_key = if !url.is_empty() { url.clone() } else { title.clone() };
         if !dedup_key.is_empty() && !seen_urls.insert(dedup_key) {
             continue;
         }
+        // action：先查当前 id，再查 URL 映射（继承旧 observation 的状态）
         let (action, category) = actions.get(&row.id)
             .map(|(a, c)| (a.as_str(), c.as_deref()))
+            .or_else(|| url_actions.get(&url).map(|(a, c)| (a.as_str(), c.as_deref())))
             .unwrap_or(("", None));
         result.push(json!({
             "id": row.id,
@@ -101,6 +90,84 @@ pub async fn trigger_feed_poll(state: State<'_, AppState>) -> Result<String, Str
     Ok("Feed 抓取已启动…".into())
 }
 
+/// 从 observation 行解析 URL
+fn extract_url(row: &sage_core::store::ObservationRow) -> String {
+    let (_, url, ..) = parse_feed_row(row);
+    url
+}
+
+/// 解析 feed observation 行为结构化字段
+fn parse_feed_row(row: &sage_core::store::ObservationRow) -> (String, String, u8, String, String, String) {
+    let (title, obs_url) = {
+        let obs = &row.observation;
+        if let Some(idx) = obs.rfind('|') {
+            let t = obs[..idx].trim().to_string();
+            let u = obs[idx + 1..].trim().to_string();
+            if u.starts_with("http") { (t, u) } else { (obs.clone(), String::new()) }
+        } else {
+            (obs.clone(), String::new())
+        }
+    };
+    let (raw_url, score, insight, summary, idea) = row
+        .raw_data
+        .as_deref()
+        .map(|s| {
+            let mut parts = s.splitn(5, '\n');
+            let u = parts.next().unwrap_or("").trim().to_string();
+            let sc = parts.next().unwrap_or("3").trim().parse::<u8>().unwrap_or(3);
+            let ins = parts.next().unwrap_or("").trim().to_string();
+            let sum = parts.next().unwrap_or("").trim().to_string();
+            let act = parts.next().unwrap_or("").trim().to_string();
+            (u, sc, ins, sum, act)
+        })
+        .unwrap_or_default();
+    let url = if !raw_url.is_empty() && raw_url.starts_with("http") { raw_url } else { obs_url };
+    (title, url, score, insight, summary, idea)
+}
+
+/// 从记忆中总结用户兴趣
+#[tauri::command]
+pub async fn summarize_user_interests(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let memories = state.store.load_memories().map_err(map_err)?;
+    if memories.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sorted = memories;
+    sorted.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    let top: Vec<String> = sorted.iter()
+        .take(30)
+        .map(|m| format!("[{}] {}", m.category, m.content))
+        .collect();
+
+    let lang = state.store.prompt_lang();
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let Some((info, config)) = sage_core::discovery::select_best_provider(&discovered, &configs) else {
+        let cats: std::collections::BTreeSet<String> = sorted.iter().map(|m| m.category.clone()).collect();
+        return Ok(cats.into_iter().collect());
+    };
+    let agent_config = super::default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let system = match lang.as_str() {
+        "en" => "Extract the user's interest KEYWORDS from their memories. These keywords will be used as search queries to find relevant news/articles. Output one keyword or short phrase per line (max 10, each ≤4 words). Examples: Rust, distributed systems, LLM agents, embedded systems. Do NOT output full sentences or descriptions. Output ONLY the keyword list.",
+        _ => "从用户记忆中提取兴趣关键词。这些关键词将用于搜索相关新闻/文章。每行一个关键词或短语（最多10个，每个不超过4个词）。示例：Rust、分布式系统、LLM agent、嵌入式开发。不要输出完整句子或描述。只输出关键词列表。",
+    };
+    let prompt = format!("用户记忆：\n{}", top.join("\n"));
+    let resp = provider.invoke(&prompt, Some(system)).await.unwrap_or_default();
+    let items: Vec<String> = resp.lines()
+        .map(|l| l.trim().trim_start_matches(|c: char| c == '-' || c == '•' || c.is_ascii_digit() || c == '.').trim().to_string())
+        .filter(|s| !s.is_empty() && s.len() > 2)
+        .take(10)
+        .collect();
+    if items.is_empty() {
+        let cats: std::collections::BTreeSet<String> = sorted.iter().map(|m| m.category.clone()).collect();
+        return Ok(cats.into_iter().collect());
+    }
+    Ok(items)
+}
+
 /// 获取当前 Feed 配置
 #[tauri::command]
 pub async fn get_feed_config() -> Result<Value, String> {
@@ -121,7 +188,7 @@ pub async fn get_feed_config() -> Result<Value, String> {
         },
         "github": {
             "enabled": fc.github.enabled,
-            "trending_language": fc.github.trending_language,
+            "trending_languages": fc.github.trending_languages,
             "poll_interval_secs": fc.github.poll_interval_secs,
         },
         "arxiv": {
@@ -160,9 +227,12 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
         .as_table_mut()
         .ok_or("feed is not a table")?;
 
-    // user_interests
-    if let Some(v) = feed_config.get("user_interests").and_then(|v| v.as_str()) {
-        feed.insert("user_interests".into(), toml::Value::String(v.to_string()));
+    // user_interests (Vec<String>)
+    if let Some(arr) = feed_config.get("user_interests").and_then(|v| v.as_array()) {
+        let items: Vec<toml::Value> = arr.iter()
+            .filter_map(|v| v.as_str().map(|s| toml::Value::String(s.to_string())))
+            .collect();
+        feed.insert("user_interests".into(), toml::Value::Array(items));
     }
 
     // Helper to set a source sub-table
@@ -178,12 +248,6 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
         if let Some(n) = val.get("poll_interval_secs").and_then(|v| v.as_i64()) {
             tbl.insert("poll_interval_secs".into(), toml::Value::Integer(n));
         }
-        // String fields
-        for field in ["trending_language"] {
-            if let Some(s) = val.get(field).and_then(|v| v.as_str()) {
-                tbl.insert(field.into(), toml::Value::String(s.to_string()));
-            }
-        }
         // Integer fields
         for field in ["min_score", "limit"] {
             if let Some(n) = val.get(field).and_then(|v| v.as_i64()) {
@@ -191,7 +255,7 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
             }
         }
         // Array<String> fields
-        for field in ["subreddits", "categories", "keywords", "feeds"] {
+        for field in ["subreddits", "trending_languages", "categories", "keywords", "feeds"] {
             if let Some(arr) = val.get(field).and_then(|v| v.as_array()) {
                 let items: Vec<toml::Value> = arr
                     .iter()

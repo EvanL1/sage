@@ -150,7 +150,11 @@ async fn classify_messages(
         .enumerate()
         .map(|(i, m)| {
             let content = m.content.as_deref().unwrap_or("(no content)");
-            let preview = if content.len() > 200 { &content[..200] } else { content };
+            let preview = if content.len() > 200 {
+                let mut end = 200;
+                while end < content.len() && !content.is_char_boundary(end) { end += 1; }
+                &content[..end]
+            } else { content };
             format!(
                 "[{}] From: {} | Channel: {} | Source: {} | Age: {:.0}h\n{}",
                 i + 1,

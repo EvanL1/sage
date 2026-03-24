@@ -681,7 +681,7 @@ impl InputChannel for GitHubChannel {
             return Ok(Vec::new());
         }
 
-        let items = fetch_github_trending(&self.client, &self.config.trending_language).await?;
+        let items = fetch_github_trending(&self.client, &self.config.trending_languages.join(",")).await?;
         info!("GitHub: fetched {} raw items", items.len());
         let mut events = filter_and_summarise(
             &self.agent,
@@ -704,11 +704,14 @@ impl InputChannel for GitHubChannel {
     }
 }
 
-async fn fetch_github_trending(client: &Client, language: &str) -> Result<Vec<RawFeedItem>> {
-    let lang_part = if language.is_empty() {
+async fn fetch_github_trending(client: &Client, languages: &str) -> Result<Vec<RawFeedItem>> {
+    let lang_part = if languages.is_empty() {
         "stars:>100".to_string()
     } else {
-        format!("stars:>100+language:{language}")
+        // 支持多语言：Rust,Go → stars:>100+language:Rust+language:Go
+        let langs: Vec<&str> = languages.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let lang_q = langs.iter().map(|l| format!("language:{l}")).collect::<Vec<_>>().join("+");
+        format!("stars:>100+{lang_q}")
     };
     let url = format!(
         "https://api.github.com/search/repositories?q={lang_part}&sort=updated&order=desc&per_page=10"

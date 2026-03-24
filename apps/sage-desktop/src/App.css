@@ -172,9 +172,16 @@ body {
 /* ─── App Layout ─── */
 .app-layout {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   position: relative;
   z-index: 1;
+}
+
+.app-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ─── Titlebar (drag region) ─── */
@@ -183,7 +190,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 var(--spacing-lg);
+  padding: 0 var(--spacing-lg) 0 78px; /* 左侧避让 macOS 红绿灯 */
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-subtle);
   user-select: none;
@@ -331,24 +338,18 @@ body {
 /* ─── Sidebar ─── */
 .sidebar {
   width: 56px;
+  flex-shrink: 0;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--sidebar-border);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  z-index: 100;
+  padding-top: 8px;
 }
 
 .sidebar-drag {
-  height: 38px;
-  width: 100%;
-  flex-shrink: 0;
-  cursor: default;
+  display: none;
 }
 
 .sidebar-top {
@@ -453,8 +454,7 @@ body {
 /* ─── Main Content ─── */
 .main-content {
   flex: 1;
-  margin-left: 56px;
-  height: 100vh;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2813,7 +2813,7 @@ body {
 .tl-topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 10px 20px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-subtle);
@@ -3629,4 +3629,56 @@ body {
   margin: 12px 0;
 }
 
+/* ─── Shared Markdown Content ─── */
+.md-content h1, .md-content h2, .md-content h3, .md-content h4 {
+  font-size: inherit;
+  font-weight: 600;
+  margin: 8px 0 4px;
+  line-height: 1.4;
+}
+.md-content h1:first-child, .md-content h2:first-child { margin-top: 0; }
+.md-content p { margin: 4px 0; }
+.md-content p:last-child { margin-bottom: 0; }
+.md-content ul, .md-content ol { padding-left: 18px; margin: 4px 0; }
+.md-content li { margin: 2px 0; }
+.md-content strong { font-weight: 600; }
+.md-content code {
+  font-size: 0.9em;
+  background: var(--surface-hover);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.md-content pre {
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  margin: 4px 0;
+}
+.md-content table {
+  font-size: 12px;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0;
+}
+.md-content th, .md-content td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  text-align: left;
+}
+.md-content th { font-weight: 600; }
+.md-content hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+.md-content blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  margin: 6px 0;
+  color: var(--text-secondary);
+}
+.md-content img { max-width: 100%; height: auto; }
 

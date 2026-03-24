@@ -736,7 +736,7 @@ function MessageFlow() {
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
               Situation
             </div>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{situation}</ReactMarkdown>
+            <div className="md-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{situation}</ReactMarkdown></div>
           </div>
         )}
 
@@ -758,7 +758,7 @@ function MessageFlow() {
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
               {t("msg.convSummary")}
             </div>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiInsight}</ReactMarkdown>
+            <div className="md-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{aiInsight}</ReactMarkdown></div>
           </div>
         )}
 

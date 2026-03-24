@@ -15,7 +15,7 @@ export default function ClassicLayout({ data, navigate }: { data: DashData; navi
       {data.report && (
         <div className="card" style={{ cursor: "pointer" }} onClick={() => data.openExpanded({ content: data.report!.data.content, category: "report", ref_id: data.report!.type })}>
           <div className="card-title">{reportLabel(data.report.type)}</div>
-          <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+          <div className="md-content" style={{ fontSize: 13, lineHeight: 1.6, color: "var(--text-secondary)" }}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.report.data.content.slice(0, 500)}</ReactMarkdown>
           </div>
         </div>

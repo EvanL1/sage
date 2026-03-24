@@ -9,7 +9,13 @@
     "128": "icons/icon128.png"
   },
   "permissions": ["storage", "activeTab", "tabs", "webNavigation", "scripting"],
-  "host_permissions": ["http://127.0.0.1:18522/*"],
+  "host_permissions": [
+    "http://127.0.0.1:18522/*",
+    "https://claude.ai/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://gemini.google.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -22,7 +28,7 @@
     {
       "matches": ["https://claude.ai/settings*"],
       "js": ["content-scripts/claude-memory.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
@@ -32,7 +38,7 @@
     {
       "matches": ["https://chatgpt.com/settings*", "https://chat.openai.com/settings*"],
       "js": ["content-scripts/chatgpt-memory.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": ["https://gemini.google.com/*"],
@@ -42,7 +48,7 @@
     {
       "matches": ["https://gemini.google.com/app/settings*", "https://gemini.google.com/settings*"],
       "js": ["content-scripts/gemini-memory.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": [

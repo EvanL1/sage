@@ -9,9 +9,11 @@ export function renderNodes(nodes: PageNode[]): React.ReactNode {
     if (node.kind === "text") {
       if (!node.content.trim()) return null;
       return (
-        <ReactMarkdown key={i} remarkPlugins={[remarkGfm]}>
-          {node.content}
-        </ReactMarkdown>
+        <div key={i} className="md-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {node.content}
+          </ReactMarkdown>
+        </div>
       );
     }
 
