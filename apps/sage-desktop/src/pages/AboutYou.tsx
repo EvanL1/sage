@@ -135,32 +135,9 @@ function DepthMemoryItem({
     }
   };
 
-  const itemStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "flex-start",
-    gap: 8,
-    padding: "8px 0",
-    borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
-    opacity: deleting ? 0.4 : 1,
-    transition: "opacity 0.2s",
-  };
-
-  const contentStyle: React.CSSProperties = {
-    flex: 1,
-    fontSize,
-    lineHeight: 1.5,
-  };
-
-  const categoryStyle: React.CSSProperties = {
-    fontSize: 11,
-    color: "var(--text-secondary, #9ca3af)",
-    marginLeft: 6,
-    fontWeight: 400,
-  };
-
   return (
-    <div style={itemStyle}>
-      <div style={contentStyle}>
+    <div className={`about-memory${deleting ? " about-memory-deleting" : ""}`}>
+      <div className="about-memory-content" style={{ fontSize }}>
         <div
           style={{ cursor: isLong ? "pointer" : "default" }}
           onClick={isLong ? () => setExpanded((v) => !v) : undefined}
@@ -187,7 +164,7 @@ function DepthMemoryItem({
             </span>
           )}
         </div>
-        <span style={categoryStyle}>{memory.category}</span>
+        <span className="about-memory-source">{memory.category}</span>
         {/* confidence bar */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
           <div

@@ -249,7 +249,9 @@ impl Router {
         let prompt = build_report_prompt(&lang, event.title.as_str(), &time_header, &ctx_section, &event.body);
 
         // 跳过 12 小时内已有相同建议的 Claude 调用（节省 API 费用）
-        if self.store.has_recent_suggestion(&event.source, &prompt) {
+        // 优先按标题去重（标题稳定），fallback 到 prompt 精确匹配
+        if self.store.has_recent_suggestion_by_title(&event.source, &event.title)
+            || self.store.has_recent_suggestion(&event.source, &prompt) {
             info!("Skipping duplicate scheduled event: {}", event.title);
             return Ok(());
         }

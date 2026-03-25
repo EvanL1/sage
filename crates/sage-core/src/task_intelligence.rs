@@ -102,6 +102,11 @@ fn parse_and_save_new_task_signals(response: &str, store: &Store, importance: f3
                 "new_task", None, &title, &evidence, Some(&task_content), importance,
             )?;
             if id > 0 {
+                // 自动创建任务 + 接受信号
+                let task_id = store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence));
+                if task_id.is_ok() {
+                    let _ = store.update_signal_status(id, "accepted");
+                }
                 count += 1;
             }
         }
@@ -315,6 +320,11 @@ fn parse_and_save_signals(response: &str, store: &Store) -> Result<usize> {
             let id =
                 store.save_task_signal("new_task", None, &title, &evidence, Some(&task_content))?;
             if id > 0 {
+                // 自动创建任务 + 接受信号
+                let task_id = store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence));
+                if task_id.is_ok() {
+                    let _ = store.update_signal_status(id, "accepted");
+                }
                 count += 1;
             }
         }

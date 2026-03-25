@@ -40,6 +40,7 @@ const translations = {
   "tasks.checkboxDone": { zh: "完成（右键：取消）", en: "Done (right-click: Cancel)" },
   "tasks.checkboxReopen": { zh: "重新打开", en: "Reopen" },
   "tasks.cancelled": { zh: "已取消", en: "Cancelled" },
+  "tasks.aiSuggestions": { zh: "AI 建议", en: "AI Suggestions" },
 
   // Task form
   "taskForm.newTask": { zh: "新建任务", en: "New Task" },
@@ -138,6 +139,18 @@ const translations = {
   "dashboard.corrFactPlaceholder": { zh: "实际正确情况是", en: "The actual correct fact" },
   "dashboard.corrHintPlaceholder": { zh: "关键词标签（可选）", en: "Keyword hint (optional)" },
   "dashboard.submitCorrection": { zh: "提交校准", en: "Submit Correction" },
+
+  // Interactive report
+  "report.confirmTimeline": { zh: "准确", en: "Accurate" },
+  "report.correctTimeline": { zh: "有误", en: "Incorrect" },
+  "report.confirmed": { zh: "已确认", en: "Confirmed" },
+  "report.corrected": { zh: "已标记", en: "Marked" },
+  "report.patternAccurate": { zh: "准确", en: "Accurate" },
+  "report.patternInaccurate": { zh: "不准", en: "Inaccurate" },
+  "report.createTask": { zh: "创建任务", en: "Create Task" },
+  "report.taskCreated": { zh: "已创建", en: "Created" },
+  "report.correctionPlaceholder": { zh: "实际情况是…", en: "The actual situation is…" },
+  "report.submitCorrection": { zh: "提交", en: "Submit" },
 
   // Widget — report
   "widget.reportEmpty": { zh: "点 AM / PM / WK 生成报告", en: "Click AM / PM / WK to generate report" },

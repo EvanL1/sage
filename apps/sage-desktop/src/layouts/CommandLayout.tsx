@@ -1,12 +1,11 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { invoke } from "@tauri-apps/api/core";
 import { GridLayout, type LayoutItem, type Layout } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { DashData, TYPE_COLORS, TYPE_LABEL, reportLabel, preview } from "./types";
 import { loadPinned, togglePin, isPinned as checkPinned, onPinChange, unpinItem, type PinnedItem } from "./pinStore";
 import { useLang } from "../LangContext";
+import InteractiveReport from "../components/InteractiveReport";
 
 /* ═══ Widget Registry ═══ */
 
@@ -87,9 +86,12 @@ function ReportWidget({ data }: { data: DashData }) {
     </div>
     <div className="cmd-card-body">
       {data.report ? (
-        <div className="cmd-report-md" onClick={() => data.openExpanded({
-          content: data.report!.data.content, category: "report", ref_id: data.report!.type })}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.report.data.content}</ReactMarkdown>
+        <div className="cmd-report-md" onClick={(e) => {
+          // Only open expanded if clicking outside interactive buttons
+          if ((e.target as HTMLElement).closest(".ir-btn, .ir-badge, .ir-correction-input")) return;
+          data.openExpanded({ content: data.report!.data.content, category: "report", ref_id: data.report!.type });
+        }}>
+          <InteractiveReport content={data.report.data.content} reportType={data.report.type} />
         </div>
       ) : <span className="cmd-empty">{t("widget.reportEmpty")}</span>}
     </div>

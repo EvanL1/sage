@@ -17,7 +17,23 @@ impl Store {
         ).is_ok()
     }
 
+    /// 按事件标题去重（12 小时内，response 包含标题关键词）
+    pub fn has_recent_suggestion_by_title(&self, event_source: &str, title: &str) -> bool {
+        let conn = self.conn.lock().ok();
+        let Some(conn) = conn else { return false };
+        let threshold = (chrono::Local::now() - chrono::Duration::hours(12)).to_rfc3339();
+        // 用标题前 20 字符做模糊匹配（避免时间戳等变化导致的不匹配）
+        let key: String = title.chars().take(20).collect();
+        let pattern = format!("%{}%", key.replace('%', "").replace('_', ""));
+        conn.query_row(
+            "SELECT 1 FROM suggestions WHERE event_source = ?1 AND response LIKE ?2 AND created_at > ?3 LIMIT 1",
+            rusqlite::params![event_source, pattern, threshold],
+            |_| Ok(()),
+        ).is_ok()
+    }
+
     /// 插入建议记录，返回自增 id
+    /// 对 heartbeat 类型：同天同 prompt 前缀只保留一条（upsert）
     pub fn record_suggestion(
         &self,
         event_source: &str,
@@ -29,18 +45,36 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
 
-        // Store 级别去重：同源 + 同 prompt 在 12 小时内不重复创建
-        let threshold = (chrono::Local::now() - chrono::Duration::hours(12)).to_rfc3339();
-        let existing_id: Option<i64> = conn.query_row(
-            "SELECT id FROM suggestions WHERE event_source = ?1 AND prompt = ?2 AND created_at > ?3 ORDER BY id DESC LIMIT 1",
-            rusqlite::params![event_source, prompt, threshold],
-            |row| row.get(0),
-        ).ok();
-        if let Some(id) = existing_id {
-            return Ok(id);
+        let now = chrono::Local::now().to_rfc3339();
+        let today = &now[..10]; // "2026-03-25"
+
+        // heartbeat 类型：同天同源只保留一条，重复生成时更新内容
+        if event_source == "heartbeat" {
+            let existing_id: Option<i64> = conn.query_row(
+                "SELECT id FROM suggestions WHERE event_source = 'heartbeat' AND prompt = ?1 AND created_at >= ?2 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![prompt, format!("{today}T00:00:00")],
+                |row| row.get(0),
+            ).ok();
+            if let Some(id) = existing_id {
+                conn.execute(
+                    "UPDATE suggestions SET response = ?1, created_at = ?2 WHERE id = ?3",
+                    rusqlite::params![response, now, id],
+                ).context("更新 heartbeat suggestion 失败")?;
+                return Ok(id);
+            }
+        } else {
+            // 非 heartbeat：12 小时去重
+            let threshold = (chrono::Local::now() - chrono::Duration::hours(12)).to_rfc3339();
+            let existing_id: Option<i64> = conn.query_row(
+                "SELECT id FROM suggestions WHERE event_source = ?1 AND prompt = ?2 AND created_at > ?3 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![event_source, prompt, threshold],
+                |row| row.get(0),
+            ).ok();
+            if let Some(id) = existing_id {
+                return Ok(id);
+            }
         }
 
-        let now = chrono::Local::now().to_rfc3339();
         conn.execute(
             "INSERT INTO suggestions (event_source, prompt, response, created_at) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![event_source, prompt, response, now],

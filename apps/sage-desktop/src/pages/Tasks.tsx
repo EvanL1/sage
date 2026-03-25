@@ -454,6 +454,26 @@ export default function Tasks() {
     return m;
   }, [signals]);
 
+  const newTaskSignals = useMemo(() => signals.filter(s => s.signalType === "new_task"), [signals]);
+
+  const acceptNewTask = async (signal: TaskSignal) => {
+    try {
+      await invoke<number>("create_task", {
+        content: signal.title,
+        source: "ai_signal",
+        sourceId: null,
+        priority: signal.suggestedOutcome === "high" ? "high" : "normal",
+        dueDate: null,
+        description: signal.evidence,
+      });
+      await invoke("accept_signal", { signalId: signal.id });
+      load();
+      loadSignals();
+    } catch (e) {
+      console.error("acceptNewTask:", e);
+    }
+  };
+
   const generateFromReport = (rt: string) => {
     setGenerating(true);
     setGenMsg(`${t("tasks.extracting")} ${rt}...`);
@@ -554,6 +574,27 @@ export default function Tasks() {
               </button>
             ))}
           </div>
+
+          {newTaskSignals.length > 0 && (
+            <div className="tasks-ai-signals">
+              <div className="tasks-ai-signals-header">
+                <span className="tasks-ai-signals-icon">✨</span>
+                <span>{t("tasks.aiSuggestions")} ({newTaskSignals.length})</span>
+              </div>
+              {newTaskSignals.map(sig => (
+                <div key={sig.id} className="tasks-ai-signal-card">
+                  <div className="tasks-ai-signal-content">
+                    <div className="tasks-ai-signal-title">{sig.title}</div>
+                    {sig.evidence && <div className="tasks-ai-signal-evidence">{sig.evidence}</div>}
+                  </div>
+                  <div className="tasks-ai-signal-actions">
+                    <button className="ir-btn ir-btn-task" onClick={() => acceptNewTask(sig)}>+ {t("report.createTask")}</button>
+                    <button className="ir-btn" onClick={() => dismissSignal(sig.id)}>✗</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {groups ? (
             <div className="tasks-sections">

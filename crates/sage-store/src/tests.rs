@@ -692,12 +692,13 @@ fn test_save_and_load_report() {
     store.save_report("weekly", "更新的周报").unwrap();
     store.save_report("morning", "早间 brief").unwrap();
 
+    // 同天同类型 upsert：第二次 save 应更新而非新增
     let latest = store.get_latest_report("weekly").unwrap();
     assert!(latest.is_some());
     assert_eq!(latest.unwrap().content, "更新的周报");
 
     let all = store.get_reports("weekly", 10).unwrap();
-    assert_eq!(all.len(), 2);
+    assert_eq!(all.len(), 1); // 同天只保留一条
 }
 
 #[test]

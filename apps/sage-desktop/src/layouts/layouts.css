@@ -164,6 +164,8 @@
 .cmd-report-md th, .cmd-report-md td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
 .cmd-report-md hr { border: none; border-top: 1px solid var(--border-subtle); margin: 8px 0; }
 .cmd-report-md strong { color: var(--text); }
+.cmd-report-md a { color: var(--accent); text-decoration: none; }
+.cmd-report-md li { margin: 2px 0; color: var(--text-secondary); }
 
 /* Activity feed */
 .cmd-feed-row {

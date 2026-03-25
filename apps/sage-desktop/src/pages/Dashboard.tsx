@@ -10,6 +10,7 @@ import { useLang } from "../LangContext";
 import CommandLayout from "../layouts/CommandLayout";
 import NebulaLayout from "../layouts/NebulaLayout";
 import ClassicLayout from "../layouts/ClassicLayout";
+import InteractiveReport from "../components/InteractiveReport";
 
 type Layout = "command" | "nebula" | "classic";
 
@@ -221,7 +222,11 @@ function Dashboard() {
               </div>
             )}
             <div className="subpage-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{expandedFull || expanded.content}</ReactMarkdown>
+              {expanded.category === "report" ? (
+                <InteractiveReport content={expandedFull || expanded.content} reportType={expanded.ref_id ?? "evening"} />
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{expandedFull || expanded.content}</ReactMarkdown>
+              )}
             </div>
           </div>
         </div>, document.body

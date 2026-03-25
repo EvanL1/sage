@@ -79,6 +79,7 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
         let recent: Vec<_> = email_msgs
             .iter()
             .filter(|m| m.timestamp > cutoff || m.created_at > cutoff)
+            .filter(|m| m.action_state != "resolved" && m.action_state != "expired")
             .collect();
         if !recent.is_empty() {
             let lines: Vec<String> = recent
@@ -186,10 +187,13 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
         sections.push(format!("{coach_header}\n{}", lines.join("\n")));
     }
 
-    // 上次 evening review 报告
+    // 上次 evening review 报告（仅 3 天内有效，避免注入过时回顾）
     if let Ok(Some(report)) = store.get_latest_report("evening") {
-        let eve_header = sec(lang, "## 昨日晚间回顾", "## Yesterday's Evening Review");
-        sections.push(format!("{eve_header}\n{}", report.content));
+        let three_days_ago = (chrono::Local::now() - chrono::Duration::days(3)).to_rfc3339();
+        if report.created_at > three_days_ago {
+            let eve_header = sec(lang, "## 昨日晚间回顾", "## Yesterday's Evening Review");
+            sections.push(format!("{eve_header}\n{}", report.content));
+        }
     }
 
     // Feed 信息洞察（过去 24h 高分项）

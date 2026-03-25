@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import FeedbackButtons, { actionToFeedback } from "../components/FeedbackButtons";
+import InteractiveReport from "../components/InteractiveReport";
 import type { Suggestion } from "../types";
 import { formatDate, formatTime } from "../utils/time";
 import { sourceLabel } from "../utils/labels";
@@ -118,7 +119,13 @@ function History() {
                       </button>
                     </div>
                   </div>
-                  <div className="suggestion-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{s.response}</ReactMarkdown></div>
+                  <div className="suggestion-body">
+                    {s.event_source === "heartbeat" ? (
+                      <InteractiveReport content={s.response} reportType="evening" />
+                    ) : (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.response}</ReactMarkdown>
+                    )}
+                  </div>
                   <FeedbackButtons suggestionId={s.id} feedback={s.feedback} onSubmit={handleFeedback} />
                 </div>
               ))}

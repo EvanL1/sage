@@ -5,19 +5,39 @@ use sage_types::Report;
 use super::Store;
 
 impl Store {
-    /// 保存报告，返回自增 id
+    /// 保存报告（同一天同类型只保留一条，重复生成时更新内容）
     pub fn save_report(&self, report_type: &str, content: &str) -> Result<i64> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let now = chrono::Local::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO reports (report_type, content, created_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![report_type, content, now],
-        )
-        .context("保存 report 失败")?;
-        Ok(conn.last_insert_rowid())
+        let today = &now[..10]; // "2026-03-25"
+
+        // 查找今天是否已有同类型报告
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM reports WHERE report_type = ?1 AND created_at >= ?2 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![report_type, format!("{today}T00:00:00")],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(id) = existing {
+            conn.execute(
+                "UPDATE reports SET content = ?1, created_at = ?2 WHERE id = ?3",
+                rusqlite::params![content, now, id],
+            )
+            .context("更新 report 失败")?;
+            Ok(id)
+        } else {
+            conn.execute(
+                "INSERT INTO reports (report_type, content, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![report_type, content, now],
+            )
+            .context("保存 report 失败")?;
+            Ok(conn.last_insert_rowid())
+        }
     }
 
     /// 获取指定类型的最新一条报告
