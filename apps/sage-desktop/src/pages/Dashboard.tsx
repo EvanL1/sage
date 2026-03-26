@@ -70,6 +70,10 @@ function Dashboard() {
     });
   };
 
+  const [showFirstRunCard, setShowFirstRunCard] = useState(() =>
+    localStorage.getItem("first_run_card_dismissed") !== "true"
+  );
+
   useEffect(() => {
     invoke<{ status: string; has_profile: boolean }>("get_system_status")
       .then((s) => { if (!s.has_profile) navigate("/welcome", { replace: true }); })
@@ -174,6 +178,18 @@ function Dashboard() {
           <button className="tl-trigger tl-chat-btn" onClick={() => navigate("/chat")}>{t("dashboard.chat")}</button>
         </div>
       </div>
+
+      {showFirstRunCard && (
+        <div style={{ margin: "8px 16px 0", padding: "12px 16px", background: "var(--surface-active)", border: "1px solid var(--border-subtle)", borderRadius: 8, display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>{t("dashboard.firstRunTitle")}</div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "pre-line" }}>{t("dashboard.firstRunBody")}</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" style={{ flexShrink: 0, fontSize: 12 }} onClick={() => { setShowFirstRunCard(false); localStorage.setItem("first_run_card_dismissed", "true"); }}>
+            {t("dashboard.firstRunDismiss")}
+          </button>
+        </div>
+      )}
 
       <LayoutErrorBoundary key={layout} onReset={() => { setLayout("command"); localStorage.setItem("dash_layout", "command"); }}
         errorLabel={t("dashboard.layoutError")} resetLabel={t("dashboard.resetLayout")}>

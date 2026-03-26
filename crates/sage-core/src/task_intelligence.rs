@@ -212,12 +212,16 @@ pub async fn detect_task_signals(agent: &Agent, store: &Store) -> Result<usize> 
         )
     };
 
+    // 加载已学习的校准规则，注入 prompt
+    let learned_rules = load_learned_rules(store);
+
     let lang = store.prompt_lang();
     let prompt = prompts::task_intelligence_user_template(&lang)
         .replace("{tasks_text}", &tasks_text)
         .replace("{actions_text}", &actions_text)
         .replace("{pending_section}", &pending_section)
-        .replace("{done_section}", &done_section);
+        .replace("{done_section}", &done_section)
+        .replace("{learned_rules}", &learned_rules);
     let system = prompts::task_intelligence_system(&lang);
     let resp = agent.invoke(&prompt, Some(system)).await?;
     let response = resp.text;
@@ -236,6 +240,11 @@ pub async fn detect_task_signals(agent: &Agent, store: &Store) -> Result<usize> 
     if let Some(new_threshold) = calibrate_threshold(accepted, total, current) {
         store.set_importance_threshold(new_threshold)?;
         info!("Importance threshold calibrated: {current:.2} → {new_threshold:.2}");
+    }
+
+    // 自我进化：检测 dismiss 模式，触发规则反思
+    if let Err(e) = self_reflect_on_dismissals(agent, store).await {
+        warn!("Task self-reflection failed: {e}");
     }
 
     if new_count > 0 {
@@ -331,6 +340,81 @@ fn parse_and_save_signals(response: &str, store: &Store) -> Result<usize> {
     }
 
     Ok(count)
+}
+
+/// 加载 task 相关的校准规则，格式化为 prompt 段落
+fn load_learned_rules(store: &Store) -> String {
+    let rules = store.get_memories_by_category("calibration_task").unwrap_or_default();
+    if rules.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = rules
+        .iter()
+        .map(|m| format!("- {}", m.content.trim()))
+        .collect();
+    format!(
+        "\nLEARNED RULES (from past mistakes — follow strictly):\n{}\n",
+        items.join("\n")
+    )
+}
+
+/// 分析 dismiss 模式，当同类信号被连续 dismiss >= 3 次时触发 LLM 反思生成规则
+async fn self_reflect_on_dismissals(agent: &Agent, store: &Store) -> Result<()> {
+    const REFLECT_THRESHOLD: usize = 3;
+
+    let dismissed = store.get_recent_dismissed_signals(30).unwrap_or_default();
+    if dismissed.len() < REFLECT_THRESHOLD {
+        return Ok(());
+    }
+
+    // 检查上次反思时间，避免频繁反思（至少间隔 7 天）
+    let existing = store.get_memories_by_category("calibration_task").unwrap_or_default();
+    if let Some(latest) = existing.last() {
+        let week_ago = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(7))
+            .unwrap_or_else(chrono::Utc::now)
+            .format("%Y-%m-%d")
+            .to_string();
+        if latest.created_at > week_ago {
+            return Ok(());
+        }
+    }
+
+    // 构建被拒绝信号的摘要
+    let dismiss_summary: Vec<String> = dismissed
+        .iter()
+        .take(10)
+        .map(|s| format!("- [{}] {}", s.signal_type, s.title))
+        .collect();
+
+    let prompt = format!(
+        "The following task suggestions were dismissed by the user:\n{}\n\n\
+         Analyze the pattern: what types of suggestions does the user NOT want?\n\
+         Output 1-3 concise rules (one per line, prefix with \"Rule:\").\n\
+         Each rule should be specific and actionable, e.g.:\n\
+         Rule: Do not suggest tasks about routine meetings that the user always attends\n\
+         Rule: Do not create tasks for information-only emails\n\
+         Output ONLY the rules, nothing else.",
+        dismiss_summary.join("\n")
+    );
+
+    let resp = agent.invoke(&prompt, None).await?;
+    let mut rule_count = 0;
+    for line in resp.text.lines() {
+        let trimmed = line.trim();
+        if let Some(rule) = trimmed.strip_prefix("Rule:").or_else(|| trimmed.strip_prefix("规则：")).or_else(|| trimmed.strip_prefix("规则:")) {
+            let rule = rule.trim();
+            if !rule.is_empty() {
+                store.save_memory("calibration_task", rule, "self_reflect", 0.8)?;
+                rule_count += 1;
+                info!("Task self-evolution: new rule learned — {rule}");
+            }
+        }
+    }
+    if rule_count > 0 {
+        info!("Task intelligence self-evolved: {rule_count} new rules from dismiss patterns");
+    }
+    Ok(())
 }
 
 fn truncate(s: &str, max: usize) -> String {

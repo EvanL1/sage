@@ -143,6 +143,8 @@ function FeedIntelligence() {
   const [sortBy, setSortBy] = useState<"score" | "time">("score");
   const [showArchived, setShowArchived] = useState(false);
   const [learningIds, setLearningIds] = useState<Set<number>>(new Set());
+  const [nlInput, setNlInput] = useState("");
+  const [nlBusy, setNlBusy] = useState(false);
   const [learnedResults, setLearnedResults] = useState<Record<number, string[]>>({});
   const [noteContents, setNoteContents] = useState<Record<number, string>>({});
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
@@ -279,6 +281,28 @@ function FeedIntelligence() {
 
   return (
     <div style={{ padding: "0 24px 32px" }}>
+
+      {/* ── Natural language config ── */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <input
+          type="text"
+          placeholder="Tell Sage what to follow, e.g. &quot;Add energy storage and AIDC topics&quot;"
+          value={nlInput}
+          onChange={(e) => setNlInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && nlInput.trim()) {
+              setNlBusy(true);
+              invoke<FeedConfig>("update_feed_natural", { text: nlInput })
+                .then((newCfg) => { setConfig(newCfg); setNlInput(""); })
+                .catch(console.error)
+                .finally(() => setNlBusy(false));
+            }
+          }}
+          disabled={nlBusy}
+          style={{ ...S.input, flex: 1, padding: "8px 12px", fontSize: 13, opacity: nlBusy ? 0.6 : 1 }}
+        />
+        {nlBusy && <span style={{ fontSize: 12, color: "var(--text-tertiary)", alignSelf: "center" }}>Updating...</span>}
+      </div>
 
       {/* ── Toolbar ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>

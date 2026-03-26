@@ -25,3 +25,18 @@ enabled = false
 [channels.hooks]
 enabled = true
 watch_dir = "~/.claude"
+
+# ─── 认知管线（可选，缺失时用默认值） ───────────────────────
+
+# 晚间管线：Evening Review 后依次执行
+# pipeline.evening = ["observer", "coach", "mirror", "questioner", "evolution", "person_observer", "calibrator"]
+
+# 周报管线：Weekly Report 后执行
+# pipeline.weekly = ["strategist", "mirror_weekly"]
+
+# Per-stage 配置覆盖（独立 LLM 调用预算）
+# [pipeline.stages.evolution]
+# max_iterations = 30
+#
+# [pipeline.stages.observer]
+# max_iterations = 5

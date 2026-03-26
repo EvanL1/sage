@@ -128,36 +128,150 @@
 
   // ── Toast ─────────────────────────────────────────────────────────────────
 
-  function showToast(message) {
+  function showToast(message, success = false) {
     injectStyles();
     const toast = document.createElement("div");
-    toast.className = "sage-toast";
+    toast.className = "sage-toast" + (success ? " sage-toast-ok" : "");
     toast.textContent = message;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
   }
 
-  // ── Floating button ───────────────────────────────────────────────────────
+  // ── Conversation scraper ──────────────────────────────────────────────────
+
+  const BRIDGE_BASE = "http://127.0.0.1:18522";
+
+  function scrapeConversation() {
+    // 多策略抓取对话文本，适配 claude.ai / chatgpt / gemini
+
+    // Strategy 1: 尝试常见容器选择器
+    const containerSels = [
+      "main",
+      '[role="main"]',
+      '[class*="conversation"]',
+      '[class*="thread"]',
+      '[class*="react-scroll-to-bottom"]',
+    ];
+    for (const sel of containerSels) {
+      const el = document.querySelector(sel);
+      if (el && el.innerText.trim().length >= 50) {
+        return el.innerText.trim();
+      }
+    }
+
+    // Strategy 2: 找带 data-testid 的消息元素
+    const msgSels = [
+      '[data-testid*="message"]',
+      '[data-testid*="turn"]',
+      'article',
+      '[class*="message"]',
+    ];
+    for (const sel of msgSels) {
+      const msgs = document.querySelectorAll(sel);
+      if (msgs.length >= 2) {
+        return Array.from(msgs)
+          .map((m) => m.innerText.trim())
+          .filter((t) => t.length > 0)
+          .join("\n\n---\n\n");
+      }
+    }
+
+    // Strategy 3: 启发式 — 找最大的可滚动文本容器（排除侧边栏）
+    let best = null;
+    let bestLen = 0;
+    for (const el of document.querySelectorAll("div")) {
+      const text = el.innerText?.trim() || "";
+      const rect = el.getBoundingClientRect();
+      // 排除太窄（侧边栏）、太短（标题栏）、太大（整个页面）的元素
+      if (
+        rect.width > 300 &&
+        rect.height > 200 &&
+        text.length > bestLen &&
+        text.length < 200000 &&
+        el.children.length >= 2
+      ) {
+        // 检查是不是对话区域（包含多段文本）
+        const paragraphs = el.querySelectorAll("p, [class*='text'], [class*='content']");
+        if (paragraphs.length >= 2) {
+          bestLen = text.length;
+          best = el;
+        }
+      }
+    }
+    if (best && bestLen >= 50) return best.innerText.trim();
+
+    return null;
+  }
+
+  function detectSource() {
+    const h = location.hostname;
+    if (h === "claude.ai") return "claude";
+    if (h === "chatgpt.com" || h === "chat.openai.com") return "chatgpt";
+    if (h === "gemini.google.com") return "gemini";
+    return "other";
+  }
+
+  async function saveToSage() {
+    const text = scrapeConversation();
+    if (!text) {
+      showToast("No conversation found");
+      return;
+    }
+    try {
+      const resp = await fetch(`${BRIDGE_BASE}/api/conversations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: detectSource(), content: text }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast(`✓ Saved ${data.saved} memories to Sage`, true);
+      } else {
+        showToast(data.error || "Save failed");
+      }
+    } catch {
+      showToast("Sage offline");
+    }
+  }
+
+  // ── Floating buttons ────────────────────────────────────────────────────
 
   function createFloatingButton() {
-    if (document.getElementById("sage-inject-btn")) return;
+    if (document.getElementById("sage-btn-group")) return;
 
     injectStyles();
 
-    const btn = document.createElement("button");
-    btn.id = "sage-inject-btn";
-    btn.title = "Inject Sage context";
-    btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    const group = document.createElement("div");
+    group.id = "sage-btn-group";
+
+    // Save to Sage 按钮
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "sage-fab sage-fab-save";
+    saveBtn.title = "Save conversation to Sage";
+    saveBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+      <polyline points="17 21 17 13 7 13 7 21"/>
+      <polyline points="7 3 7 8 15 8"/>
+    </svg>`;
+    saveBtn.addEventListener("click", async () => {
+      saveBtn.disabled = true;
+      await saveToSage();
+      saveBtn.disabled = false;
+    });
+
+    // Inject context 按钮（原有）
+    const injectBtn = document.createElement("button");
+    injectBtn.className = "sage-fab sage-fab-inject";
+    injectBtn.title = "Inject Sage context";
+    injectBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
     </svg>`;
-    document.body.appendChild(btn);
-
-    btn.addEventListener("click", () => {
-      btn.disabled = true;
+    injectBtn.addEventListener("click", () => {
+      injectBtn.disabled = true;
       chrome.runtime.sendMessage(
         { type: "FETCH_CONTEXT", payload: { limit: 10 } },
         (response) => {
-          btn.disabled = false;
+          injectBtn.disabled = false;
           if (!response || !response.ok) {
             showToast("Sage offline — context unavailable");
             return;
@@ -175,6 +289,10 @@
         }
       );
     });
+
+    group.appendChild(saveBtn);
+    group.appendChild(injectBtn);
+    document.body.appendChild(group);
   }
 
   function formatContext(data) {
@@ -196,16 +314,23 @@
 
     const style = document.createElement("style");
     style.textContent = `
-      #sage-inject-btn {
+      #sage-btn-group {
         position: fixed; bottom: 24px; right: 24px; z-index: 99999;
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      .sage-fab {
         width: 40px; height: 40px; border-radius: 50%; border: none;
-        background: #22c55e; color: #fff; cursor: pointer;
+        color: #fff; cursor: pointer;
         display: flex; align-items: center; justify-content: center;
         box-shadow: 0 2px 8px rgba(0,0,0,0.25);
         transition: background 0.15s, transform 0.1s;
       }
-      #sage-inject-btn:hover { background: #16a34a; transform: scale(1.08); }
-      #sage-inject-btn:disabled { opacity: 0.6; cursor: wait; }
+      .sage-fab:hover { transform: scale(1.08); }
+      .sage-fab:disabled { opacity: 0.6; cursor: wait; }
+      .sage-fab-save { background: #6366f1; }
+      .sage-fab-save:hover { background: #4f46e5; }
+      .sage-fab-inject { background: #22c55e; }
+      .sage-fab-inject:hover { background: #16a34a; }
 
       .sage-modal-overlay {
         position: fixed; inset: 0; z-index: 100000;
@@ -243,13 +368,14 @@
       .sage-btn-inject:hover { background: #16a34a; }
 
       .sage-toast {
-        position: fixed; bottom: 76px; right: 24px; z-index: 100001;
+        position: fixed; bottom: 110px; right: 24px; z-index: 100001;
         background: #1e1e2e; color: #f38ba8; border: 1px solid #f38ba8;
         border-radius: 8px; padding: 9px 16px;
         font-family: system-ui, sans-serif; font-size: 13px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.3);
         animation: sage-fadein 0.2s ease;
       }
+      .sage-toast-ok { color: #a6e3a1; border-color: #a6e3a1; }
       @keyframes sage-fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
     `;
     document.head.appendChild(style);

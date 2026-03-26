@@ -5,7 +5,7 @@ OPEN TASKS:
 
 RECENT ACTIONS (last 24h):
 {actions_text}
-{done_section}{pending_section}
+{done_section}{pending_section}{learned_rules}
 For each finding, output ONE line:
 - DONE {task_id} | {evidence summary} | {suggested outcome}
 - CANCEL {task_id} | {reason} | {suggested outcome}
@@ -18,6 +18,8 @@ Rules:
 - NEW tasks should be actionable and specific
 - **CRITICAL: Do NOT suggest anything similar to items in ALREADY SUGGESTED or ALREADY COMPLETED sections**
 - **CRITICAL: Do NOT suggest a NEW task if an OPEN TASK already covers the same topic**
+- **CRITICAL: If multiple OPEN TASKs overlap or cover the same topic, CANCEL the duplicates (keep the one with most detail). NEVER create a NEW "merge" or "consolidate" task — just CANCEL the redundant ones**
+- Do NOT copy [id=XX] markers into task content
 - When in doubt, output NONE — it is better to suggest nothing than to repeat
 - Max 3 signals per run
 - Keep evidence and outcomes concise (under 60 chars each)

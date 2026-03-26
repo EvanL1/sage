@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub use crate::plugin::PluginConfig;
+pub use crate::pipeline::StageConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -13,6 +14,32 @@ pub struct Config {
     /// External plugin definitions (optional section in config.toml).
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
+    /// 认知管线配置（可选，缺失时用默认 7+2 阶段）
+    #[serde(default)]
+    pub pipeline: PipelineConfig,
+}
+
+// ─── Pipeline 配置 ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PipelineConfig {
+    #[serde(default = "crate::pipeline::default_evening_stages")]
+    pub evening: Vec<String>,
+    #[serde(default = "crate::pipeline::default_weekly_stages")]
+    pub weekly: Vec<String>,
+    /// Per-stage 覆盖（max_iterations 等）
+    #[serde(default)]
+    pub stages: std::collections::HashMap<String, StageConfig>,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            evening: crate::pipeline::default_evening_stages(),
+            weekly: crate::pipeline::default_weekly_stages(),
+            stages: std::collections::HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,6 +282,7 @@ impl Default for Config {
             memory: MemoryConfig::default(),
             agent: AgentConfig::default(),
             plugins: Vec::new(),
+            pipeline: PipelineConfig::default(),
             channels: ChannelsConfig {
                 email: PollChannelConfig {
                     enabled: false,

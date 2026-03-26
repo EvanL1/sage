@@ -274,6 +274,25 @@ const translations = {
   "welcome.greet4b": { zh: "最后一步——让我连接到我的思考能力——", en: "One last step — let me connect to my thinking capabilities —" },
   "welcome.thinkingSpectrum": { zh: "思维光谱", en: "thinking spectrum" },
   "welcome.spectrumTitle": { zh: "，这是你的思维光谱——", en: ", here's your thinking spectrum —" },
+  "welcome.languageLabel": { zh: "语言 / Language", en: "Language / 语言" },
+  "welcome.dataSourcesLabel": { zh: "连接数据源（可跳过，稍后在设置中配置）", en: "Connect data sources (optional, configure later in Settings)" },
+  "welcome.emailSource": { zh: "邮件（Email / Outlook）", en: "Email (Email / Outlook)" },
+  "welcome.calendarSource": { zh: "日历（macOS Calendar）", en: "Calendar (macOS Calendar)" },
+  "welcome.dataSourcesHint": { zh: "Sage 只在本机读取，不会上传原始数据", en: "Sage reads locally only — raw data is never uploaded" },
+  "welcome.apiKeyCost": { zh: "预计月消耗 < ¥5", en: "Estimated cost < ¥5 / month" },
+  "welcome.canSkip": { zh: "可以跳过，稍后在设置中配置", en: "You can skip this and configure later in Settings" },
+  "welcome.privacyTitle": { zh: "最后，关于隐私——", en: "One last thing, about privacy —" },
+  "welcome.privacyBody": { zh: "所有数据存储在本机，不会上传到任何服务器。\n\n邮件摘要和日历事件会发送给 AI 服务进行分析，用于生成洞察和建议。原始内容不会离开你的设备。", en: "All data is stored locally on your Mac and never uploaded to any server.\n\nEmail summaries and calendar events are sent to your configured AI service for analysis to generate insights and suggestions. Raw content never leaves your device." },
+
+  // Dashboard — first-run card
+  "dashboard.firstRunTitle": { zh: "Sage 正在观察你的日常模式", en: "Sage is observing your daily patterns" },
+  "dashboard.firstRunBody": { zh: "7 天后会给你第一份洞察报告。\n你也可以随时和我聊天，或前往设置完善个人资料。", en: "You'll receive your first insight report in 7 days.\nFeel free to chat with me anytime, or complete your profile in Settings." },
+  "dashboard.firstRunDismiss": { zh: "知道了", en: "Got it" },
+
+  // Settings — profile entry
+  "settings.completeProfile": { zh: "完善个人资料", en: "Complete your profile" },
+  "settings.completeProfileHint": { zh: "添加职位、项目和干系人，帮助 Sage 更快了解你", en: "Add your role, projects, and stakeholders to help Sage understand you faster" },
+  "settings.goToProfile": { zh: "完善资料 →", en: "Complete profile →" },
 
   // FeedIntelligence page
   "feed.searchPlaceholder": { zh: "搜索 Feed…", en: "Search feeds..." },

@@ -110,6 +110,7 @@ mod tests {
                 max_iterations: 10,
             },
             plugins: Vec::new(),
+            pipeline: crate::config::PipelineConfig::default(),
             channels: ChannelsConfig {
                 email: PollChannelConfig {
                     enabled: email_enabled,

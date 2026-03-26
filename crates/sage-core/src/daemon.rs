@@ -306,6 +306,12 @@ impl Daemon {
         result
     }
 
+    /// 手动触发人物认知提取
+    pub async fn trigger_person_observer(&self) -> Result<bool> {
+        info!("手动触发人物认知提取");
+        self.router.lock().await.run_person_observer().await
+    }
+
     /// 手动触发战略家分析
     pub async fn trigger_strategist(&self) -> Result<bool> {
         info!("手动触发战略家分析");
@@ -522,75 +528,21 @@ impl Daemon {
             }
         }
 
-        // 认知觉醒角色链：Evening Review 后依次触发
-        // 顺序：Observer → Coach → Mirror → Questioner → Memory Evolution
-        if had_evening_review {
+        // 认知管线：config 驱动的 stage 执行（替代硬编码链）
+        if had_evening_review || had_weekly_report {
             let router = self.router.lock().await;
-
-            match router.run_observer().await {
-                Ok(true) => info!("Observer: annotations saved"),
-                Ok(false) => {}
-                Err(e) => error!("Observer failed (Coach will use raw observations): {e}"),
+            let pipeline = crate::pipeline::build_pipeline(
+                self.config.pipeline.evening.clone(),
+                self.config.pipeline.weekly.clone(),
+                self.config.pipeline.stages.clone(),
+            );
+            let agent = router.agent();
+            let store = router.store_arc();
+            if had_evening_review {
+                pipeline.run_evening(agent, &store).await;
             }
-
-            match router.run_coach().await {
-                Ok(true) => info!("Coach: learning completed"),
-                Ok(false) => {}
-                Err(e) => error!("Coach failed: {e}"),
-            }
-
-            match router.run_mirror().await {
-                Ok(true) => info!("Mirror: reflection sent"),
-                Ok(false) => {}
-                Err(e) => error!("Mirror failed: {e}"),
-            }
-
-            match router.run_questioner().await {
-                Ok(true) => info!("Questioner: daily question generated"),
-                Ok(false) => {}
-                Err(e) => error!("Questioner failed: {e}"),
-            }
-
-            // 记忆进化：合并重复、精简冗长、衰减过期、提升高频
-            match router.run_memory_evolution().await {
-                Ok(r) => {
-                    if r.consolidated + r.condensed + r.decayed + r.promoted + r.linked > 0 {
-                        info!(
-                            "Memory evolution: consolidated={}, condensed={}, linked={}, decayed={}, promoted={}",
-                            r.consolidated, r.condensed, r.linked, r.decayed, r.promoted
-                        );
-                    }
-                }
-                Err(e) => error!("Memory evolution failed: {e}"),
-            }
-
-            // 人物认知提取：从今日事件中识别人物特征
-            match router.run_person_observer().await {
-                Ok(true) => info!("PersonObserver: person insights extracted"),
-                Ok(false) => {}
-                Err(e) => error!("PersonObserver failed: {e}"),
-            }
-
-            // 校准模式反思（晚间 review 后检查纠正积累）
-            match router.run_calibrator().await {
-                Ok(true) => info!("Calibrator: new calibration rules generated"),
-                Ok(false) => {}
-                Err(e) => error!("Calibrator failed: {e}"),
-            }
-        }
-
-        // 战略家 + Mirror 周报：Weekly Report 后触发
-        if had_weekly_report {
-            let router = self.router.lock().await;
-            match router.run_strategist().await {
-                Ok(true) => info!("Strategist: weekly strategic insights generated"),
-                Ok(false) => {}
-                Err(e) => error!("Strategist failed: {e}"),
-            }
-            match router.run_mirror_weekly().await {
-                Ok(true) => info!("Mirror weekly: report generated"),
-                Ok(false) => {}
-                Err(e) => error!("Mirror weekly failed: {e}"),
+            if had_weekly_report {
+                pipeline.run_weekly(agent, &store).await;
             }
         }
 
@@ -608,36 +560,46 @@ impl Daemon {
             Err(e) => error!("Guardian failed: {e}"),
         }
 
-        // Task Intelligence + Staleness Check：每 3 tick 触发一次
-        {
-            let should_run = {
-                let mut count = self.tick_count.lock().unwrap_or_else(|e| e.into_inner());
-                *count = count.wrapping_add(1);
-                *count % 3 == 0
-            };
-            if should_run {
-                let router = self.router.lock().await;
-                match crate::task_intelligence::detect_task_signals(router.agent(), router.store())
-                    .await
-                {
-                    Ok(n) if n > 0 => info!("Task intelligence: {n} new signals"),
-                    Ok(_) => {}
-                    Err(e) => error!("Task intelligence failed: {e}"),
-                }
+        // 周期性任务：单次 increment，统一判断
+        let (run_task_intel, run_person_observer) = {
+            let mut count = self.tick_count.lock().unwrap_or_else(|e| e.into_inner());
+            *count = count.wrapping_add(1);
+            let c = *count;
+            (c % 3 == 0, c % 6 == 0)
+        };
 
-                // 消息过时性检测：pending → resolved / expired
-                match crate::staleness::check_staleness(router.agent(), &router.store_arc())
-                    .await
-                {
-                    Ok(r) if r.resolved + r.expired > 0 => {
-                        info!(
-                            "Staleness: {} resolved, {} expired out of {} checked",
-                            r.resolved, r.expired, r.checked
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(e) => error!("Staleness check failed: {e}"),
+        // Task Intelligence + Staleness Check：每 3 tick
+        if run_task_intel {
+            let router = self.router.lock().await;
+            match crate::task_intelligence::detect_task_signals(router.agent(), router.store())
+                .await
+            {
+                Ok(n) if n > 0 => info!("Task intelligence: {n} new signals"),
+                Ok(_) => {}
+                Err(e) => error!("Task intelligence failed: {e}"),
+            }
+
+            match crate::staleness::check_staleness(router.agent(), &router.store_arc())
+                .await
+            {
+                Ok(r) if r.resolved + r.expired > 0 => {
+                    info!(
+                        "Staleness: {} resolved, {} expired out of {} checked",
+                        r.resolved, r.expired, r.checked
+                    );
                 }
+                Ok(_) => {}
+                Err(e) => error!("Staleness check failed: {e}"),
+            }
+        }
+
+        // PersonObserver：每 6 tick（~3h）从今日事件中提取人物认知
+        if run_person_observer && !had_evening_review {
+            let router = self.router.lock().await;
+            match router.run_person_observer().await {
+                Ok(true) => info!("PersonObserver (periodic): person insights extracted"),
+                Ok(false) => {}
+                Err(e) => error!("PersonObserver (periodic) failed: {e}"),
             }
         }
 

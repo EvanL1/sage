@@ -6,6 +6,32 @@ use crate::similarity::text_similarity;
 /// 语义去重阈值：相似度超过此值视为重复
 const TASK_DEDUP_THRESHOLD: f64 = 0.6;
 
+/// 去除 LLM 从上下文复制的 [id=XX] 标记，支持 [id=126] 和 [id=126/130/131] 格式
+pub(crate) fn strip_id_markers(s: &str) -> String {
+    let mut result = s.to_string();
+    // 循环去除所有 [id=...] 模式（含前后空格）
+    while let Some(start) = result.find("[id=") {
+        if let Some(end) = result[start..].find(']') {
+            let before = if start > 0 && result.as_bytes()[start - 1] == b' ' {
+                start - 1
+            } else {
+                start
+            };
+            let after = start + end + 1;
+            // 去掉 ] 后面紧跟的空格
+            let after = if after < result.len() && result.as_bytes()[after] == b' ' {
+                after + 1
+            } else {
+                after
+            };
+            result = format!("{}{}", &result[..before], &result[after..]);
+        } else {
+            break;
+        }
+    }
+    result.trim().to_string()
+}
+
 impl Store {
     /// 创建任务，自动与 open/done/cancelled 任务语义去重。
     /// 返回 Ok(-1) 表示检测到重复，跳过创建。
@@ -18,6 +44,10 @@ impl Store {
         due_date: Option<&str>,
         description: Option<&str>,
     ) -> Result<i64> {
+        // 先清理 [id=XX] 标记
+        let clean_content = strip_id_markers(content);
+        let content = if clean_content.is_empty() { content } else { &clean_content };
+
         let conn = self
             .conn
             .lock()
@@ -33,11 +63,12 @@ impl Store {
             .collect();
 
         for existing_content in &existing {
-            if text_similarity(existing_content, content) > TASK_DEDUP_THRESHOLD {
+            let clean_existing = strip_id_markers(existing_content);
+            if text_similarity(&clean_existing, content) > TASK_DEDUP_THRESHOLD {
                 tracing::debug!(
                     "Task dedup: skip '{}' (similar to '{}')",
                     content.chars().take(40).collect::<String>(),
-                    existing_content.chars().take(40).collect::<String>(),
+                    clean_existing.chars().take(40).collect::<String>(),
                 );
                 return Ok(-1);
             }
@@ -346,6 +377,7 @@ impl Store {
         }
         // 去重：new_task 类型按语义去重（pending signals + 现有 open/done/cancelled tasks）
         if signal_type == "new_task" {
+            let clean_title = strip_id_markers(title);
             // 1. 与 pending 的 new_task signals 语义比较
             let mut sig_stmt = conn.prepare(
                 "SELECT title FROM task_signals WHERE signal_type = 'new_task' AND status = 'pending'",
@@ -355,7 +387,7 @@ impl Store {
                 .filter_map(|r| r.ok())
                 .collect();
             for t in &sig_titles {
-                if text_similarity(t, title) > TASK_DEDUP_THRESHOLD {
+                if text_similarity(&strip_id_markers(t), &clean_title) > TASK_DEDUP_THRESHOLD {
                     return Ok(-1);
                 }
             }
@@ -369,7 +401,7 @@ impl Store {
                 .filter_map(|r| r.ok())
                 .collect();
             for c in &task_contents {
-                if text_similarity(c, title) > TASK_DEDUP_THRESHOLD {
+                if text_similarity(&strip_id_markers(c), &clean_title) > TASK_DEDUP_THRESHOLD {
                     return Ok(-1);
                 }
             }
@@ -510,5 +542,53 @@ mod tests {
         // 语义相似的 signal 应被去重
         let sig2 = s.save_task_signal("new_task", None, "检查服务器的状态", "evidence", None).unwrap();
         assert_eq!(sig2, -1);
+    }
+
+    // --- strip_id_markers ---
+
+    #[test]
+    fn strip_single_id() {
+        assert_eq!(strip_id_markers("[id=130] codex会议结论未整理"), "codex会议结论未整理");
+    }
+
+    #[test]
+    fn strip_multi_id() {
+        assert_eq!(
+            strip_id_markers("[id=126/130/131]三任务重叠"),
+            "三任务重叠"
+        );
+    }
+
+    #[test]
+    fn strip_mid_text_id() {
+        assert_eq!(
+            strip_id_markers("codex会议结论[id=126]已整理"),
+            "codex会议结论已整理"
+        );
+    }
+
+    #[test]
+    fn strip_no_id() {
+        assert_eq!(strip_id_markers("正常任务内容"), "正常任务内容");
+    }
+
+    #[test]
+    fn dedup_ignores_id_markers() {
+        let s = store();
+        let id1 = s.create_task("[id=126] codex会议结论整理", "ai_signal", None, None, None, None).unwrap();
+        assert!(id1 > 0);
+        // 同一任务带不同 [id=XX] 应被去重
+        let id2 = s.create_task("[id=130] codex会议结论整理", "ai_signal", None, None, None, None).unwrap();
+        assert_eq!(id2, -1);
+    }
+
+    #[test]
+    fn stored_content_has_no_id_markers() {
+        let s = store();
+        let id = s.create_task("[id=126] codex会议结论整理", "ai_signal", None, None, None, None).unwrap();
+        assert!(id > 0);
+        let tasks = s.list_tasks(Some("open"), 10).unwrap();
+        let content = &tasks[0].1;
+        assert!(!content.contains("[id="), "stored content should not contain [id=]: {content}");
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     middleware,
     response::IntoResponse,
     response::Json,
@@ -11,8 +11,11 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info};
+
+#[path = "bridge_api.rs"]
+mod bridge_api;
 
 use crate::memory_integrator::{IncomingMemory, MemoryIntegrator};
 use crate::store::Store;
@@ -39,18 +42,28 @@ async fn track_last_seen(
 
 /// 构建 Bridge HTTP Router（可独立测试）
 pub fn build_router(store: Arc<Store>) -> Router {
+    // 只允许 localhost 和 chrome-extension:// 源（安全加固）
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
+            let s = origin.to_str().unwrap_or("");
+            s.starts_with("chrome-extension://")
+                || s.starts_with("http://localhost")
+                || s.starts_with("http://127.0.0.1")
+        }))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
 
-    Router::new()
+    let base = Router::new()
         .route("/api/status", get(status_handler))
         .route("/api/context", get(context_handler))
         .route("/api/memories", post(import_memories_handler))
         .route("/api/behaviors", post(behavior_handler))
         .route("/api/messages", get(messages_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/conversations", post(conversation_handler));
+
+    // 挂载只读 REST API 扩展端点
+    bridge_api::mount(base)
         .layer(middleware::from_fn(track_last_seen))
         .layer(cors)
         .with_state(store)
@@ -175,6 +188,108 @@ fn simple_dedup_insert(
         }
     }
     Ok((saved, skipped))
+}
+
+/// 接收原始对话文本，通过 LLM 提取记忆
+async fn conversation_handler(
+    State(store): State<Arc<Store>>,
+    Json(req): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let source = req
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claude");
+    let content = req
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if content.len() < 20 {
+        return Ok(Json(json!({"success": false, "error": "对话内容过短"})));
+    }
+
+    // 已有记忆作为去重参考
+    let existing = store.load_memories().unwrap_or_default();
+    let existing_text = if existing.is_empty() {
+        "（暂无）".to_string()
+    } else {
+        existing
+            .iter()
+            .take(30)
+            .map(|m| format!("[{}] {}", m.category, m.content))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // 获取 LLM
+    let discovered = crate::discovery::discover_providers(&store);
+    let configs = store.load_provider_configs().unwrap_or_default();
+    let (prov_info, prov_config) = match crate::discovery::select_best_provider(&discovered, &configs)
+    {
+        Some(pair) => pair,
+        None => return Ok(Json(json!({"success": false, "error": "无可用 AI 服务"}))),
+    };
+
+    let agent_config = crate::config::AgentConfig {
+        provider: "claude".into(),
+        claude_binary: "claude".into(),
+        codex_binary: String::new(),
+        gemini_binary: String::new(),
+        default_model: "claude-sonnet-4-6".into(),
+        project_dir: ".".into(),
+        max_budget_usd: 0.5,
+        permission_mode: "default".into(),
+        max_iterations: 10,
+    };
+    let provider =
+        crate::provider::create_provider_from_config(&prov_info, &prov_config, &agent_config);
+
+    let lang = store.prompt_lang();
+    let prompt = crate::prompts::cmd_extract_memories_user(&lang, &existing_text, content);
+    let system = crate::prompts::cmd_extract_memories_system(&lang);
+
+    let result = match provider.invoke(&prompt, Some(system)).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Bridge conversation extract failed: {e}");
+            return Ok(Json(json!({"success": false, "error": e.to_string()})));
+        }
+    };
+
+    // 解析 JSON 数组
+    let json_str = result
+        .find('[')
+        .and_then(|start| result.rfind(']').map(|end| &result[start..=end]))
+        .unwrap_or("[]");
+    let insights: Vec<Value> = serde_json::from_str(json_str).unwrap_or_default();
+
+    let bridge_source = format!("browser:{source}");
+    let mut saved = 0usize;
+    for insight in &insights {
+        if let (Some(category), Some(content), Some(confidence)) = (
+            insight.get("category").and_then(|v| v.as_str()),
+            insight.get("content").and_then(|v| v.as_str()),
+            insight.get("confidence").and_then(|v| v.as_f64()),
+        ) {
+            if store.has_similar_memory(content).unwrap_or(false) {
+                continue;
+            }
+            if store
+                .save_memory_with_visibility(
+                    category,
+                    content,
+                    &bridge_source,
+                    confidence,
+                    "private",
+                )
+                .is_ok()
+            {
+                saved += 1;
+            }
+        }
+    }
+
+    info!("Bridge: conversation from {source} — extracted {saved} memories");
+    Ok(Json(json!({"success": true, "saved": saved})))
 }
 
 async fn behavior_handler(

@@ -826,10 +826,13 @@ async fn link_batch(agent: &Agent, store: &Store, items: &[&sage_types::Memory])
     Ok(linked)
 }
 
-/// 衰减长期未更新的 archive 记忆（Phase 1a 已禁用）
-/// depth+validation_count 已承担信号权重，不再需要主动衰减 confidence。
-fn decay_unused(_store: &Store) -> Result<usize> {
-    Ok(0)
+/// 分层衰减未访问的记忆：
+/// - episodic: 30 天 → 衰减
+/// - semantic: 90 天 → 衰减
+/// - procedural: 180 天 → 衰减
+/// - axiom: 永不自动衰减（只能通过 Calibrator 或用户手动修改）
+fn decay_unused(store: &Store) -> Result<usize> {
+    store.decay_memories_by_depth()
 }
 
 /// 提升高置信度 archive 记忆到 core（纯 SQL）

@@ -27,6 +27,102 @@ fn dispatch_plugin(runner: Arc<sage_core::plugin::PluginRunner>, event: PluginEv
     });
 }
 
+/// 自然语言创建任务：LLM 解析内容、截止时间、优先级
+#[tauri::command]
+pub async fn create_task_natural(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<Value, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("内容不能为空".into());
+    }
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let prompt = format!(
+        r#"从用户的自然语言中提取任务信息。今天是 {today}。
+
+用户说："{text}"
+
+输出 JSON（不要解释）：
+{{
+  "content": "任务标题（简洁，≤50字）",
+  "description": "补充说明（如有，否则 null）",
+  "due_date": "YYYY-MM-DD（如有，否则 null）",
+  "priority": "P0/P1/P2/normal"
+}}
+
+规则：
+- "明天" = {today} 的下一天，"后天" = +2天，"下周X" = 下个周X
+- "紧急/ASAP" → P0，"重要" → P1，默认 normal
+- 只输出 JSON"#
+    );
+
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(super::map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or("没有可用的 AI 服务")?;
+    let agent_config = super::default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let raw = provider.invoke(&prompt, None).await.map_err(super::map_err)?;
+
+    let json_str = raw
+        .find('{')
+        .and_then(|start| raw.rfind('}').map(|end| &raw[start..=end]))
+        .ok_or("LLM 未返回有效 JSON")?;
+    let parsed: Value = serde_json::from_str(json_str).map_err(super::map_err)?;
+
+    let content = parsed["content"]
+        .as_str()
+        .unwrap_or(&text)
+        .trim()
+        .to_string();
+    let description = parsed["description"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let due_date = parsed["due_date"]
+        .as_str()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty() && s != "null");
+    let priority = parsed["priority"]
+        .as_str()
+        .unwrap_or("normal")
+        .to_string();
+
+    let id = state
+        .store
+        .create_task(
+            &content,
+            "manual",
+            None,
+            Some(&priority),
+            due_date.as_deref(),
+            description.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if let Some(snapshot) = load_snapshot(&state.store, id) {
+        dispatch_plugin(
+            Arc::clone(&state.plugin_runner),
+            PluginEvent {
+                event_type: "task.created".into(),
+                task: snapshot,
+                changes: None,
+            },
+        );
+    }
+
+    Ok(json!({
+        "id": id,
+        "content": content,
+        "priority": priority,
+        "due_date": due_date,
+        "description": description,
+    }))
+}
+
 #[tauri::command]
 pub async fn create_task(
     state: State<'_, AppState>,

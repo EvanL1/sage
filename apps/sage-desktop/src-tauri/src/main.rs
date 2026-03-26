@@ -84,6 +84,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
+            commands::update_config_natural,
             commands::get_profile,
             commands::save_profile,
             commands::submit_onboarding_step,
@@ -121,6 +122,9 @@ fn main() {
             commands::trigger_strategist,
             commands::get_memory_graph,
             commands::trigger_memory_linking,
+            commands::trigger_person_extract,
+            commands::get_known_persons,
+            commands::get_memories_about_person,
             commands::get_all_tags,
             commands::get_memory_tags,
             commands::add_memory_tag,
@@ -143,6 +147,7 @@ fn main() {
             commands::get_reflective_signals,
             commands::resolve_reflective_signal,
             commands::create_task,
+            commands::create_task_natural,
             commands::list_tasks,
             commands::update_task_status,
             commands::update_task_due_date,
@@ -158,6 +163,7 @@ fn main() {
             commands::trigger_feed_poll,
             commands::get_feed_config,
             commands::save_feed_config,
+            commands::update_feed_natural,
             commands::get_feed_digest,
             commands::regenerate_feed_digest,
             commands::archive_feed_item,

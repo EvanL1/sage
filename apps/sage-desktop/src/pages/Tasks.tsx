@@ -366,6 +366,8 @@ export default function Tasks() {
   const [showFormWithContent, setShowFormWithContent] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
+  const [nlInput, setNlInput] = useState("");
+  const [nlBusy, setNlBusy] = useState(false);
   const [completionTarget, setCompletionTarget] = useState<CompletionTarget | null>(null);
   const [signals, setSignals] = useState<TaskSignal[]>([]);
 
@@ -558,13 +560,31 @@ export default function Tasks() {
               {calDate ?? t("tasks.title")}
               {calDate && <button className="tasks-clear-date" onClick={() => setCalDate(null)}>{t("tasks.showAll")}</button>}
             </h1>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <div className="tasks-counts">
-                <span className="tasks-count open">{counts.open}</span>
-                <span className="tasks-count done">{counts.done}</span>
-              </div>
-              <button className="tasks-add-fab" onClick={() => setShowForm(true)}>{t("tasks.add")}</button>
+            <div className="tasks-counts">
+              <span className="tasks-count open">{counts.open}</span>
+              <span className="tasks-count done">{counts.done}</span>
             </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 8, padding: "0 2px" }}>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="Describe your task, e.g. &quot;明天下午前完成报告，优先级高&quot;"
+              value={nlInput}
+              onChange={(e) => setNlInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing && nlInput.trim()) {
+                  setNlBusy(true);
+                  invoke("create_task_natural", { text: nlInput })
+                    .then(() => { setNlInput(""); load(); })
+                    .catch((err) => console.error("create_task_natural:", err))
+                    .finally(() => setNlBusy(false));
+                }
+              }}
+              disabled={nlBusy}
+              style={{ flex: 1, fontSize: 13, opacity: nlBusy ? 0.6 : 1 }}
+            />
+            <button className="tasks-add-fab" onClick={() => setShowForm(true)} title={t("tasks.add")}>+</button>
           </div>
 
           <div className="tasks-filters">

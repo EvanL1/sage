@@ -608,6 +608,31 @@ impl Store {
             .context("数据库迁移 v38（memory provenance）失败")?;
         }
 
+        if version < 39 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS pipeline_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stage TEXT NOT NULL,
+                    pipeline TEXT NOT NULL DEFAULT 'evening',
+                    outcome TEXT NOT NULL,
+                    elapsed_ms INTEGER,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_pipeline_runs_stage
+                    ON pipeline_runs(stage, created_at DESC);
+                CREATE TABLE IF NOT EXISTS pipeline_overrides (
+                    stage TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (stage, key)
+                );
+                PRAGMA user_version = 39;",
+            )
+            .context("数据库迁移 v39（pipeline self-evolution）失败")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

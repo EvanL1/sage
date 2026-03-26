@@ -2861,3 +2861,44 @@ fn test_info_only_messages() {
 
     assert_eq!(store.count_pending_messages().unwrap(), 1);
 }
+
+// ─── 分层衰减测试 ──────────────────────────────
+
+#[test]
+fn test_decay_axiom_never_decays() {
+    // axiom 层记忆永不自动衰减（即使 last_accessed_at = NULL）
+    let store = Store::open_in_memory().unwrap();
+    let id = store.save_memory("values", "核心信念：用户第一", "evolution", 0.95).unwrap();
+    store.update_memory_depth(id, "axiom").unwrap();
+
+    // 使用 0 天阈值强制触发所有层的衰减，axiom 仍不受影响
+    let decayed = store.decay_memories_by_depth_with_thresholds(0, 0, 0).unwrap();
+    assert_eq!(decayed, 0, "axiom 层不应被衰减");
+
+    let axioms = store.load_memories_by_depth("axiom").unwrap();
+    assert_eq!(axioms.len(), 1, "axiom 记忆应仍存在");
+    assert!((axioms[0].confidence - 0.95).abs() < 0.01, "confidence 不应变化");
+}
+
+#[test]
+fn test_decay_semantic_uses_90_day_threshold() {
+    // semantic 层在 0 天阈值时应衰减（last_accessed_at = NULL 视为从未访问）
+    // 验证 semantic 用独立阈值且 axiom 同批不受影响
+    let store = Store::open_in_memory().unwrap();
+    let sid = store.save_memory("behavior", "喜欢清晨工作", "coach", 0.7).unwrap();
+    store.update_memory_depth(sid, "semantic").unwrap();
+    let aid = store.save_memory("values", "核心信念：诚实", "evolution", 0.95).unwrap();
+    store.update_memory_depth(aid, "axiom").unwrap();
+
+    // 0 天阈值：semantic 应衰减，axiom 不受影响
+    let decayed = store.decay_memories_by_depth_with_thresholds(0, 0, 0).unwrap();
+    assert!(decayed >= 1, "semantic 记忆应被衰减（0 天阈值）");
+
+    let semantic = store.load_memories_by_depth("semantic").unwrap();
+    let m = semantic.iter().find(|m| m.id == sid).unwrap();
+    assert!((m.confidence - 0.63).abs() < 0.02, "semantic confidence 应约为 0.7 × 0.9 = 0.63");
+
+    let axioms = store.load_memories_by_depth("axiom").unwrap();
+    let a = axioms.iter().find(|m| m.id == aid).unwrap();
+    assert!((a.confidence - 0.95).abs() < 0.01, "axiom confidence 不应变化");
+}

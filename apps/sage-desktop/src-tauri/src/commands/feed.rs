@@ -205,17 +205,93 @@ pub async fn get_feed_config() -> Result<Value, String> {
     }))
 }
 
-/// 保存 Feed 配置到 config.toml
+/// 自然语言更新 Feed 配置：LLM 解析意图 → 更新 config
 #[tauri::command]
-pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
+pub async fn update_feed_natural(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("内容不能为空".into());
+    }
+
+    // 读取当前配置
+    let current = invoke_get_feed_config()?;
+
+    // 构造 prompt
+    let prompt = format!(
+        r#"你是 Feed 配置助手。用户用自然语言描述了他想修改的 Feed 订阅源配置。
+
+当前配置（JSON）：
+{current}
+
+用户说："{text}"
+
+请理解用户意图，输出修改后的**完整** JSON 配置。规则：
+1. 保留用户没提到的已有配置不变
+2. 新增话题时：加到 user_interests（中英文关键词）、合适的 subreddits、arxiv.keywords
+3. 删除话题时：从对应字段中移除
+4. 只输出 JSON，不要解释
+
+输出格式（必须是合法 JSON）：
+{{
+  "user_interests": [...],
+  "reddit": {{ "enabled": true, "subreddits": [...], "poll_interval_secs": 3600 }},
+  "hackernews": {{ "enabled": true, "min_score": 50, "poll_interval_secs": 1800 }},
+  "github": {{ "enabled": true, "trending_languages": [...], "poll_interval_secs": 7200 }},
+  "arxiv": {{ "enabled": true, "categories": [...], "keywords": [...], "poll_interval_secs": 86400 }},
+  "rss": {{ "enabled": false, "feeds": [...], "poll_interval_secs": 3600 }}
+}}"#
+    );
+
+    // 调用 LLM
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or("没有可用的 AI 服务")?;
+    let agent_config = super::default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let raw = provider.invoke(&prompt, None).await.map_err(map_err)?;
+
+    // 提取 JSON
+    let json_str = raw
+        .find('{')
+        .and_then(|start| raw.rfind('}').map(|end| &raw[start..=end]))
+        .ok_or("LLM 未返回有效 JSON")?;
+    let new_config: Value = serde_json::from_str(json_str).map_err(map_err)?;
+
+    // 写入 config.toml（复用已有逻辑）
+    save_feed_config_inner(&new_config)?;
+
+    Ok(new_config)
+}
+
+/// 读取当前 Feed 配置为 JSON 字符串（内部用）
+fn invoke_get_feed_config() -> Result<String, String> {
+    let path = config_path()?;
+    let config = sage_core::config::Config::load_or_default(&path);
+    let fc = &config.channels.feed;
+    let val = json!({
+        "user_interests": fc.user_interests,
+        "reddit": { "enabled": fc.reddit.enabled, "subreddits": fc.reddit.subreddits, "poll_interval_secs": fc.reddit.poll_interval_secs },
+        "hackernews": { "enabled": fc.hackernews.enabled, "min_score": fc.hackernews.min_score, "poll_interval_secs": fc.hackernews.poll_interval_secs },
+        "github": { "enabled": fc.github.enabled, "trending_languages": fc.github.trending_languages, "poll_interval_secs": fc.github.poll_interval_secs },
+        "arxiv": { "enabled": fc.arxiv.enabled, "categories": fc.arxiv.categories, "keywords": fc.arxiv.keywords, "poll_interval_secs": fc.arxiv.poll_interval_secs },
+        "rss": { "enabled": fc.rss.enabled, "feeds": fc.rss.feeds, "poll_interval_secs": fc.rss.poll_interval_secs },
+    });
+    serde_json::to_string_pretty(&val).map_err(map_err)
+}
+
+/// 保存 Feed 配置到 config.toml（内部逻辑，供多处复用）
+fn save_feed_config_inner(feed_config: &Value) -> Result<(), String> {
     let path = config_path()?;
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc: toml::Value = content
         .parse::<toml::Value>()
         .unwrap_or(toml::Value::Table(Default::default()));
     let root = doc.as_table_mut().ok_or("TOML root is not a table")?;
-
-    // Ensure [channels] and [channels.feed] exist
     let channels = root
         .entry("channels")
         .or_insert_with(|| toml::Value::Table(Default::default()))
@@ -226,16 +302,12 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
         .or_insert_with(|| toml::Value::Table(Default::default()))
         .as_table_mut()
         .ok_or("feed is not a table")?;
-
-    // user_interests (Vec<String>)
     if let Some(arr) = feed_config.get("user_interests").and_then(|v| v.as_array()) {
         let items: Vec<toml::Value> = arr.iter()
             .filter_map(|v| v.as_str().map(|s| toml::Value::String(s.to_string())))
             .collect();
         feed.insert("user_interests".into(), toml::Value::Array(items));
     }
-
-    // Helper to set a source sub-table
     fn set_source(feed: &mut toml::map::Map<String, toml::Value>, key: &str, val: &Value) {
         let tbl = feed
             .entry(key)
@@ -248,13 +320,11 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
         if let Some(n) = val.get("poll_interval_secs").and_then(|v| v.as_i64()) {
             tbl.insert("poll_interval_secs".into(), toml::Value::Integer(n));
         }
-        // Integer fields
         for field in ["min_score", "limit"] {
             if let Some(n) = val.get(field).and_then(|v| v.as_i64()) {
                 tbl.insert(field.into(), toml::Value::Integer(n));
             }
         }
-        // Array<String> fields
         for field in ["subreddits", "trending_languages", "categories", "keywords", "feeds"] {
             if let Some(arr) = val.get(field).and_then(|v| v.as_array()) {
                 let items: Vec<toml::Value> = arr
@@ -265,17 +335,21 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
             }
         }
     }
-
     for key in ["reddit", "hackernews", "github", "arxiv", "rss"] {
         if let Some(val) = feed_config.get(key) {
             set_source(feed, key, val);
         }
     }
-
     let output = toml::to_string_pretty(&doc).map_err(|e| format!("TOML serialize failed: {e}"))?;
     std::fs::write(&path, output).map_err(|e| format!("写入配置失败: {e}"))?;
     tracing::info!("Feed config saved to {}", path.display());
     Ok(())
+}
+
+/// 保存 Feed 配置到 config.toml
+#[tauri::command]
+pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
+    save_feed_config_inner(&feed_config)
 }
 
 /// 获取今日 Feed 简报（优先读缓存，无缓存返回空）

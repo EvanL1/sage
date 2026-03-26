@@ -56,6 +56,8 @@ function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const [nlInput, setNlInput] = useState("");
+  const [nlBusy, setNlBusy] = useState(false);
 
   // Provider state
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -233,6 +235,36 @@ function Settings() {
 
   return (
     <div className="page">
+      {/* ── Natural language config ── */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            type="text"
+            placeholder={`Tell Sage, e.g. "Set morning brief to 7am" or "Enable WeChat channel"`}
+            value={nlInput}
+            onChange={(e) => setNlInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && nlInput.trim()) {
+                setNlBusy(true);
+                invoke<string>("update_config_natural", { text: nlInput })
+                  .then((msg) => {
+                    showToast("success", msg);
+                    setNlInput("");
+                    // reload profile to reflect changes
+                    invoke<UserProfile>("get_profile").then((p) => { if (p) setProfile(p); });
+                  })
+                  .catch((e) => showToast("error", String(e)))
+                  .finally(() => setNlBusy(false));
+              }
+            }}
+            disabled={nlBusy}
+            className="form-input"
+            style={{ flex: 1, opacity: nlBusy ? 0.6 : 1 }}
+          />
+          {nlBusy && <span style={{ fontSize: 12, color: "var(--text-tertiary)", alignSelf: "center", whiteSpace: "nowrap" }}>Updating...</span>}
+        </div>
+      </div>
+
       {/* Email / Message Sources */}
       <MessageSourcesSection showToast={showToast} />
 

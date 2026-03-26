@@ -17,6 +17,7 @@ pub mod observer;
 pub mod onboarding;
 pub mod person_observer;
 pub mod persona;
+pub mod pipeline;
 pub mod profile;
 pub mod prompts;
 pub mod questioner;

@@ -428,6 +428,59 @@ pub async fn get_memory_graph(state: State<'_, AppState>) -> Result<Value, Strin
     Ok(json!({ "nodes": nodes, "edges": edge_list }))
 }
 
+// ─── 人物认知 ─────────────────────────────────
+
+/// 手动触发人物认知提取
+#[tauri::command]
+pub async fn trigger_person_extract(state: State<'_, AppState>) -> Result<String, String> {
+    let daemon = state.daemon.clone();
+    tauri::async_runtime::spawn(async move {
+        match daemon.trigger_person_observer().await {
+            Ok(true) => {
+                let _ = sage_core::applescript::notify(
+                    "Person Observer",
+                    "已提取人物认知",
+                    "/people",
+                )
+                .await;
+            }
+            Ok(false) => {
+                let _ = sage_core::applescript::notify(
+                    "Person Observer",
+                    "今日暂无新的人物信息",
+                    "/people",
+                )
+                .await;
+            }
+            Err(e) => tracing::error!("PersonObserver failed: {e}"),
+        }
+    });
+    Ok("人物提取已在后台启动…".into())
+}
+
+/// 获取所有已知人名
+#[tauri::command]
+pub async fn get_known_persons(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    state.store.get_known_persons().map_err(map_err)
+}
+
+/// 获取关于某人的所有记忆
+#[tauri::command]
+pub async fn get_memories_about_person(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<Vec<Value>, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() || name.len() > 200 {
+        return Err("人名无效".to_string());
+    }
+    let memories = state.store.get_memories_about_person(&name).map_err(map_err)?;
+    memories
+        .into_iter()
+        .map(|m| serde_json::to_value(&m).map_err(map_err))
+        .collect()
+}
+
 /// 单独触发记忆图谱连接
 #[tauri::command]
 pub async fn trigger_memory_linking(state: State<'_, AppState>) -> Result<Value, String> {

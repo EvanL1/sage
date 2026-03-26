@@ -875,6 +875,54 @@ impl Store {
         Ok(0)
     }
 
+    /// 分层衰减：按 depth 使用不同的未访问阈值，axiom 永不自动衰减
+    /// - episodic:   episodic_days 天未访问 → confidence × 0.9，低于 0.3 时标记 archived
+    /// - semantic:   semantic_days 天未访问 → 同上
+    /// - procedural: procedural_days 天未访问 → 同上
+    /// - axiom:      永不自动衰减
+    /// 生产默认值：(30, 90, 180)；测试可传入 (0, 0, 0) 让所有无访问记录的记忆立即衰减
+    pub fn decay_memories_by_depth_with_thresholds(
+        &self,
+        episodic_days: i64,
+        semantic_days: i64,
+        procedural_days: i64,
+    ) -> Result<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        let mut total = 0;
+
+        let tiers: &[(&str, i64)] = &[
+            ("episodic", episodic_days),
+            ("semantic", semantic_days),
+            ("procedural", procedural_days),
+            // axiom 不在列表中，永不衰减
+        ];
+        for (depth, days) in tiers {
+            // confidence × 0.9；若结果 < 0.3 则同时标记 archived
+            let n = conn.execute(
+                "UPDATE memories
+                 SET confidence = CASE WHEN confidence * 0.9 < 0.3 THEN 0.3 ELSE confidence * 0.9 END,
+                     status = CASE WHEN confidence * 0.9 < 0.3 THEN 'archived' ELSE status END,
+                     updated_at = ?1
+                 WHERE status = 'active'
+                   AND depth = ?2
+                   AND (last_accessed_at IS NULL OR last_accessed_at < datetime('now', ?3))",
+                rusqlite::params![now, depth, format!("-{days} days")],
+            )
+            .context("分层衰减记忆失败")?;
+            total += n;
+        }
+        Ok(total)
+    }
+
+    /// 分层衰减（生产用，阈值：episodic=30天, semantic=90天, procedural=180天）
+    pub fn decay_memories_by_depth(&self) -> Result<usize> {
+        self.decay_memories_by_depth_with_thresholds(30, 90, 180)
+    }
+
     /// 提升高置信度 archive 记忆到 core（限定特定行为/模式类别）
     pub fn promote_high_confidence_memories(&self, min_confidence: f64) -> Result<usize> {
         let conn = self

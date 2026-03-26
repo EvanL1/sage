@@ -159,16 +159,11 @@ impl Router {
 
         let mut count = 0;
         for t in &tasks {
-            let raw = t["content"].as_str().unwrap_or("").trim();
-            if raw.is_empty() {
+            let content = t["content"].as_str().unwrap_or("").trim();
+            if content.is_empty() {
                 continue;
             }
-            // 剥掉 LLM 可能带出的 [id=XX] 前缀
-            let content = if raw.starts_with("[id=") {
-                raw.find("] ").map(|i| &raw[i + 2..]).unwrap_or(raw)
-            } else {
-                raw
-            };
+            // [id=XX] 标记由 create_task 内部清理
             let priority = t["priority"].as_str().unwrap_or("P1");
             let due = t["due_date"].as_str().or(Some(today.as_str()));
             if self

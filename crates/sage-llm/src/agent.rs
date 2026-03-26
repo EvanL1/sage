@@ -102,6 +102,11 @@ impl Agent {
     pub fn reset_counter(&self) {
         self.invocation_count.store(0, Ordering::SeqCst);
     }
+
+    /// 覆盖 max_iterations（用于 per-stage 配置）
+    pub fn set_max_iterations(&mut self, max: usize) {
+        self.config.max_iterations = max;
+    }
 }
 
 #[cfg(test)]

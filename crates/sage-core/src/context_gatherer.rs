@@ -202,6 +202,7 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
     }
 
     inject_corrections(store, "morning", &mut sections, lang);
+    inject_calibration_rules(store, "morning", &mut sections, lang);
 
     if sections.is_empty() {
         return String::new();
@@ -373,6 +374,7 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
     }
 
     inject_corrections(store, "evening", &mut sections, lang);
+    inject_calibration_rules(store, "evening", &mut sections, lang);
 
     if sections.is_empty() {
         return String::new();
@@ -449,6 +451,7 @@ fn gather_weekly(store: &Store, lang: &str) -> String {
     }
 
     inject_corrections(store, "weekly", &mut sections, lang);
+    inject_calibration_rules(store, "weekly", &mut sections, lang);
 
     if sections.is_empty() {
         return String::new();
@@ -629,6 +632,28 @@ fn inject_corrections(store: &Store, report_type: &str, sections: &mut Vec<Strin
         "## Historical Calibrations (errors you made before in this report type — avoid repeating)",
     );
     sections.push(format!("{cal_header}\n{}", lines.join("\n")));
+}
+
+/// 注入 calibrator/self-reflect 生成的行为规则
+fn inject_calibration_rules(store: &Store, report_type: &str, sections: &mut Vec<String>, lang: &str) {
+    // 加载通用校准规则 + report 类型专属规则
+    let all_rules = store.get_memories_by_category("calibration").unwrap_or_default();
+    let tag = format!("[{report_type}]");
+    let matching: Vec<&str> = all_rules
+        .iter()
+        .filter(|m| m.content.contains(&tag) || !m.content.starts_with('['))
+        .map(|m| m.content.as_str())
+        .collect();
+    if matching.is_empty() {
+        return;
+    }
+    let lines: Vec<String> = matching.iter().map(|r| format!("- {r}")).collect();
+    let header = sec(
+        lang,
+        "## 自我校准规则（Sage 从过去错误中学到的，严格遵守）",
+        "## Self-Calibration Rules (learned from past mistakes — follow strictly)",
+    );
+    sections.push(format!("{header}\n{}", lines.join("\n")));
 }
 
 #[cfg(test)]

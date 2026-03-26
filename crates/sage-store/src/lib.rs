@@ -22,6 +22,7 @@ pub mod similarity;
 mod suggestions;
 pub mod time_normalizer;
 mod tasks;
+pub mod pipeline;
 
 #[cfg(test)]
 mod tests;

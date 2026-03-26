@@ -64,6 +64,111 @@ pub(crate) fn claude_memory_dir() -> Option<std::path::PathBuf> {
     }
 }
 
+// ─── 自然语言配置更新 ─────────────────────────────────────────────────────
+
+/// 自然语言修改 config.toml（脱敏后交给 LLM 理解意图，更新非敏感字段）
+#[tauri::command]
+pub async fn update_config_natural(
+    state: tauri::State<'_, crate::AppState>,
+    text: String,
+) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("内容不能为空".into());
+    }
+
+    let config_path = dirs::home_dir()
+        .map(|h| h.join(".sage/config.toml"))
+        .ok_or("无法确定 home 目录")?;
+    let raw_toml = std::fs::read_to_string(&config_path).unwrap_or_default();
+
+    // 脱敏：移除 API key 相关行
+    let sanitized: String = raw_toml
+        .lines()
+        .map(|line| {
+            let lower = line.to_lowercase();
+            if lower.contains("api_key") || lower.contains("apikey") || lower.contains("secret") {
+                format!("# [REDACTED] {}", line.split('=').next().unwrap_or("").trim())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        r#"你是配置助手。用户用自然语言描述了要修改的配置。
+
+当前配置（TOML，API key 已脱敏）：
+```toml
+{sanitized}
+```
+
+用户说："{text}"
+
+请理解用户意图，输出修改后的**完整** TOML 配置。规则：
+1. 保留用户没提到的配置不变
+2. 被脱敏的 `# [REDACTED]` 行必须原样保留（输出 `# [REDACTED] 字段名`），不要猜测或补充 key 值
+3. 只输出 TOML，不要解释，不要 ```toml 标记
+4. 保持 TOML 格式正确"#
+    );
+
+    // 调用 LLM
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) =
+        sage_core::discovery::select_best_provider(&discovered, &configs)
+            .ok_or("没有可用的 AI 服务")?;
+    let agent_config = default_agent_config();
+    let provider =
+        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+
+    let result = provider.invoke(&prompt, None).await.map_err(map_err)?;
+
+    // 清理 LLM 输出（可能带 ```toml 标记）
+    let clean = result
+        .trim()
+        .strip_prefix("```toml")
+        .or_else(|| result.trim().strip_prefix("```"))
+        .unwrap_or(result.trim())
+        .strip_suffix("```")
+        .unwrap_or(result.trim())
+        .trim();
+
+    // 验证 TOML 合法性
+    let _: toml::Value = clean.parse().map_err(|e| format!("LLM 输出的 TOML 不合法: {e}"))?;
+
+    // 还原脱敏行：用原始文件中的真实值替换 [REDACTED]
+    let mut final_lines: Vec<String> = Vec::new();
+    let original_lines: Vec<&str> = raw_toml.lines().collect();
+    for line in clean.lines() {
+        if line.contains("[REDACTED]") {
+            // 找到原始行
+            let field = line
+                .trim_start_matches('#')
+                .trim()
+                .trim_start_matches("[REDACTED]")
+                .trim();
+            if let Some(orig) = original_lines.iter().find(|l| {
+                let lf = l.split('=').next().unwrap_or("").trim();
+                lf == field
+            }) {
+                final_lines.push(orig.to_string());
+            } else {
+                final_lines.push(line.to_string());
+            }
+        } else {
+            final_lines.push(line.to_string());
+        }
+    }
+
+    let final_toml = final_lines.join("\n");
+    std::fs::write(&config_path, &final_toml).map_err(|e| format!("写入配置失败: {e}"))?;
+    tracing::info!("Config updated via natural language");
+
+    Ok("配置已更新".into())
+}
+
 /// 触发 Sage → Claude Code 记忆同步（静默失败，不影响主流程）
 pub(crate) fn trigger_memory_sync(store: &sage_core::store::Store) {
     if let Some(dir) = claude_memory_dir() {

@@ -162,6 +162,7 @@ pub async fn quick_setup(
     communication: Option<Value>,
     api_key: Option<String>,
     provider_id: Option<String>,
+    prompt_language: Option<String>,
 ) -> Result<Value, String> {
     let parsed_projects: Vec<Project> = projects
         .unwrap_or_default()
@@ -190,7 +191,7 @@ pub async fn quick_setup(
             reporting_line: reporting_line.unwrap_or_default(),
             primary_language: "zh".into(),
             secondary_language: "en".into(),
-            prompt_language: "zh".into(),
+            prompt_language: prompt_language.unwrap_or_else(|| "zh".into()),
         },
         work_context: WorkContext {
             projects: parsed_projects,
