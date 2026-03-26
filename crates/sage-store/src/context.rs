@@ -293,6 +293,53 @@ impl Store {
         Ok(titles)
     }
 
+    /// 检查自上次 evolution 以来是否有新的非 episodic 记忆
+    pub fn has_memories_since_last_evolution(&self) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        // 上次 evolution 时间：最近一条 coach_insight 或 observer_note 的 created_at 之前的最后 evolution
+        // 简化：用 today 的第一条 coach_insight 时间作为基准（Coach 在 Evolution 之前跑）
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let last_evolution: Option<String> = conn.query_row(
+            "SELECT MAX(created_at) FROM memories WHERE category = 'coach_insight' AND created_at >= ?1",
+            rusqlite::params![format!("{today}T00:00:00")],
+            |row| row.get(0),
+        ).ok().flatten();
+
+        let Some(since) = last_evolution else {
+            return Ok(true); // 今天没跑过 coach → 有新东西
+        };
+
+        // 检查 since 之后是否有新的非 episodic 记忆（排除 coach_insight/observer_note 本身）
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE depth <> 'episodic' AND category NOT IN ('coach_insight', 'observer_note') AND created_at > ?1",
+            rusqlite::params![since],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        Ok(count > 0)
+    }
+
+    /// 获取今天的 observer_notes 内容列表
+    pub fn get_today_observer_notes(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut stmt = conn.prepare(
+            "SELECT content FROM memories WHERE category = 'observer_note' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 30"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![format!("{today}T00:00:00")], |r| r.get(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 获取今天的 coach_insights 内容列表
+    pub fn get_today_coach_insights(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut stmt = conn.prepare(
+            "SELECT content FROM memories WHERE category = 'coach_insight' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 15"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![format!("{today}T00:00:00")], |r| r.get(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// 保存教练洞察（category="coach_insight"），返回新记录 id
     pub fn save_coach_insight(&self, insight: &str) -> Result<i64> {
         self.save_memory_with_visibility("coach_insight", insight, "coach", 0.8, "subconscious")

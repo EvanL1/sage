@@ -6,6 +6,9 @@ use tracing::info;
 use crate::config::AgentConfig;
 use crate::provider::{self, LlmProvider};
 
+const TIMEOUT_NORMAL_SECS: u64 = 300;
+const TIMEOUT_LONG_SECS: u64 = 600;
+
 pub struct Agent {
     config: AgentConfig,
     provider: Arc<dyn LlmProvider>,
@@ -59,9 +62,8 @@ impl Agent {
         self.provider.as_ref()
     }
 
-    /// 调用 LLM 做推理（自动路由到 Claude/Codex/Gemini）
-    /// 超过 max_iterations 后返回错误，防止无限循环
-    pub async fn invoke(&self, prompt: &str, system_prompt: Option<&str>) -> Result<AgentResponse> {
+    /// 共享调用逻辑（计数器检查 + 时钟注入 + provider 调用）
+    async fn invoke_inner(&self, prompt: &str, system_prompt: Option<&str>, timeout_secs: u64) -> Result<AgentResponse> {
         // 先获取当前计数，再递增（fetch_add 返回递增前的值）
         let count = self.invocation_count.fetch_add(1, Ordering::SeqCst);
         if count >= self.config.max_iterations {
@@ -81,8 +83,19 @@ impl Agent {
             Some(sp) => format!("{time_header}{sp}"),
             None => time_header,
         };
-        let text = self.provider.invoke(prompt, Some(&enriched_system)).await?;
+        let text = self.provider.invoke_with_timeout(prompt, Some(&enriched_system), timeout_secs).await?;
         Ok(AgentResponse { text })
+    }
+
+    /// 调用 LLM 做推理（自动路由到 Claude/Codex/Gemini）
+    /// 超过 max_iterations 后返回错误，防止无限循环
+    pub async fn invoke(&self, prompt: &str, system_prompt: Option<&str>) -> Result<AgentResponse> {
+        self.invoke_inner(prompt, system_prompt, TIMEOUT_NORMAL_SECS).await
+    }
+
+    /// 长超时调用（600s），用于 Memory Evolution 等重分析任务
+    pub async fn invoke_long(&self, prompt: &str, system_prompt: Option<&str>) -> Result<AgentResponse> {
+        self.invoke_inner(prompt, system_prompt, TIMEOUT_LONG_SECS).await
     }
 
     /// 重置调用计数器（daemon 每个 tick 开始时调用，避免跨 tick 累积）

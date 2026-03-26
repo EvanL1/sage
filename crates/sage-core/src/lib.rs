@@ -15,6 +15,7 @@ pub mod mirror;
 pub mod oauth2;
 pub mod observer;
 pub mod onboarding;
+pub mod person_observer;
 pub mod persona;
 pub mod profile;
 pub mod prompts;

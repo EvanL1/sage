@@ -105,6 +105,11 @@ impl Router {
         mirror::mirror_weekly(&self.agent, &self.store).await
     }
 
+    /// 人物认知提取：从今日事件中识别人物特征
+    pub async fn run_person_observer(&self) -> Result<bool> {
+        crate::person_observer::extract_persons(&self.agent, &self.store).await
+    }
+
     /// 触发校准模式反思：分析纠正历史，提炼自我约束规则
     pub async fn run_calibrator(&self) -> Result<bool> {
         crate::calibrator::reflect_patterns(&self.agent, &self.store).await
@@ -248,10 +253,19 @@ impl Router {
 
         let prompt = build_report_prompt(&lang, event.title.as_str(), &time_header, &ctx_section, &event.body);
 
-        // 跳过 12 小时内已有相同建议的 Claude 调用（节省 API 费用）
-        // 优先按标题去重（标题稳定），fallback 到 prompt 精确匹配
-        if self.store.has_recent_suggestion_by_title(&event.source, &event.title)
-            || self.store.has_recent_suggestion(&event.source, &prompt) {
+        // 跳过已生成的报告（优先用 reports 表精确去重，fallback 到 suggestions 表）
+        if let Some(ref rt) = report_type {
+            let type_str = match rt {
+                context_gatherer::ReportType::MorningBrief => "morning",
+                context_gatherer::ReportType::EveningReview => "evening",
+                context_gatherer::ReportType::WeeklyReport => "weekly",
+                context_gatherer::ReportType::WeekStart => "week_start",
+            };
+            if self.store.has_today_report(type_str) {
+                info!("Skipping duplicate report (already in reports table): {}", event.title);
+                return Ok(());
+            }
+        } else if self.store.has_recent_suggestion(&event.source, &prompt) {
             info!("Skipping duplicate scheduled event: {}", event.title);
             return Ok(());
         }

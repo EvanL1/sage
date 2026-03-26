@@ -234,7 +234,9 @@ impl Daemon {
         handled_keys.insert(format!("__date:{today}"));
         if let Ok(titles) = store.get_today_handled_actions() {
             for title in &titles {
-                let key = format!("heartbeat:{title}");
+                // key 格式与 filter_new_events 一致: "{source}:{title}:{date}"
+                // heartbeat 事件没有 metadata.date，所以 date 为空 → 尾部有冒号
+                let key = format!("heartbeat:{title}:");
                 info!("恢复已处理动作: {key}");
                 handled_keys.insert(key);
             }
@@ -293,7 +295,15 @@ impl Daemon {
         &self,
     ) -> Result<crate::memory_evolution::EvolutionResult> {
         info!("手动触发记忆进化");
-        self.router.lock().await.run_memory_evolution().await
+        let router = self.router.lock().await;
+        let result = router.run_memory_evolution().await;
+        // Evolution 之后跑人物认知提取（附加功能，不影响 Evolution 结果）
+        match router.run_person_observer().await {
+            Ok(true) => info!("PersonObserver: person insights extracted"),
+            Ok(false) => {}
+            Err(e) => error!("PersonObserver failed: {e}"),
+        }
+        result
     }
 
     /// 手动触发战略家分析
@@ -554,6 +564,13 @@ impl Daemon {
                 Err(e) => error!("Memory evolution failed: {e}"),
             }
 
+            // 人物认知提取：从今日事件中识别人物特征
+            match router.run_person_observer().await {
+                Ok(true) => info!("PersonObserver: person insights extracted"),
+                Ok(false) => {}
+                Err(e) => error!("PersonObserver failed: {e}"),
+            }
+
             // 校准模式反思（晚间 review 后检查纠正积累）
             match router.run_calibrator().await {
                 Ok(true) => info!("Calibrator: new calibration rules generated"),
@@ -699,15 +716,17 @@ impl Daemon {
         }
     }
 
-    /// 轮询所有 Feed 通道，将结果写入 observations 表
+    /// 轮询所有 Feed 通道，将结果写入 observations 表（同标题去重）
     async fn poll_feed_channels(&self) {
         for ch in &self.feed_channels {
             match ch.poll().await {
                 Ok(events) => {
                     for ev in events {
-                        let _ = self
-                            .store
-                            .record_observation("feed", &ev.title, Some(&ev.body));
+                        if !self.store.has_feed_observation(&ev.title) {
+                            let _ = self
+                                .store
+                                .record_observation("feed", &ev.title, Some(&ev.body));
+                        }
                     }
                 }
                 Err(e) => error!("Feed {} failed: {e}", ch.name()),
@@ -840,7 +859,12 @@ impl Daemon {
                 }
                 let date = event.metadata.get("date").map(|s| s.as_str()).unwrap_or("");
                 let key = format!("{}:{}:{}", event.source, event.title, date);
-                !handled.contains(&key)
+                if handled.contains(&key) {
+                    return false;
+                }
+                // 同一批次内去重：同一 tick 中多个日历返回同一会议时只保留第一个
+                handled.insert(key);
+                true
             })
             .collect()
     }

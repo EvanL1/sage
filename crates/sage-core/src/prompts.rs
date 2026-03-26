@@ -51,6 +51,7 @@ define_prompts! {
         "feed_filter", "feed_deep_read", "feed_deep_note", "feed_digest_system", "feed_digest_user",
         "chat_memory_write_protocol", "chat_safety_protocol",
         "page_gen_system",
+        "person_extract",
     ],
     en_only: [
         "memory_integrator",
@@ -334,6 +335,12 @@ pub fn persona_intro(lang: &str, name: &str) -> String {
 
 pub fn persona_rules(lang: &str) -> &'static str { s("persona_rules", lang) }
 pub fn persona_context_header(lang: &str) -> &'static str { s("persona_context_header", lang) }
+
+// ─── Person Extract ──────────────────────────────────────────────────────────
+
+pub fn person_extract(lang: &str, events: &str) -> String {
+    p("person_extract", lang).replace("{events}", events)
+}
 
 // ─── Task Intelligence ────────────────────────────────────────────────────────
 

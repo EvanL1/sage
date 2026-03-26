@@ -40,6 +40,21 @@ impl Store {
         }
     }
 
+    /// 检查今天是否已生成指定类型的报告
+    pub fn has_today_report(&self, report_type: &str) -> bool {
+        let conn = self.conn.lock().ok();
+        let Some(conn) = conn else {
+            tracing::warn!("Store mutex poisoned");
+            return false;
+        };
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        conn.query_row(
+            "SELECT 1 FROM reports WHERE report_type = ?1 AND created_at >= ?2 LIMIT 1",
+            rusqlite::params![report_type, format!("{today}T00:00:00")],
+            |_| Ok(()),
+        ).is_ok()
+    }
+
     /// 获取指定类型的最新一条报告
     pub fn get_latest_report(&self, report_type: &str) -> Result<Option<Report>> {
         let conn = self
@@ -107,16 +122,19 @@ impl Store {
         correct_fact: &str,
         context_hint: &str,
     ) -> Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        conn.execute(
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE report_corrections SET superseded_at = datetime('now') WHERE report_type = ?1 AND wrong_claim = ?2 AND superseded_at IS NULL",
             rusqlite::params![report_type, wrong_claim],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO report_corrections (report_type, wrong_claim, correct_fact, context_hint) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![report_type, wrong_claim, correct_fact, context_hint],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
     }
 
     pub fn get_active_corrections(

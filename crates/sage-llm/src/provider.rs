@@ -8,6 +8,9 @@ use tracing::{debug, info};
 
 static CODEX_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// 默认 Claude CLI 调用超时（秒），与 agent.rs 中的 TIMEOUT_NORMAL_SECS 保持一致
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
 /// .app bundle 不继承 shell 环境变量，CLI 需要 proxy 才能连接（中国网络）
 const PROXY_ENVS: &[(&str, &str)] = &[
     ("http_proxy", "http://127.0.0.1:7890"),
@@ -80,6 +83,12 @@ use sage_types::{ProviderConfig, ProviderInfo, ProviderKind};
 pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &str;
     async fn invoke(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String>;
+    /// 带自定义超时的调用（默认委托到 invoke，仅 ClaudeProvider 覆写）
+    /// 默认实现忽略 timeout_secs，仅 ClaudeProvider 实际生效。
+    /// 其他 provider（Codex/Gemini/Cursor）使用各自 CLI 的默认超时。
+    async fn invoke_with_timeout(&self, prompt: &str, system_prompt: Option<&str>, _timeout_secs: u64) -> Result<String> {
+        self.invoke(prompt, system_prompt).await
+    }
 }
 
 /// 根据 config 创建对应的 provider
@@ -110,24 +119,15 @@ impl ClaudeProvider {
             permission_mode: config.permission_mode.clone(),
         }
     }
-}
 
-#[async_trait]
-impl LlmProvider for ClaudeProvider {
-    fn name(&self) -> &str {
-        "claude"
-    }
-
-    async fn invoke(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+    async fn run_cli(&self, prompt: &str, system_prompt: Option<&str>, timeout_secs: u64) -> Result<String> {
         let mut cmd = Command::new(&self.binary);
 
-        // 使用安全的工作目录，避免 .app 启动时 cwd="/" 触发 macOS TCC 权限弹窗
         let safe_dir = safe_working_dir();
         cmd.current_dir(&safe_dir);
 
         let (model, effort) = parse_model_with_effort(&self.model);
         cmd.arg("--print")
-            // Skip all MCP servers to avoid startup timeout (serena/context7/etc take 2-5s each)
             .arg("--strict-mcp-config")
             .arg("--mcp-config")
             .arg(empty_mcp_config_path())
@@ -153,23 +153,22 @@ impl LlmProvider for ClaudeProvider {
         cmd.env_remove("CLAUDECODE");
         inject_proxy(&mut cmd);
 
-        info!("Invoking Claude (model: {}, effort: {:?})", model, effort);
+        info!("Invoking Claude (model: {}, effort: {:?}, timeout: {}s)", model, effort, timeout_secs);
         let preview: String = prompt.chars().take(100).collect();
         debug!("Prompt: {preview}");
 
         let child = cmd.spawn().context("Failed to spawn Claude CLI")?;
-        let pid = child.id(); // capture PID before moving
+        let pid = child.id();
         let output = match tokio::time::timeout(
-            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(timeout_secs),
             child.wait_with_output(),
         ).await {
             Ok(result) => result.context("Claude CLI process failed")?,
             Err(_) => {
-                // Kill the hanging process by PID
                 if let Some(pid) = pid {
                     let _ = tokio::process::Command::new("kill").arg(pid.to_string()).output().await;
                 }
-                anyhow::bail!("Claude CLI timed out after 120s");
+                anyhow::bail!("Claude CLI timed out after {timeout_secs}s");
             }
         };
 
@@ -182,6 +181,21 @@ impl LlmProvider for ClaudeProvider {
         }
 
         Ok(stdout)
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ClaudeProvider {
+    fn name(&self) -> &str {
+        "claude"
+    }
+
+    async fn invoke(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        self.run_cli(prompt, system_prompt, DEFAULT_TIMEOUT_SECS).await
+    }
+
+    async fn invoke_with_timeout(&self, prompt: &str, system_prompt: Option<&str>, timeout_secs: u64) -> Result<String> {
+        self.run_cli(prompt, system_prompt, timeout_secs).await
     }
 }
 
@@ -220,7 +234,7 @@ impl LlmProvider for CodexProvider {
         let seq = CODEX_SEQ.fetch_add(1, Ordering::Relaxed);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos();
         let tmp_out = format!("/tmp/sage-codex-{}-{}.txt", ts, seq);
 

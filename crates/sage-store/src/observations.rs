@@ -4,6 +4,20 @@ use super::{ObservationRow, Store};
 
 impl Store {
     /// 记录观察
+    /// 检查是否已存在同标题的 feed observation
+    pub fn has_feed_observation(&self, title: &str) -> bool {
+        let conn = self.conn.lock().ok();
+        let Some(conn) = conn else {
+            tracing::warn!("Store mutex poisoned");
+            return false;
+        };
+        conn.query_row(
+            "SELECT 1 FROM observations WHERE category = 'feed' AND observation = ?1 LIMIT 1",
+            rusqlite::params![title],
+            |_| Ok(()),
+        ).is_ok()
+    }
+
     pub fn record_observation(
         &self,
         category: &str,
@@ -109,11 +123,19 @@ impl Store {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        // UNION: 最新 limit 条 + 所有有 action 的条目（归档/已学习），避免旧归档被挤出
         let mut stmt = conn
             .prepare(
-                "SELECT id, category, observation, raw_data, created_at
-                 FROM observations WHERE category = 'feed'
-                 ORDER BY created_at DESC LIMIT ?1",
+                "SELECT id, category, observation, raw_data, created_at FROM (
+                    SELECT id, category, observation, raw_data, created_at
+                    FROM observations WHERE category = 'feed' AND id IN (
+                        SELECT id FROM observations WHERE category = 'feed' ORDER BY created_at DESC LIMIT ?1
+                    )
+                  UNION
+                    SELECT o.id, o.category, o.observation, o.raw_data, o.created_at
+                    FROM observations o INNER JOIN feed_actions fa ON o.id = fa.observation_id
+                    WHERE o.category = 'feed'
+                 ) ORDER BY created_at DESC",
             )
             .context("准备 load_feed_observations 查询失败")?;
         let rows = stmt

@@ -8,7 +8,10 @@ impl Store {
     /// 检查 12 小时内是否有相同 (event_source, prompt) 的建议
     pub fn has_recent_suggestion(&self, event_source: &str, prompt: &str) -> bool {
         let conn = self.conn.lock().ok();
-        let Some(conn) = conn else { return false };
+        let Some(conn) = conn else {
+            tracing::warn!("Store mutex poisoned");
+            return false;
+        };
         let threshold = (chrono::Local::now() - chrono::Duration::hours(12)).to_rfc3339();
         conn.query_row(
             "SELECT 1 FROM suggestions WHERE event_source = ?1 AND prompt = ?2 AND created_at > ?3 LIMIT 1",
@@ -17,16 +20,21 @@ impl Store {
         ).is_ok()
     }
 
-    /// 按事件标题去重（12 小时内，response 包含标题关键词）
+    /// 按事件标题去重（12 小时内，prompt 包含标题关键词）
+    /// 搜索 prompt 而非 response，因为 prompt 总是包含英文标题，但 response 可能是中文
     pub fn has_recent_suggestion_by_title(&self, event_source: &str, title: &str) -> bool {
         let conn = self.conn.lock().ok();
-        let Some(conn) = conn else { return false };
+        let Some(conn) = conn else {
+            tracing::warn!("Store mutex poisoned");
+            return false;
+        };
         let threshold = (chrono::Local::now() - chrono::Duration::hours(12)).to_rfc3339();
         // 用标题前 20 字符做模糊匹配（避免时间戳等变化导致的不匹配）
         let key: String = title.chars().take(20).collect();
-        let pattern = format!("%{}%", key.replace('%', "").replace('_', ""));
+        let escaped = key.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{escaped}%");
         conn.query_row(
-            "SELECT 1 FROM suggestions WHERE event_source = ?1 AND response LIKE ?2 AND created_at > ?3 LIMIT 1",
+            "SELECT 1 FROM suggestions WHERE event_source = ?1 AND prompt LIKE ?2 ESCAPE '\\' AND created_at > ?3 LIMIT 1",
             rusqlite::params![event_source, pattern, threshold],
             |_| Ok(()),
         ).is_ok()
@@ -49,10 +57,13 @@ impl Store {
         let today = &now[..10]; // "2026-03-25"
 
         // heartbeat 类型：同天同源只保留一条，重复生成时更新内容
+        // 用 LIKE 匹配 prompt 中的标题关键词（prompt 包含动态时间，不能精确匹配）
         if event_source == "heartbeat" {
+            // 提取标题：prompt 格式为 "...处理定时任务：{title}\n..." 或 "...{title}：\n..."
+            let stable_key = extract_stable_key(prompt);
             let existing_id: Option<i64> = conn.query_row(
-                "SELECT id FROM suggestions WHERE event_source = 'heartbeat' AND prompt = ?1 AND created_at >= ?2 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![prompt, format!("{today}T00:00:00")],
+                "SELECT id FROM suggestions WHERE event_source = 'heartbeat' AND prompt LIKE ?1 ESCAPE '\\' AND created_at >= ?2 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![format!("%{stable_key}%"), format!("{today}T00:00:00")],
                 |row| row.get(0),
             ).ok();
             if let Some(id) = existing_id {
@@ -180,20 +191,22 @@ impl Store {
 
     /// 删除指定 suggestion 及其关联 feedback
     pub fn delete_suggestion(&self, suggestion_id: i64) -> Result<()> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "DELETE FROM feedback WHERE suggestion_id = ?1",
             rusqlite::params![suggestion_id],
         )
         .context("删除关联 feedback 失败")?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM suggestions WHERE id = ?1",
             rusqlite::params![suggestion_id],
         )
         .context("删除 suggestion 失败")?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -238,14 +251,14 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let pattern = format!("%{action_type}%");
-        let count: usize = conn
+        let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM feedback WHERE action LIKE ?1",
                 rusqlite::params![pattern],
                 |row| row.get(0),
             )
             .context("统计 feedback 失败")?;
-        Ok(count)
+        Ok(count as usize)
     }
 
     /// 统计某个 event_source 下特定 action 类型的反馈数量
@@ -259,7 +272,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let pattern = format!("%{action_type}%");
-        let count: usize = conn
+        let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM feedback f
                  JOIN suggestions s ON f.suggestion_id = s.id
@@ -268,7 +281,7 @@ impl Store {
                 |row| row.get(0),
             )
             .context("统计 feedback by source 失败")?;
-        Ok(count)
+        Ok(count as usize)
     }
 
     /// 读取最近 N 条 suggestions 及其 feedback，返回 (event_source, response, feedback_action) 三元组
@@ -303,4 +316,18 @@ impl Store {
         }
         Ok(result)
     }
+}
+
+/// 从 heartbeat prompt 中提取稳定的去重关键词（去掉动态时间部分）
+/// prompt 格式："当前时间：2026-03-25 10:58...处理定时任务：Meeting Update\n..."
+/// 或 "当前时间：...生成今日 Morning Brief：..."
+fn extract_stable_key(prompt: &str) -> String {
+    // 去掉第一行（包含动态时间的 time_header），取后面的内容前 60 字符
+    let after_time = prompt
+        .find('\n')
+        .map(|i| &prompt[i + 1..])
+        .unwrap_or(prompt);
+    let key: String = after_time.chars().take(60).collect();
+    // 转义 SQL LIKE 特殊字符
+    key.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }

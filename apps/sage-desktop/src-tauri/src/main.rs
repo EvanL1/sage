@@ -25,13 +25,26 @@ pub struct AppState {
 }
 
 fn main() {
-    // 初始化 tracing：输出到 stderr（LaunchAgent 会重定向到 sage.err.log）
+    // 初始化 tracing：写入 ~/.sage/logs/sage.err.log，目录不可用时降级到 stderr
+    let log_file = dirs::home_dir()
+        .map(|h| h.join(".sage/logs/sage.err.log"))
+        .expect("无法确定 home 目录");
+    let writer: Box<dyn std::io::Write + Send + Sync> =
+        match log_file.parent().ok_or_else(|| std::io::Error::other("no parent")).and_then(|p| {
+            std::fs::create_dir_all(p)
+        }).and_then(|_| {
+            std::fs::OpenOptions::new().create(true).append(true).open(&log_file)
+        }) {
+            Ok(f) => Box::new(f),
+            Err(_) => Box::new(std::io::stderr()),
+        };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "sage_core=info,sage_desktop=info".parse().unwrap()),
         )
-        .with_writer(std::io::stderr)
+        .with_writer(std::sync::Mutex::new(writer))
+        .with_ansi(false)
         .init();
 
     let data_dir = dirs::home_dir()
