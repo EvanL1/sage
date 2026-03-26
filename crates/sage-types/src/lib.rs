@@ -304,6 +304,12 @@ pub struct Memory {
     /// 语义向量嵌入（f32 数组的 little-endian 字节序列），None 表示未生成
     #[serde(default, skip_serializing)]
     pub embedding: Option<Vec<u8>>,
+    /// 溯源：这条记忆由哪些记忆演化而来（JSON 数组 "[12, 47]"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<String>,
+    /// 演化备注：为什么产生这条变更
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evolution_note: Option<String>,
 }
 
 fn default_visibility() -> String {

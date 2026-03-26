@@ -224,7 +224,7 @@ impl Store {
         let mut results = Vec::new();
         for (mem_id, activation) in &visited {
             let mem = conn.query_row(
-                "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count
+                "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
                  FROM memories WHERE id = ?1 AND status = 'active'",
                 rusqlite::params![mem_id],
                 Self::row_to_memory,

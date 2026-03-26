@@ -599,6 +599,15 @@ impl Store {
             .context("数据库迁移 v37（feed_actions 表）失败")?;
         }
 
+        if version < 38 {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN derived_from TEXT;
+                 ALTER TABLE memories ADD COLUMN evolution_note TEXT;
+                 PRAGMA user_version = 38;",
+            )
+            .context("数据库迁移 v38（memory provenance）失败")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

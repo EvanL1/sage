@@ -902,7 +902,7 @@ impl Daemon {
         // Morning Brief：错过了 brief_hour，还没到中午，且今天没生成过
         if hour > brief_hour
             && hour < 12
-            && !handled.contains("heartbeat:Morning Brief")
+            && !handled.contains("heartbeat:Morning Brief:")
             && !self.has_report_today("morning", &today)
         {
             drop(handled);
@@ -914,7 +914,7 @@ impl Daemon {
         // Evening Review：错过了 review_hour，还没到午夜，且今天没生成过
         if hour > review_hour
             && hour < 23
-            && !handled.contains("heartbeat:Evening Review")
+            && !handled.contains("heartbeat:Evening Review:")
             && !self.has_report_today("evening", &today)
         {
             drop(handled);
@@ -927,7 +927,7 @@ impl Daemon {
         if now.weekday() == chrono::Weekday::Mon
             && hour > brief_hour
             && hour < 12
-            && !handled.contains("heartbeat:Week Start")
+            && !handled.contains("heartbeat:Week Start:")
             && !self.has_report_today("week_start", &today)
         {
             drop(handled);

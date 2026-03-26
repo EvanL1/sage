@@ -54,25 +54,7 @@ pub async fn trigger_memory_evolution(state: State<'_, AppState>) -> Result<Stri
     tauri::async_runtime::spawn(async move {
         match daemon.trigger_memory_evolution().await {
             Ok(r) => {
-                let parts: Vec<String> = [
-                    (r.consolidated, "merged"),
-                    (r.compiled_semantic, "→patterns"),
-                    (r.compiled_axiom, "→beliefs"),
-                    (r.distilled, "distilled"),
-                    (r.condensed, "condensed"),
-                    (r.linked, "linked"),
-                    (r.decayed, "decayed"),
-                    (r.promoted, "promoted"),
-                ]
-                .iter()
-                .filter(|(n, _)| *n > 0)
-                .map(|(n, l)| format!("{n} {l}"))
-                .collect();
-                let msg = if parts.is_empty() {
-                    "no changes".into()
-                } else {
-                    parts.join(", ")
-                };
+                let msg = r.summary.clone();
                 tracing::info!("Memory evolution done: {msg}");
                 let _ = sage_core::applescript::notify("Memory Evolution", &msg, "/about").await;
                 trigger_memory_sync(&store);

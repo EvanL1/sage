@@ -2809,6 +2809,41 @@ fn test_count_pending_messages() {
 }
 
 #[test]
+fn test_archive_memory() {
+    let store = Store::open_in_memory().unwrap();
+    let id = store.save_memory("behavior", "test content", "chat", 0.7).unwrap();
+    store.archive_memory(id, "merged with #99").unwrap();
+    let active = store.load_active_memories().unwrap();
+    assert!(active.iter().all(|m| m.id != id));
+}
+
+#[test]
+fn test_save_memory_with_provenance() {
+    let store = Store::open_in_memory().unwrap();
+    let id1 = store.save_memory("behavior", "loves coffee in the morning", "chat", 0.7).unwrap();
+    let id2 = store.save_memory("behavior", "drinks espresso every single day", "chat", 0.6).unwrap();
+    let new_id = store.save_memory_with_provenance(
+        "behavior", "caffeine dependent person confirmed", "evolution", 0.8,
+        &[id1, id2], "合并咖啡相关行为",
+    ).unwrap();
+    assert!(new_id > 0);
+    let mem = store.get_memory_by_id(new_id).unwrap().unwrap();
+    assert!(mem.derived_from.is_some());
+    assert_eq!(mem.evolution_note.as_deref(), Some("合并咖啡相关行为"));
+}
+
+#[test]
+fn test_archived_memory_preserves_content() {
+    let store = Store::open_in_memory().unwrap();
+    let id = store.save_memory("behavior", "original content here", "chat", 0.7).unwrap();
+    store.archive_memory(id, "dedup: 与其他记忆重复").unwrap();
+    // 归档记忆仍可通过 ID 直接查询
+    let mem = store.get_memory_by_id(id).unwrap().unwrap();
+    assert_eq!(mem.content, "original content here");
+    assert_eq!(mem.evolution_note.as_deref(), Some("dedup: 与其他记忆重复"));
+}
+
+#[test]
 fn test_info_only_messages() {
     let store = Store::open_in_memory().unwrap();
     // info_only 消息不应计入 pending 统计

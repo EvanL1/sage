@@ -16,6 +16,8 @@ pub struct EvolutionResult {
     pub compiled_axiom: usize,
     pub distilled: usize,
     pub reclassified: usize,
+    /// 面向用户的演化摘要
+    pub summary: String,
 }
 
 /// 记忆进化：每日 Evening Review 后运行
@@ -57,6 +59,7 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
         return Ok(EvolutionResult {
             consolidated: 0, condensed: 0, decayed: 0, promoted: 0,
             linked: 0, compiled_semantic: 0, compiled_axiom: 0, distilled: 0, reclassified: 0,
+            summary: "无变更".to_string(),
         });
     }
 
@@ -110,9 +113,9 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
                             .filter_map(|s| s.trim().parse().ok())
                             .filter(|id| batch_ids.contains(id))
                             .collect();
-                        for id in &ids { let _ = store.delete_memory(*id); }
+                        for id in &ids { let _ = store.archive_memory(*id, "dedup: 与其他记忆重复"); }
                         merged += ids.len();
-                        if !ids.is_empty() { elog(&format!("DEDUP: deleted {} memories", ids.len())); }
+                        if !ids.is_empty() { elog(&format!("DEDUP: archived {} memories", ids.len())); }
                     }
                 }
 
@@ -132,9 +135,10 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
 
                             if !content.is_empty() {
                                 let conf = if depth == "axiom" { 0.95 } else { 0.8 };
-                                if let Ok(new_id) = store.save_memory(category, content, "evolution", conf) {
+                                let note = format!("compile: {}条→{depth}:{category}", ids.len());
+                                if let Ok(new_id) = store.save_memory_with_provenance(category, content, "evolution", conf, &ids, &note) {
                                     let _ = store.update_memory_depth(new_id, depth);
-                                    for &id in &ids { let _ = store.mark_memory_compiled(id); }
+                                    for &id in &ids { let _ = store.archive_memory(id, &format!("compiled into #{new_id}")); }
                                     if depth == "axiom" { compiled_axiom += 1; distilled += 1; }
                                     else { compiled_semantic += 1; }
                                     elog(&format!("COMPILE → {depth}:{category} from {} sources", ids.len()));
@@ -152,9 +156,10 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
                             .filter(|id| batch_ids.contains(id))
                             .collect();
                         if ids.len() >= 3 && !content.is_empty() {
-                            if let Ok(new_id) = store.save_memory("values", content, "evolution", 0.95) {
+                            let note = format!("belief: {}条→axiom:values", ids.len());
+                            if let Ok(new_id) = store.save_memory_with_provenance("values", content, "evolution", 0.95, &ids, &note) {
                                 let _ = store.update_memory_depth(new_id, "axiom");
-                                for &id in &ids { let _ = store.mark_memory_compiled(id); }
+                                for &id in &ids { let _ = store.archive_memory(id, &format!("compiled into #{new_id}")); }
                                 distilled += 1;
                                 elog(&format!("BELIEF → axiom from {} sources", ids.len()));
                             }
@@ -212,6 +217,19 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
             "Memory evolution: merged={merged}, compiled_semantic={compiled_semantic}, synthesized={synthesized}, compiled_axiom={compiled_axiom}, distilled={distilled}, condensed={condensed}, reclassified={reclassified}, linked={linked}, decayed={decayed}, promoted={promoted}"
         );
     }
+    let mut summary_parts = Vec::new();
+    if merged > 0 { summary_parts.push(format!("去重 {merged} 条")); }
+    if compiled_semantic > 0 { summary_parts.push(format!("归纳 {compiled_semantic} 条模式")); }
+    if compiled_axiom > 0 { summary_parts.push(format!("凝结 {compiled_axiom} 条核心信念")); }
+    if condensed > 0 { summary_parts.push(format!("压缩 {condensed} 条")); }
+    if reclassified > 0 { summary_parts.push(format!("重分类 {reclassified} 条")); }
+    if linked > 0 { summary_parts.push(format!("连接 {linked} 对关系")); }
+    let summary = if summary_parts.is_empty() {
+        "无变更".to_string()
+    } else {
+        format!("今日演化：{}", summary_parts.join("，"))
+    };
+
     Ok(EvolutionResult {
         consolidated: total_consolidated,
         condensed,
@@ -222,6 +240,7 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
         compiled_axiom,
         distilled,
         reclassified,
+        summary,
     })
 }
 
