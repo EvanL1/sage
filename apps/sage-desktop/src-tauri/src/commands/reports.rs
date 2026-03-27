@@ -83,6 +83,70 @@ pub async fn trigger_strategist(state: State<'_, AppState>) -> Result<Value, Str
     Ok(json!({ "ran": ran }))
 }
 
+/// 获取自定义管线阶段列表
+#[tauri::command]
+pub async fn list_custom_stages(state: State<'_, AppState>) -> Result<Value, String> {
+    let stages = state.store.list_custom_stages().map_err(map_err)?;
+    let items: Vec<Value> = stages
+        .iter()
+        .map(|s| {
+            json!({
+                "id": s.id, "name": s.name, "description": s.description,
+                "prompt": s.prompt, "insert_after": s.insert_after, "enabled": s.enabled,
+                "output_format": s.output_format, "available_actions": s.available_actions,
+                "allowed_inputs": s.allowed_inputs, "max_actions": s.max_actions, "pre_condition": s.pre_condition,
+            })
+        })
+        .collect();
+    Ok(json!(items))
+}
+
+/// 创建自定义管线阶段
+#[tauri::command]
+pub async fn create_custom_stage(
+    state: State<'_, AppState>,
+    name: String,
+    description: String,
+    prompt: String,
+    insert_after: String,
+    output_format: Option<String>,
+    available_actions: Option<String>,
+    allowed_inputs: Option<String>,
+    max_actions: Option<i32>,
+    pre_condition: Option<String>,
+) -> Result<i64, String> {
+    state
+        .store
+        .create_custom_stage(
+            &name, &description, &prompt, &insert_after,
+            &output_format.unwrap_or_default(),
+            &available_actions.unwrap_or_default(),
+            &allowed_inputs.unwrap_or_else(|| "observer_notes,coach_insights".into()),
+            max_actions.unwrap_or(5),
+            &pre_condition.unwrap_or_default(),
+        )
+        .map_err(map_err)
+}
+
+/// 删除自定义管线阶段
+#[tauri::command]
+pub async fn delete_custom_stage(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    state.store.delete_custom_stage(id).map_err(map_err)
+}
+
+/// 切换自定义阶段开关
+#[tauri::command]
+pub async fn toggle_custom_stage(
+    state: State<'_, AppState>,
+    id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    state.store.toggle_custom_stage(id, enabled).map_err(map_err)
+}
+
 #[tauri::command]
 pub async fn save_report_correction(
     state: State<'_, AppState>,

@@ -532,17 +532,18 @@ impl Daemon {
         if had_evening_review || had_weekly_report {
             let router = self.router.lock().await;
             let pipeline = crate::pipeline::build_pipeline(
-                self.config.pipeline.evening.clone(),
-                self.config.pipeline.weekly.clone(),
-                self.config.pipeline.stages.clone(),
+                &self.config.pipeline,
+                &self.store,
             );
             let agent = router.agent();
             let store = router.store_arc();
             if had_evening_review {
-                pipeline.run_evening(agent, &store).await;
+                let ctx = pipeline.run_evening(agent, &store).await;
+                info!("Evening {}", ctx.summary());
             }
             if had_weekly_report {
-                pipeline.run_weekly(agent, &store).await;
+                let ctx = pipeline.run_weekly(agent, &store).await;
+                info!("Weekly {}", ctx.summary());
             }
         }
 

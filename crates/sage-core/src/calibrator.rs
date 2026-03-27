@@ -4,6 +4,7 @@
 //! 提炼自我约束规则存入 memories 表（category="calibration"）。
 
 use crate::agent::Agent;
+use crate::pipeline::PipelineContext;
 use crate::prompts;
 use crate::store::Store;
 use anyhow::Result;
@@ -13,7 +14,7 @@ const PATTERN_THRESHOLD: usize = 3;
 
 /// 检查各类报告的纠正积累，达到阈值时触发 LLM 模式反思
 /// 返回 true 如果有新规则生成
-pub async fn reflect_patterns(agent: &Agent, store: &Store) -> Result<bool> {
+pub async fn reflect_patterns(agent: &Agent, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
     let mut generated = false;
 
     for report_type in &["morning", "evening", "weekly"] {

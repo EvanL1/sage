@@ -3,6 +3,7 @@ use tracing::info;
 
 use crate::agent::Agent;
 use crate::applescript;
+use crate::pipeline::{MirrorOutput, PipelineContext};
 use crate::prompts;
 use crate::reflective_detector;
 use crate::skills;
@@ -10,7 +11,7 @@ use crate::store::Store;
 
 /// 镜子角色：从 SQLite coach_insight 记忆中挑选一个行为模式，温和地反映给用户（每天最多一次）
 /// 不再读 sage.md，改用 store.search_memories("coach_insight", 5) 获取最近洞察
-pub async fn reflect(agent: &Agent, store: &Store) -> Result<bool> {
+pub async fn reflect(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
     // 读取最近的教练洞察（替代原来读 sage.md）
     let insights = store.search_memories("coach_insight", 5)?;
     if insights.is_empty() {
@@ -62,7 +63,13 @@ pub async fn reflect(agent: &Agent, store: &Store) -> Result<bool> {
 
     // 通知用户
     let notify_title = if lang == "en" { "Sage Observation" } else { "Sage 观察" };
-    applescript::notify(notify_title, &reflection, "/").await?;
+    let notified = applescript::notify(notify_title, &reflection, "/").await.is_ok();
+
+    // 写入上下文
+    ctx.mirror = Some(MirrorOutput {
+        reflection,
+        notified,
+    });
 
     Ok(true)
 }
@@ -96,7 +103,7 @@ pub fn detect_and_store(
 }
 
 /// 周度 Mirror 报告：汇总本周反思信号，LLM 生成反映性报告
-pub async fn mirror_weekly(agent: &Agent, store: &Store) -> Result<bool> {
+pub async fn mirror_weekly(agent: &Agent, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
     // 去重：本周已生成过则跳过
     if store.has_recent_suggestion("mirror", "weekly-mirror") {
         info!("Mirror weekly: already generated this week, skipping");

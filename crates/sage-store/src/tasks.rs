@@ -74,9 +74,10 @@ impl Store {
             }
         }
 
+        let normalized_due = due_date.map(|d| sage_types::normalize_timestamp(d));
         conn.execute(
             "INSERT INTO tasks (content, source, source_id, priority, due_date, description) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![content, source, source_id, priority.unwrap_or("normal"), due_date, description],
+            rusqlite::params![content, source, source_id, priority.unwrap_or("normal"), normalized_due, description],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -182,13 +183,14 @@ impl Store {
     }
 
     pub fn update_task_due_date(&self, task_id: i64, due_date: Option<&str>) -> Result<()> {
+        let normalized = due_date.map(|d| sage_types::normalize_timestamp(d));
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         conn.execute(
             "UPDATE tasks SET due_date = ?1, updated_at = datetime('now') WHERE id = ?2",
-            rusqlite::params![due_date, task_id],
+            rusqlite::params![normalized, task_id],
         )?;
         Ok(())
     }
@@ -323,6 +325,33 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Get recently accepted signals (to prevent LLM re-suggesting same topics)
+    pub fn get_recent_accepted_signals(&self, limit: usize) -> Result<Vec<TaskSignal>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, signal_type, task_id, title, evidence, suggested_outcome, status, created_at, importance
+             FROM task_signals WHERE status = 'accepted' AND created_at > datetime('now', '-7 days')
+             ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit], |row| {
+            Ok(TaskSignal {
+                id: row.get(0)?,
+                signal_type: row.get(1)?,
+                task_id: row.get(2)?,
+                title: row.get(3)?,
+                evidence: row.get(4)?,
+                suggested_outcome: row.get(5)?,
+                status: row.get(6)?,
+                created_at: row.get(7)?,
+                importance: row.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Auto-dismiss signals older than 3 days
     pub fn dismiss_old_signals(&self) -> Result<usize> {
         let conn = self
@@ -377,17 +406,19 @@ impl Store {
         }
         // 去重：new_task 类型按语义去重（pending signals + 现有 open/done/cancelled tasks）
         if signal_type == "new_task" {
-            let clean_title = strip_id_markers(title);
-            // 1. 与 pending 的 new_task signals 语义比较
+            // 用 suggested_outcome（纯任务内容）做去重，避免 title 的 "Suggested new task: " 前缀稀释相似度
+            let dedup_text = suggested_outcome.unwrap_or(title);
+            let clean_text = strip_id_markers(dedup_text);
+            // 1. 与 pending 的 new_task signals 语义比较（优先用 suggested_outcome）
             let mut sig_stmt = conn.prepare(
-                "SELECT title FROM task_signals WHERE signal_type = 'new_task' AND status = 'pending'",
+                "SELECT COALESCE(suggested_outcome, title) FROM task_signals WHERE signal_type = 'new_task' AND status = 'pending'",
             )?;
-            let sig_titles: Vec<String> = sig_stmt
+            let sig_texts: Vec<String> = sig_stmt
                 .query_map([], |row| row.get(0))?
                 .filter_map(|r| r.ok())
                 .collect();
-            for t in &sig_titles {
-                if text_similarity(&strip_id_markers(t), &clean_title) > TASK_DEDUP_THRESHOLD {
+            for t in &sig_texts {
+                if text_similarity(&strip_id_markers(t), &clean_text) > TASK_DEDUP_THRESHOLD {
                     return Ok(-1);
                 }
             }
@@ -401,7 +432,7 @@ impl Store {
                 .filter_map(|r| r.ok())
                 .collect();
             for c in &task_contents {
-                if text_similarity(&strip_id_markers(c), &clean_title) > TASK_DEDUP_THRESHOLD {
+                if text_similarity(&strip_id_markers(c), &clean_text) > TASK_DEDUP_THRESHOLD {
                     return Ok(-1);
                 }
             }
@@ -590,5 +621,35 @@ mod tests {
         let tasks = s.list_tasks(Some("open"), 10).unwrap();
         let content = &tasks[0].1;
         assert!(!content.contains("[id="), "stored content should not contain [id=]: {content}");
+    }
+
+    #[test]
+    fn signal_dedup_uses_suggested_outcome_not_title() {
+        let s = store();
+        // 创建一个已有任务
+        s.create_task("codex会议结论整理", "manual", None, None, None, None).unwrap();
+        // 用装饰过的 title + 纯内容 suggested_outcome 保存信号
+        // 以前 bug: title "Suggested new task: codex会议结论" 与 "codex会议结论整理" 相似度低，不会去重
+        // 修复后: 用 suggested_outcome "codex会议结论整理" 做比较，应命中去重
+        let sig_id = s.save_task_signal(
+            "new_task", None,
+            "Suggested new task: codex会议结论",
+            "evidence",
+            Some("codex会议结论整理"),
+        ).unwrap();
+        assert_eq!(sig_id, -1, "should dedup against existing task using suggested_outcome");
+    }
+
+    #[test]
+    fn get_recent_accepted_signals_returns_accepted() {
+        let s = store();
+        let sig_id = s.save_task_signal("new_task", None, "测试任务", "evidence", Some("测试任务内容")).unwrap();
+        assert!(sig_id > 0);
+        // 标记为 accepted
+        s.update_signal_status(sig_id, "accepted").unwrap();
+        let accepted = s.get_recent_accepted_signals(10).unwrap();
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].id, sig_id);
+        assert_eq!(accepted[0].status, "accepted");
     }
 }

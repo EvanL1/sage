@@ -4,6 +4,7 @@ use tracing::info;
 
 use crate::agent::Agent;
 use crate::memory_integrator::{is_ephemeral_content, IncomingMemory, MemoryIntegrator};
+use crate::pipeline::{ObserverOutput, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 
@@ -37,7 +38,7 @@ mod tests {
         assert!((emotion_confidence("[excited] 完成了新功能") - 0.6).abs() < 0.001);
     }
 }
-pub async fn annotate(agent: &Agent, store: &Arc<Store>) -> Result<bool> {
+pub async fn annotate(agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineContext) -> Result<bool> {
     let observations = store.load_unprocessed_observations(50)?;
     if observations.is_empty() {
         info!("Observer: no unprocessed observations, skipping");
@@ -92,15 +93,18 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>) -> Result<bool> {
         return Ok(false);
     }
 
+    // 捕获 notes 用于 stage I/O 契约
+    let notes: Vec<String> = entries.iter().map(|e| e.content.clone()).collect();
+
     let count = entries.len();
     let integrator = MemoryIntegrator::new(Arc::clone(store));
-    match integrator.integrate(entries, agent.provider()).await {
+    let had_output = match integrator.integrate(entries, agent.provider()).await {
         Ok(r) => {
             info!(
                 "Observer: {count} notes → {} created, {} updated, {} skipped",
                 r.created, r.updated, r.skipped
             );
-            Ok(r.created + r.updated > 0)
+            r.created + r.updated > 0
         }
         Err(e) => {
             tracing::warn!("Observer: integration failed, falling back to simple insert: {e}");
@@ -122,7 +126,11 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>) -> Result<bool> {
                     }
                 }
             }
-            Ok(saved > 0)
+            saved > 0
         }
-    }
+    };
+
+    // 写入上下文：下游 Coach 可读取本次 tick 的 notes
+    ctx.observer = Some(ObserverOutput { notes });
+    Ok(had_output)
 }

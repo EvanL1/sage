@@ -2,13 +2,14 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::agent::Agent;
+use crate::pipeline::{PipelineContext, QuestionerOutput};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
 
 /// 发问者：基于行为模式和近期决策，生成苏格拉底式深度问题
 /// 支持问题追踪：新问题存入 open_questions，到期问题重新浮现
-pub async fn ask(agent: &Agent, store: &Store) -> Result<bool> {
+pub async fn ask(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
     // 1. 先检查是否有到期需要重新浮现的问题
     let due = store.get_due_questions(1)?;
     if let Some((q_id, question_text, ask_count)) = due.into_iter().next() {
@@ -24,6 +25,7 @@ pub async fn ask(agent: &Agent, store: &Store) -> Result<bool> {
         store.record_suggestion("questioner", "daily-question", &resp.text)?;
         store.bump_question_ask(q_id)?;
         info!("Questioner: resurfaced question #{q_id} (ask #{ask_count})");
+        ctx.questioner = Some(QuestionerOutput { question: resp.text, is_resurface: true });
         return Ok(true);
     }
 
@@ -69,6 +71,9 @@ pub async fn ask(agent: &Agent, store: &Store) -> Result<bool> {
     let suggestion_id = store.record_suggestion("questioner", "daily-question", &resp.text)?;
     store.save_open_question(&resp.text, Some(suggestion_id))?;
     info!("Questioner: generated daily question and tracked in open_questions");
+
+    // 写入上下文
+    ctx.questioner = Some(QuestionerOutput { question: resp.text, is_resurface: false });
 
     Ok(true)
 }

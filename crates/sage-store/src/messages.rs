@@ -51,6 +51,7 @@ impl Store {
         timestamp: &str,
         direction: &str,
     ) -> Result<i64> {
+        let ts = sage_types::normalize_timestamp(timestamp);
         let conn = self
             .conn
             .lock()
@@ -58,7 +59,7 @@ impl Store {
         conn.execute(
             "INSERT OR IGNORE INTO messages (sender, channel, content, source, message_type, timestamp, direction)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![sender, channel, content, source, message_type, timestamp, direction],
+            rusqlite::params![sender, channel, content, source, message_type, ts, direction],
         )
         .context("保存 message 失败")?;
         Ok(conn.last_insert_rowid())
@@ -251,6 +252,24 @@ impl Store {
             )?;
         }
         Ok(count)
+    }
+
+    /// 获取今日消息摘要（sender + channel + 内容前80字），用于人物提取
+    pub fn get_today_message_summaries(&self, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut stmt = conn.prepare(
+            "SELECT sender, channel, substr(content, 1, 80) FROM messages
+             WHERE created_at >= ?1 AND sender <> 'Unknown' AND sender <> ''
+             ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![today, limit as i64], |row| {
+            let sender: String = row.get(0)?;
+            let channel: String = row.get(1)?;
+            let content: String = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+            Ok(format!("[{channel}] {sender}: {content}"))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// 统计处于 pending 状态的已接收消息数量

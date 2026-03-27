@@ -633,6 +633,142 @@ impl Store {
             .context("数据库迁移 v39（pipeline self-evolution）失败")?;
         }
 
+        // ── v40: 标准化所有时间戳为 ISO 8601 ──
+        if version < 40 {
+            let mut total_fixed = 0usize;
+
+            // messages.timestamp
+            let mut stmt = conn.prepare(
+                "SELECT id, timestamp FROM messages WHERE timestamp NOT LIKE '____-__-__%'"
+            )?;
+            let rows: Vec<(i64, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            for (id, raw_ts) in &rows {
+                let normalized = sage_types::normalize_timestamp(raw_ts);
+                if &normalized != raw_ts {
+                    conn.execute(
+                        "UPDATE messages SET timestamp = ?1 WHERE id = ?2",
+                        rusqlite::params![normalized, id],
+                    )?;
+                    total_fixed += 1;
+                }
+            }
+
+            // emails.date
+            let mut stmt = conn.prepare(
+                "SELECT id, date FROM emails WHERE date NOT LIKE '____-__-__%'"
+            )?;
+            let rows: Vec<(i64, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            for (id, raw_ts) in &rows {
+                let normalized = sage_types::normalize_timestamp(raw_ts);
+                if &normalized != raw_ts {
+                    conn.execute(
+                        "UPDATE emails SET date = ?1 WHERE id = ?2",
+                        rusqlite::params![normalized, id],
+                    )?;
+                    total_fixed += 1;
+                }
+            }
+
+            conn.execute_batch("PRAGMA user_version = 40;")?;
+            if total_fixed > 0 {
+                tracing::info!("Migration v40: normalized {total_fixed} timestamps (messages + emails)");
+            }
+        }
+
+        // ── v41: 补充修复 emails.date（v40 可能漏掉）──
+        if version < 41 {
+            let mut stmt = conn.prepare(
+                "SELECT id, date FROM emails WHERE date NOT LIKE '____-__-__%'"
+            )?;
+            let rows: Vec<(i64, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            let mut fixed = 0usize;
+            for (id, raw_ts) in &rows {
+                let normalized = sage_types::normalize_timestamp(raw_ts);
+                if &normalized != raw_ts {
+                    conn.execute(
+                        "UPDATE emails SET date = ?1 WHERE id = ?2",
+                        rusqlite::params![normalized, id],
+                    )?;
+                    fixed += 1;
+                }
+            }
+            conn.execute_batch("PRAGMA user_version = 41;")?;
+            if fixed > 0 {
+                tracing::info!("Migration v41: normalized {fixed} email timestamps");
+            }
+        }
+
+        // ── v42: 自定义管线阶段 ──
+        if version < 42 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS custom_stages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL DEFAULT '',
+                    prompt TEXT NOT NULL,
+                    insert_after TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                PRAGMA user_version = 42;",
+            )
+            .context("数据库迁移 v42（custom pipeline stages）失败")?;
+        }
+
+        // ── v43: custom_stages 增加 output_format 列 ──
+        if version < 43 {
+            conn.execute_batch(
+                "ALTER TABLE custom_stages ADD COLUMN output_format TEXT NOT NULL DEFAULT '';
+                 PRAGMA user_version = 43;",
+            )
+            .context("数据库迁移 v43（custom_stages output_format）失败")?;
+        }
+
+        // ── v44: custom_stages 增加 available_actions 列 ──
+        if version < 44 {
+            conn.execute_batch(
+                "ALTER TABLE custom_stages ADD COLUMN available_actions TEXT NOT NULL DEFAULT '';
+                 PRAGMA user_version = 44;",
+            )
+            .context("数据库迁移 v44（custom_stages available_actions）失败")?;
+        }
+
+        // ── v45: custom_stages 硬约束字段 ──
+        if version < 45 {
+            conn.execute_batch(
+                "ALTER TABLE custom_stages ADD COLUMN allowed_inputs TEXT NOT NULL DEFAULT 'observer_notes,coach_insights';
+                 ALTER TABLE custom_stages ADD COLUMN max_actions INTEGER NOT NULL DEFAULT 5;
+                 ALTER TABLE custom_stages ADD COLUMN pre_condition TEXT NOT NULL DEFAULT '';
+                 PRAGMA user_version = 45;",
+            )
+            .context("数据库迁移 v45（hard constraints）失败")?;
+        }
+
+        // ── v46: custom_stages 预设支持 + 种子数据 ──
+        if version < 46 {
+            conn.execute_batch(
+                "ALTER TABLE custom_stages ADD COLUMN is_preset INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE custom_stages ADD COLUMN archive_observations INTEGER NOT NULL DEFAULT 0;",
+            )
+            .context("数据库迁移 v46（preset columns）失败")?;
+
+            crate::pipeline::seed_preset_stages(&conn)?;
+
+            conn.execute_batch("PRAGMA user_version = 46;")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

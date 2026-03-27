@@ -1,6 +1,133 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+// ─── Timestamp 工具 ──────────────────────────────────
+
+/// 将各种格式的时间戳标准化为 ISO 8601（`YYYY-MM-DDTHH:MM:SS`）。
+/// 已是 ISO 格式的直接返回，无法解析的原样返回。
+pub fn normalize_timestamp(raw: &str) -> String {
+    let s = raw.trim();
+
+    // 已经是 ISO 格式
+    if s.len() >= 19 && s.as_bytes().get(4) == Some(&b'-') && s.as_bytes().get(10) == Some(&b'T') {
+        return s.to_string();
+    }
+
+    // 中文格式："2026年3月23日 星期一 15:48:19"
+    if let Some(result) = parse_chinese_timestamp(s) {
+        return result;
+    }
+
+    // RFC 2822: "Mon, 23 Mar 2026 15:48:19 +0800"
+    if let Ok(dt) = DateTime::parse_from_rfc2822(s) {
+        return dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+    }
+
+    // 常见格式尝试
+    let formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ];
+    for fmt in &formats {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
+            return dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+        }
+    }
+
+    // 无法解析，原样返回
+    s.to_string()
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::normalize_timestamp;
+
+    #[test]
+    fn iso_passthrough() {
+        assert_eq!(
+            normalize_timestamp("2026-03-23T15:48:19"),
+            "2026-03-23T15:48:19"
+        );
+    }
+
+    #[test]
+    fn iso_with_millis() {
+        assert!(normalize_timestamp("2026-03-26T08:25:42.123").starts_with("2026-03-26T08:25:42"));
+    }
+
+    #[test]
+    fn chinese_with_weekday() {
+        assert_eq!(
+            normalize_timestamp("2026年3月23日 星期一 15:48:19"),
+            "2026-03-23T15:48:19"
+        );
+    }
+
+    #[test]
+    fn chinese_without_weekday() {
+        assert_eq!(
+            normalize_timestamp("2026年3月5日 09:30:00"),
+            "2026-03-05T09:30:00"
+        );
+    }
+
+    #[test]
+    fn dash_format() {
+        assert_eq!(
+            normalize_timestamp("2026-03-23 15:48:19"),
+            "2026-03-23T15:48:19"
+        );
+    }
+
+    #[test]
+    fn unparseable_passthrough() {
+        assert_eq!(normalize_timestamp("garbage"), "garbage");
+    }
+}
+
+/// 解析中文日期格式："2026年3月23日 星期一 15:48:19" 或 "2026年3月23日 15:48:19"
+fn parse_chinese_timestamp(s: &str) -> Option<String> {
+    if !s.contains('年') {
+        return None;
+    }
+
+    let year = s.split('年').next()?.trim().parse::<i32>().ok()?;
+    let after_year = s.split('年').nth(1)?;
+    let month = after_year.split('月').next()?.trim().parse::<u32>().ok()?;
+    let after_month = after_year.split('月').nth(1)?;
+    let day = after_month.split('日').next()?.trim().parse::<u32>().ok()?;
+
+    // 时间部分：在 "日" 之后，可能有 "星期X " 前缀
+    let after_day = after_month.split('日').nth(1)?.trim();
+    let time_part = if after_day.starts_with("星期") {
+        // 跳过 "星期X "
+        after_day.splitn(2, ' ').nth(1).unwrap_or("00:00:00").trim()
+    } else {
+        after_day
+    };
+
+    let parts: Vec<&str> = time_part.split(':').collect();
+    let (hour, min, sec) = match parts.len() {
+        3 => (
+            parts[0].parse::<u32>().unwrap_or(0),
+            parts[1].parse::<u32>().unwrap_or(0),
+            parts[2].parse::<u32>().unwrap_or(0),
+        ),
+        2 => (
+            parts[0].parse::<u32>().unwrap_or(0),
+            parts[1].parse::<u32>().unwrap_or(0),
+            0,
+        ),
+        _ => (0, 0, 0),
+    };
+
+    Some(format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}"))
+}
 
 // ─── Event 模型 ──────────────────────────────────
 

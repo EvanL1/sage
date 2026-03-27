@@ -141,7 +141,7 @@ impl Store {
                 msg.body_text,
                 msg.body_html,
                 msg.is_read as i32,
-                msg.date,
+                sage_types::normalize_timestamp(&msg.date),
             ],
         )
         .context("保存 email 失败")?;
@@ -157,13 +157,14 @@ impl Store {
         let tx = conn.transaction().context("开启事务失败")?;
         let mut saved = 0usize;
         for msg in msgs {
+            let date = sage_types::normalize_timestamp(&msg.date);
             let n = tx.execute(
                 "INSERT OR IGNORE INTO emails
                  (source_id, uid, folder, from_addr, to_addr, subject, body_text, body_html, is_read, date)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     msg.source_id, msg.uid, msg.folder, msg.from_addr, msg.to_addr,
-                    msg.subject, msg.body_text, msg.body_html, msg.is_read as i32, msg.date,
+                    msg.subject, msg.body_text, msg.body_html, msg.is_read as i32, date,
                 ],
             )?;
             saved += n;
@@ -291,6 +292,22 @@ impl Store {
             |row| row.get(0),
         )?;
         Ok(count as usize)
+    }
+
+    /// 获取今日邮件摘要（from + subject），用于人物提取
+    pub fn get_today_email_summaries(&self, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut stmt = conn.prepare(
+            "SELECT from_addr, subject FROM emails
+             WHERE date >= ?1 ORDER BY date DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![today, limit as i64], |row| {
+            let from: String = row.get(0)?;
+            let subject: String = row.get(1)?;
+            Ok(format!("[邮件] {from}: {subject}"))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn row_to_email(row: &rusqlite::Row) -> rusqlite::Result<EmailMessage> {

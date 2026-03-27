@@ -9,6 +9,8 @@ interface GraphNode {
   content: string;
   confidence: number;
   depth?: string;
+  // computed
+  degree: number; // edge count — computed on load
   // simulation state
   x: number;
   y: number;
@@ -46,6 +48,13 @@ const DEPTH_LABELS_GRAPH: Record<string, string> = {
 function getColor(node: Pick<GraphNode, "depth" | "category">): string {
   if (node.depth && DEPTH_COLORS[node.depth]) return DEPTH_COLORS[node.depth];
   return "#8B7355";
+}
+
+/** Node radius: blend confidence (30%) + degree centrality (70%), range 5–25px */
+function nodeRadius(n: Pick<GraphNode, "confidence" | "degree">, maxDegree: number): number {
+  const degNorm = maxDegree > 0 ? n.degree / maxDegree : 0;
+  const blend = n.confidence * 0.3 + degNorm * 0.7;
+  return 5 + blend * 20; // 5px min, 25px max
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -86,15 +95,22 @@ function MemoryGraph() {
       const data = await invoke<GraphData>("get_memory_graph");
       const cx = 400;
       const cy = 300;
+      // Compute degree (edge count) per node
+      const degreeMap = new Map<number, number>();
+      for (const e of data.edges) {
+        degreeMap.set(e.from, (degreeMap.get(e.from) || 0) + 1);
+        degreeMap.set(e.to, (degreeMap.get(e.to) || 0) + 1);
+      }
       nodesRef.current = data.nodes.map((n, i) => ({
         ...n,
+        degree: degreeMap.get(n.id) || 0,
         x: cx + Math.cos((i / data.nodes.length) * Math.PI * 2) * (150 + Math.random() * 150) + (Math.random() - 0.5) * 60,
         y: cy + Math.sin((i / data.nodes.length) * Math.PI * 2) * (150 + Math.random() * 150) + (Math.random() - 0.5) * 60,
         vx: 0,
         vy: 0,
       }));
       edgesRef.current = data.edges;
-      tempRef.current = 1.0; // reset temperature for new layout
+      tempRef.current = 1.0;
       setStats({ nodes: data.nodes.length, edges: data.edges.length });
     } catch (e) {
       console.error("Failed to load graph:", e);
@@ -114,9 +130,10 @@ function MemoryGraph() {
   const hitTest = useCallback((sx: number, sy: number): number => {
     const { x, y } = screenToWorld(sx, sy);
     const z = zoomRef.current;
+    const maxDeg = nodesRef.current.reduce((m, n) => Math.max(m, n.degree), 0);
     for (let i = nodesRef.current.length - 1; i >= 0; i--) {
       const n = nodesRef.current[i];
-      const r = (4 + n.confidence * 6) / z + 2;
+      const r = nodeRadius(n, maxDeg) / z + 2;
       const dx = n.x - x;
       const dy = n.y - y;
       if (dx * dx + dy * dy < r * r) return i;
@@ -137,8 +154,8 @@ function MemoryGraph() {
     const nodeMap = new Map<number, number>();
     nodes.forEach((n, i) => nodeMap.set(n.id, i));
 
-    // Repulsion (Coulomb's law) — scale repulsion with node count
-    const repK = Math.min(1200, 600 + nodes.length * 3);
+    // Repulsion (Coulomb's law) — stronger repulsion for spacious layout
+    const repK = Math.min(3000, 1200 + nodes.length * 8);
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const dx = nodes[i].x - nodes[j].x;
@@ -154,8 +171,8 @@ function MemoryGraph() {
       }
     }
 
-    // Attraction (Hooke's law) along edges
-    const restLen = 60 + Math.sqrt(nodes.length) * 8;
+    // Attraction (Hooke's law) along edges — longer rest length for breathing room
+    const restLen = 80 + Math.sqrt(nodes.length) * 12;
     for (const e of edges) {
       const si = nodeMap.get(e.from);
       const ti = nodeMap.get(e.to);
@@ -245,7 +262,9 @@ function MemoryGraph() {
     const nodeMap = new Map<number, GraphNode>();
     nodes.forEach((n) => nodeMap.set(n.id, n));
 
-    // Draw edges
+    const maxDeg = nodes.reduce((m, n) => Math.max(m, n.degree), 0);
+
+    // Draw edges — thin, translucent lines that don't compete with nodes
     for (const e of edges) {
       const s = nodeMap.get(e.from);
       const t = nodeMap.get(e.to);
@@ -253,16 +272,15 @@ function MemoryGraph() {
       ctx.beginPath();
       ctx.moveTo(s.x, s.y);
       ctx.lineTo(t.x, t.y);
-      const gradient = ctx.createLinearGradient(s.x, s.y, t.x, t.y);
-      const alpha = 0.1 + e.weight * 0.2;
-      gradient.addColorStop(0, hexToRgba(getColor(s), alpha));
-      gradient.addColorStop(1, hexToRgba(getColor(t), alpha));
-      ctx.strokeStyle = gradient;
-      ctx.lineWidth = 0.5 + e.weight * 1.5;
+      const alpha = isDark ? 0.06 + e.weight * 0.12 : 0.08 + e.weight * 0.15;
+      ctx.strokeStyle = isDark
+        ? hexToRgba("#8888aa", alpha)
+        : hexToRgba("#6666aa", alpha);
+      ctx.lineWidth = 0.3 + e.weight * 0.7;
       ctx.stroke();
 
       // Relation label at midpoint
-      if (z > 0.6) {
+      if (z > 0.8) {
         const mx = (s.x + t.x) / 2;
         const my = (s.y + t.y) / 2;
         ctx.font = `${9 / z}px "JetBrains Mono", monospace`;
@@ -272,38 +290,40 @@ function MemoryGraph() {
       }
     }
 
-    // Draw nodes
+    // Draw nodes — size driven by degree centrality + confidence
     for (const n of nodes) {
-      const r = 4 + n.confidence * 6;
+      const r = nodeRadius(n, maxDeg);
+      const color = getColor(n);
 
-      // Glow halo
-      if (isDark) {
-        const glow = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 2.5);
-        glow.addColorStop(0, hexToRgba(getColor(n), 0.25));
-        glow.addColorStop(1, "transparent");
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, r * 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = glow;
-        ctx.fill();
-      }
+      // Glow halo — scales with node importance
+      const glowR = r * 2.5;
+      const glowAlpha = isDark ? 0.15 + (r / 25) * 0.2 : 0.06 + (r / 25) * 0.08;
+      const glow = ctx.createRadialGradient(n.x, n.y, r * 0.3, n.x, n.y, glowR);
+      glow.addColorStop(0, hexToRgba(color, glowAlpha));
+      glow.addColorStop(1, "transparent");
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, glowR, 0, Math.PI * 2);
+      ctx.fillStyle = glow;
+      ctx.fill();
 
+      // Node body — solid fill with subtle opacity variation
       ctx.beginPath();
       ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = getColor(n);
-      ctx.globalAlpha = 0.3 + n.confidence * 0.7;
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.5 + n.confidence * 0.5;
       ctx.fill();
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = getColor(n);
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
 
-      // Label
-      if (z > 0.5) {
+      // Label — only for larger nodes or when zoomed in
+      const showLabel = r > 8 || z > 0.7;
+      if (showLabel) {
         const label = n.content.length > 12 ? n.content.slice(0, 12) + "..." : n.content;
         ctx.font = `${10 / z}px "JetBrains Mono", monospace`;
         ctx.fillStyle = isDark ? "#e2e8f0" : "#1e1b4b";
+        ctx.globalAlpha = isDark ? 0.85 : 0.75;
         ctx.textAlign = "center";
         ctx.fillText(label, n.x, n.y + r + 12 / z);
+        ctx.globalAlpha = 1;
       }
     }
 
@@ -320,7 +340,7 @@ function MemoryGraph() {
       for (const nid of neighborIds) {
         const nb = nodeMap.get(nid);
         if (!nb) continue;
-        const r = 4 + nb.confidence * 6 + 4;
+        const r = nodeRadius(nb, maxDeg) + 4;
         ctx.beginPath();
         ctx.arc(nb.x, nb.y, r, 0, Math.PI * 2);
         ctx.strokeStyle = hexToRgba(getColor(nb), 0.4);
@@ -331,7 +351,7 @@ function MemoryGraph() {
       // Selected node pulsing ring
       const n = nodes.find((n) => n.id === selId);
       if (n) {
-        const r = 4 + n.confidence * 6 + 3;
+        const r = nodeRadius(n, maxDeg) + 3;
         const pulseR = r + 2 + Math.sin(Date.now() / 300) * 2;
         ctx.beginPath();
         ctx.arc(n.x, n.y, pulseR, 0, Math.PI * 2);

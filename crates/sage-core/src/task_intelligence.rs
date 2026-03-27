@@ -102,12 +102,16 @@ fn parse_and_save_new_task_signals(response: &str, store: &Store, importance: f3
                 "new_task", None, &title, &evidence, Some(&task_content), importance,
             )?;
             if id > 0 {
-                // 自动创建任务 + 接受信号
-                let task_id = store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence));
-                if task_id.is_ok() {
-                    let _ = store.update_signal_status(id, "accepted");
+                // 自动创建任务 + 接受信号（任务去重命中时 dismiss 孤立信号）
+                match store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence)) {
+                    Ok(tid) if tid > 0 => {
+                        let _ = store.update_signal_status(id, "accepted");
+                        count += 1;
+                    }
+                    _ => {
+                        let _ = store.update_signal_status(id, "dismissed");
+                    }
                 }
-                count += 1;
             }
         }
     }
@@ -193,15 +197,22 @@ pub async fn detect_task_signals(agent: &Agent, store: &Store) -> Result<usize> 
 
     let actions_text = recent_actions.join("\n");
 
-    // 已有 pending + 已拒绝 signals，告诉 LLM 避免重复
+    // 已有 pending + 已接受 + 已拒绝 signals，告诉 LLM 避免重复
     let pending = store.get_pending_signals().unwrap_or_default();
+    let accepted = store.get_recent_accepted_signals(20).unwrap_or_default();
     let dismissed = store.get_recent_dismissed_signals(30).unwrap_or_default();
     let mut dedup_items: Vec<String> = Vec::new();
     for s in &pending {
-        dedup_items.push(format!("[pending:{}] {}", s.signal_type, s.title));
+        let display = s.suggested_outcome.as_deref().unwrap_or(&s.title);
+        dedup_items.push(format!("[pending:{}] {}", s.signal_type, display));
+    }
+    for s in &accepted {
+        let display = s.suggested_outcome.as_deref().unwrap_or(&s.title);
+        dedup_items.push(format!("[accepted:{}] {}", s.signal_type, display));
     }
     for s in &dismissed {
-        dedup_items.push(format!("[dismissed:{}] {}", s.signal_type, s.title));
+        let display = s.suggested_outcome.as_deref().unwrap_or(&s.title);
+        dedup_items.push(format!("[dismissed:{}] {}", s.signal_type, display));
     }
     let pending_section = if dedup_items.is_empty() {
         String::new()
@@ -235,9 +246,9 @@ pub async fn detect_task_signals(agent: &Agent, store: &Store) -> Result<usize> 
     }
 
     // Calibrate importance threshold from accept/dismiss history
-    let (accepted, total) = store.get_signal_accept_rate(30)?;
+    let (accept_count, total) = store.get_signal_accept_rate(30)?;
     let current = store.get_importance_threshold()?;
-    if let Some(new_threshold) = calibrate_threshold(accepted, total, current) {
+    if let Some(new_threshold) = calibrate_threshold(accept_count, total, current) {
         store.set_importance_threshold(new_threshold)?;
         info!("Importance threshold calibrated: {current:.2} → {new_threshold:.2}");
     }
@@ -329,12 +340,16 @@ fn parse_and_save_signals(response: &str, store: &Store) -> Result<usize> {
             let id =
                 store.save_task_signal("new_task", None, &title, &evidence, Some(&task_content))?;
             if id > 0 {
-                // 自动创建任务 + 接受信号
-                let task_id = store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence));
-                if task_id.is_ok() {
-                    let _ = store.update_signal_status(id, "accepted");
+                // 自动创建任务 + 接受信号（任务去重命中时 dismiss 孤立信号）
+                match store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence)) {
+                    Ok(tid) if tid > 0 => {
+                        let _ = store.update_signal_status(id, "accepted");
+                        count += 1;
+                    }
+                    _ => {
+                        let _ = store.update_signal_status(id, "dismissed");
+                    }
                 }
-                count += 1;
             }
         }
     }

@@ -105,6 +105,7 @@ function Settings() {
       .catch(() => {
         setProvidersLoading(false);
       });
+
   }, []);
 
   const showToast = (type: "success" | "error", msg: string) => {
@@ -602,6 +603,7 @@ function Settings() {
             </div>
           </div>
         </div>
+
 
       <div className="form-actions">
         <Link to="/welcome" className="btn btn-secondary">{t("settings.redoSetup")}</Link>

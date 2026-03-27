@@ -2,12 +2,18 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::agent::Agent;
+use crate::pipeline::{CoachOutput, PipelineContext};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
 
 /// 学习教练：读取 observer_notes（降级读 raw observations）→ 发现模式 → 保存 coach_insight → 归档
-pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
+///
+/// I/O 契约：
+/// - 读取 `ctx.observer` 判断上游 Observer 是否在本次 tick 产出了 notes
+/// - 降级：ctx.observer 为 None → 从 SQLite 读（可能是旧数据）→ 仍无则用 raw observations
+/// - 写入 `ctx.coach` 供 Mirror/Questioner 下游消费
+pub async fn learn(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
     let observations = store.load_unprocessed_observations(50)?;
     if observations.is_empty() {
         info!("Coach: no unprocessed observations, skipping");
@@ -16,25 +22,27 @@ pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
 
     info!("Coach: analyzing {} observations", observations.len());
 
-    // 优先使用 Observer 标注过的 notes；降级使用 raw observations
-    let observer_notes = store.load_observer_notes_recent()?;
-    let obs_text = if !observer_notes.is_empty() {
-        info!(
-            "Coach: using {} observer notes (enriched)",
-            observer_notes.len()
-        );
-        observer_notes
-            .iter()
-            .map(|n| format!("- {n}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        info!("Coach: no observer notes, falling back to raw observations");
-        observations
-            .iter()
-            .map(|o| format!("- [{}] **{}**: {}", o.created_at, o.category, o.observation))
-            .collect::<Vec<_>>()
-            .join("\n")
+    // I/O 契约：优先读 ctx.observer（本次 tick 的 notes）
+    let (obs_text, degraded) = match &ctx.observer {
+        Some(o) if !o.notes.is_empty() => {
+            info!("Coach: using {} notes from ctx.observer (this tick)", o.notes.len());
+            (o.notes.iter().map(|n| format!("- {n}")).collect::<Vec<_>>().join("\n"), false)
+        }
+        _ => {
+            // 降级路径 1：Observer 本次 tick 没产出，从 SQLite 读历史 notes
+            let observer_notes = store.load_observer_notes_recent()?;
+            if !observer_notes.is_empty() {
+                info!("Coach: ctx.observer empty, using {} notes from SQLite", observer_notes.len());
+                (observer_notes.iter().map(|n| format!("- {n}")).collect::<Vec<_>>().join("\n"), false)
+            } else {
+                // 降级路径 2：完全没有 observer_notes，用 raw observations
+                info!("Coach: no observer notes anywhere, falling back to raw observations (degraded)");
+                (observations.iter()
+                    .map(|o| format!("- [{}] **{}**: {}", o.created_at, o.category, o.observation))
+                    .collect::<Vec<_>>()
+                    .join("\n"), true)
+            }
+        }
     };
 
     let lang = store.prompt_lang();
@@ -55,25 +63,32 @@ pub async fn learn(agent: &Agent, store: &Store) -> Result<bool> {
     let resp = agent.invoke(&prompt, Some(&system)).await?;
 
     let content = resp.text.trim();
+    let mut saved_insights = Vec::new();
     if !content.is_empty() {
         for line in content.lines() {
             let line = line.trim().trim_start_matches('-').trim();
             if !line.is_empty() {
                 if let Err(e) = store.save_coach_insight(line) {
                     tracing::error!("Coach: failed to save insight: {e}");
+                } else {
+                    saved_insights.push(line.to_string());
                 }
             }
         }
-        info!(
-            "Coach: {} insight lines saved to SQLite",
-            content.lines().count()
-        );
+        info!("Coach: {} insight lines saved to SQLite", saved_insights.len());
     }
 
     // 归档已处理的 observations
     let ids: Vec<i64> = observations.iter().map(|o| o.id).collect();
     store.mark_observations_processed(&ids)?;
     info!("Coach: {} observations archived", ids.len());
+
+    // 写入上下文：下游 Mirror/Questioner 可读取
+    ctx.coach = Some(CoachOutput {
+        insights: saved_insights,
+        observations_archived: ids.len(),
+        degraded,
+    });
 
     Ok(true)
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useLang } from "../LangContext";
 
 interface PersonMemory {
   id: number;
@@ -14,6 +15,7 @@ interface PersonMemory {
 }
 
 function People() {
+  const { t } = useLang();
   const [persons, setPersons] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [memories, setMemories] = useState<PersonMemory[]>([]);
@@ -66,12 +68,12 @@ function People() {
     thinking: "Thinking", emotion: "Emotion", identity: "Identity", growth: "Growth",
   };
 
-  if (loading) return <div style={{ padding: 24, color: "var(--text-tertiary)" }}>Loading...</div>;
+  if (loading) return <div style={{ padding: 24, color: "var(--text-tertiary)" }}>{t("loading")}</div>;
 
   if (error) {
     return (
       <div style={{ padding: 24 }}>
-        <div className="page-header"><h1>People</h1></div>
+        <div className="page-header"><h1>{t("people.title")}</h1></div>
         <div className="card" style={{ padding: 24, color: "var(--warning-text)" }}>{error}</div>
       </div>
     );
@@ -81,18 +83,18 @@ function People() {
     return (
       <div style={{ padding: 24 }}>
         <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h1>People</h1>
+          <h1>{t("people.title")}</h1>
           <button onClick={handleExtract} disabled={extracting} style={{
             padding: "6px 14px", fontSize: 12, border: "1px solid var(--border)",
             borderRadius: "var(--radius-md)", background: "var(--surface)",
             color: "var(--text-secondary)", cursor: extracting ? "not-allowed" : "pointer",
             opacity: extracting ? 0.6 : 1,
-          }}>{extracting ? "Extracting..." : "Extract Now"}</button>
+          }}>{extracting ? t("people.extracting") : t("people.extractNow")}</button>
         </div>
         <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>
-          <p style={{ fontSize: 14 }}>No people observed yet.</p>
+          <p style={{ fontSize: 14 }}>{t("people.noData")}</p>
           <p style={{ fontSize: 12, marginTop: 8, color: "var(--text-tertiary)" }}>
-            Sage learns about people from your emails, chats, and conversations during evening review.
+            {t("people.noDataHint")}
           </p>
         </div>
       </div>
@@ -107,13 +109,13 @@ function People() {
   return (
     <div style={{ padding: 24 }}>
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1>People</h1>
+        <h1>{t("people.title")}</h1>
         <button onClick={handleExtract} disabled={extracting} style={{
           padding: "6px 14px", fontSize: 12, border: "1px solid var(--border)",
           borderRadius: "var(--radius-md)", background: "var(--surface)",
           color: "var(--text-secondary)", cursor: extracting ? "not-allowed" : "pointer",
           opacity: extracting ? 0.6 : 1,
-        }}>{extracting ? "Extracting..." : "Extract Now"}</button>
+        }}>{extracting ? t("people.extracting") : t("people.extractNow")}</button>
       </div>
 
       <div style={{ display: "flex", gap: 16 }}>
@@ -131,7 +133,7 @@ function People() {
             ))}
           </div>
           <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-tertiary)", textAlign: "center" }}>
-            {persons.length} people
+            {persons.length} {t("people.people")}
           </div>
         </div>
 
@@ -141,12 +143,12 @@ function People() {
               <div style={{ marginBottom: 12 }}>
                 <span style={{ fontSize: 15, fontWeight: 600 }}>{selected}</span>
                 <span style={{ fontSize: 12, color: "var(--text-tertiary)", marginLeft: 8 }}>
-                  {memories.length} memories
+                  {memories.length} {t("people.memories")}
                 </span>
               </div>
               {Object.keys(grouped).length === 0 ? (
                 <div className="card" style={{ padding: 24, textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
-                  No memories about {selected} yet.
+                  {t("people.noMemories")}
                 </div>
               ) : (
                 Object.entries(grouped).map(([cat, mems]) => (

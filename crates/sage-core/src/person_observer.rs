@@ -2,35 +2,54 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::agent::Agent;
+use crate::pipeline::PipelineContext;
 use crate::prompts;
 use crate::store::Store;
 
 /// 从今日事件中提取人物认知，每天 Evening Review 后调用一次
-pub async fn extract_persons(agent: &Agent, store: &Store) -> Result<bool> {
-    // 收集今日素材：observer_notes + coach_insights
+pub async fn extract_persons(agent: &Agent, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
+    // 优先读原始数据（保留人名），observer_notes 作为补充
+    let emails = store.get_today_email_summaries(20).unwrap_or_default();
+    let messages = store.get_today_message_summaries(30).unwrap_or_default();
     let notes = store.get_today_observer_notes()?;
     let insights = store.get_today_coach_insights()?;
 
-    if notes.is_empty() && insights.is_empty() {
+    if emails.is_empty() && messages.is_empty() && notes.is_empty() && insights.is_empty() {
         return Ok(false);
     }
 
     let mut events = String::new();
+    if !emails.is_empty() {
+        events.push_str("### 邮件\n");
+        for e in &emails {
+            events.push_str(&format!("- {e}\n"));
+        }
+    }
+    if !messages.is_empty() {
+        events.push_str("### 消息\n");
+        for m in &messages {
+            events.push_str(&format!("- {m}\n"));
+        }
+    }
     if !notes.is_empty() {
         events.push_str("### 观察记录\n");
-        for n in notes.iter().take(20) {
-            events.push_str(&format!("- {}\n", n));
+        for n in notes.iter().take(15) {
+            events.push_str(&format!("- {n}\n"));
         }
     }
     if !insights.is_empty() {
         events.push_str("### 行为洞察\n");
         for i in insights.iter().take(10) {
-            events.push_str(&format!("- {}\n", i));
+            events.push_str(&format!("- {i}\n"));
         }
     }
 
     let lang = store.prompt_lang();
     let prompt = prompts::person_extract(&lang, &events);
+
+    if prompt.trim().is_empty() {
+        return Ok(false);
+    }
 
     agent.reset_counter();
     let resp = agent.invoke(&prompt, None).await?;

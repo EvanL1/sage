@@ -72,27 +72,27 @@ impl Router {
 
     /// 触发观察者：raw observations → 语义标注 → observer_note
     pub async fn run_observer(&self) -> Result<bool> {
-        observer::annotate(&self.agent, &self.store).await
+        observer::annotate(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 触发学习教练：读 observer_notes（降级读 raw obs）→ 发现模式 → 保存 coach_insight → 归档
     pub async fn run_coach(&self) -> Result<bool> {
-        coach::learn(&self.agent, &self.store).await
+        coach::learn(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 触发镜子：从 coach_insight 记忆反映一个行为模式给用户
     pub async fn run_mirror(&self) -> Result<bool> {
-        mirror::reflect(&self.agent, &self.store).await
+        mirror::reflect(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 触发提问者：生成一个苏格拉底式深度问题
     pub async fn run_questioner(&self) -> Result<bool> {
-        questioner::ask(&self.agent, &self.store).await
+        questioner::ask(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 触发战略家：站在月球看地球，超然的宏观结构分析（周频）
     pub async fn run_strategist(&self) -> Result<bool> {
-        strategist::strategize(&self.agent, &self.store).await
+        strategist::strategize(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 触发记忆进化：合并重复 → 精简冗长 → 衰减过期 → 提升高频
@@ -102,17 +102,17 @@ impl Router {
 
     /// 触发 Mirror 周报：汇总反思信号，生成反映性报告
     pub async fn run_mirror_weekly(&self) -> Result<bool> {
-        mirror::mirror_weekly(&self.agent, &self.store).await
+        mirror::mirror_weekly(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 人物认知提取：从今日事件中识别人物特征
     pub async fn run_person_observer(&self) -> Result<bool> {
-        crate::person_observer::extract_persons(&self.agent, &self.store).await
+        crate::person_observer::extract_persons(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 触发校准模式反思：分析纠正历史，提炼自我约束规则
     pub async fn run_calibrator(&self) -> Result<bool> {
-        crate::calibrator::reflect_patterns(&self.agent, &self.store).await
+        crate::calibrator::reflect_patterns(&self.agent, &self.store, &mut Default::default()).await
     }
 
     /// 晨间任务规划：从 morning brief 提取今日待办
