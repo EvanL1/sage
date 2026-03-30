@@ -4,7 +4,7 @@
 //! 提炼自我约束规则存入 memories 表（category="calibration"）。
 
 use crate::agent::Agent;
-use crate::pipeline::PipelineContext;
+use crate::pipeline::{harness, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 use anyhow::Result;
@@ -56,10 +56,9 @@ pub async fn reflect_patterns(agent: &Agent, store: &Store, _ctx: &mut PipelineC
             &corrections_text.join("\n"),
         );
 
-        match agent.invoke(&prompt, None).await {
-            Ok(resp) => {
-                let rules: Vec<&str> = resp
-                    .text
+        match harness::invoke_text(agent, &prompt, None).await {
+            Ok(text) => {
+                let rules: Vec<&str> = text
                     .lines()
                     .filter(|l| {
                         let t = l.trim_start();
@@ -73,6 +72,9 @@ pub async fn reflect_patterns(agent: &Agent, store: &Store, _ctx: &mut PipelineC
                     let content = format!("[{report_type}] {}", rule.trim());
                     if let Err(e) = store.save_memory("calibration", &content, "calibrator", 0.75) {
                         warn!("保存校准规则失败: {e}");
+                    }
+                    if let Err(e) = store.append_negative_rule(&content) {
+                        warn!("写入 negative_rule 失败: {e}");
                     }
                 }
                 if !rules.is_empty() {

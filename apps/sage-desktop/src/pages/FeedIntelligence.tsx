@@ -145,6 +145,9 @@ function FeedIntelligence() {
   const [learningIds, setLearningIds] = useState<Set<number>>(new Set());
   const [nlInput, setNlInput] = useState("");
   const [nlBusy, setNlBusy] = useState(false);
+  const [topicMode, setTopicMode] = useState(true);
+  const [topicQuery, setTopicQuery] = useState("");
+  const [topicSearching, setTopicSearching] = useState(false);
   const [learnedResults, setLearnedResults] = useState<Record<number, string[]>>({});
   const [noteContents, setNoteContents] = useState<Record<number, string>>({});
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
@@ -282,25 +285,45 @@ function FeedIntelligence() {
   return (
     <div style={{ padding: "0 24px 32px" }}>
 
-      {/* ── Natural language config ── */}
+      {/* ── Topic search + NL config ── */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <input
           type="text"
-          placeholder="Tell Sage what to follow, e.g. &quot;Add energy storage and AIDC topics&quot;"
-          value={nlInput}
-          onChange={(e) => setNlInput(e.target.value)}
+          placeholder={topicMode
+            ? "搜索主题，如 energy storage、AI agent、Rust async..."
+            : "Tell Sage what to follow, e.g. \"Add energy storage and AIDC topics\""}
+          value={topicMode ? topicQuery : nlInput}
+          onChange={(e) => topicMode ? setTopicQuery(e.target.value) : setNlInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing && nlInput.trim()) {
-              setNlBusy(true);
-              invoke<FeedConfig>("update_feed_natural", { text: nlInput })
-                .then((newCfg) => { setConfig(newCfg); setNlInput(""); })
-                .catch(console.error)
-                .finally(() => setNlBusy(false));
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              if (topicMode && topicQuery.trim()) {
+                setTopicSearching(true);
+                invoke<number>("search_feed_topic", { query: topicQuery.trim() })
+                  .then((n) => { loadItems(); if (n > 0) setTopicQuery(""); })
+                  .catch(console.error)
+                  .finally(() => setTopicSearching(false));
+              } else if (!topicMode && nlInput.trim()) {
+                setNlBusy(true);
+                invoke<FeedConfig>("update_feed_natural", { text: nlInput })
+                  .then((newCfg) => { setConfig(newCfg); setNlInput(""); })
+                  .catch(console.error)
+                  .finally(() => setNlBusy(false));
+              }
             }
           }}
-          disabled={nlBusy}
-          style={{ ...S.input, flex: 1, padding: "8px 12px", fontSize: 13, opacity: nlBusy ? 0.6 : 1 }}
+          disabled={topicSearching || nlBusy}
+          style={{ ...S.input, flex: 1, padding: "8px 12px", fontSize: 13, opacity: (topicSearching || nlBusy) ? 0.6 : 1 }}
         />
+        <button
+          onClick={() => setTopicMode(!topicMode)}
+          title={topicMode ? "切换到订阅配置" : "切换到主题搜索"}
+          style={{
+            ...S.btn(topicMode), padding: "6px 10px", fontSize: 12,
+          }}
+        >
+          {topicMode ? "搜索" : "配置"}
+        </button>
+        {topicSearching && <span style={{ fontSize: 12, color: "var(--accent)", alignSelf: "center", whiteSpace: "nowrap" }}>搜索 + AI 分析中...</span>}
         {nlBusy && <span style={{ fontSize: 12, color: "var(--text-tertiary)", alignSelf: "center" }}>Updating...</span>}
       </div>
 

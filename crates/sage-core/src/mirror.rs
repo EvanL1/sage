@@ -3,7 +3,7 @@ use tracing::info;
 
 use crate::agent::Agent;
 use crate::applescript;
-use crate::pipeline::{MirrorOutput, PipelineContext};
+use crate::pipeline::{harness, MirrorOutput, PipelineContext};
 use crate::prompts;
 use crate::reflective_detector;
 use crate::skills;
@@ -49,9 +49,7 @@ pub async fn reflect(agent: &Agent, store: &Store, ctx: &mut PipelineContext) ->
         "{reflect_guide}\n\n{}",
         prompts::mirror_system_suffix(&lang)
     );
-    let resp = agent.invoke(&prompt, Some(&system)).await?;
-
-    let reflection = resp.text.trim().to_string();
+    let reflection = harness::invoke_raw(agent, &prompt, Some(&system)).await?;
     if reflection.is_empty() {
         info!("Mirror: empty response from agent, skipping");
         return Ok(false);
@@ -140,8 +138,7 @@ pub async fn mirror_weekly(agent: &Agent, store: &Store, _ctx: &mut PipelineCont
     let user_prompt = prompts::mirror_weekly_user(&lang, &signals_text);
 
     agent.reset_counter();
-    let resp = agent.invoke(&user_prompt, Some(system)).await?;
-    let report = resp.text.trim().to_string();
+    let report = harness::invoke_raw(agent, &user_prompt, Some(system)).await?;
     if report.is_empty() {
         return Ok(false);
     }

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
+use crate::pipeline::harness;
 use sage_types::{Event, EventType};
 
 use crate::store::Store;
@@ -105,8 +106,8 @@ async fn filter_and_summarise(
 
     let prompt = prompts::feed_filter_prompt(lang, &interests_line, &personality_section, &listing);
 
-    match agent.invoke(&prompt, None).await {
-        Ok(resp) => parse_llm_response(&resp.text),
+    match harness::invoke_text(agent, &prompt, None).await {
+        Ok(text) => parse_llm_response(&text),
         Err(e) => {
             warn!("Feed LLM filter failed: {e}");
             Vec::new()
@@ -284,8 +285,8 @@ async fn fetch_and_summarise(
     };
     let prompt = prompts::feed_deep_read_prompt(lang, sentence_count, personality, &project_section, &truncated);
 
-    match agent.invoke(&prompt, None).await {
-        Ok(resp) => parse_deep_read_response(&resp.text),
+    match harness::invoke_text(agent, &prompt, None).await {
+        Ok(text) => parse_deep_read_response(&text),
         Err(e) => {
             warn!("Deep read summarise failed for {url}: {e}");
             None
@@ -1117,6 +1118,135 @@ fn extract_xml_attr<'a>(xml: &'a str, tag: &str, attr: &str) -> Option<&'a str> 
     let val_start = tag_body.find(&attr_key)? + attr_key.len();
     let val_end = tag_body[val_start..].find('"')?;
     Some(&tag_body[val_start..val_start + val_end])
+}
+
+// ─── Topic Search (instant, no LLM) ─────────────────────
+
+/// 即时搜索：并行查询 HN Algolia + Reddit → LLM 打分筛选 → deep read 总结 → 存入 feed。
+/// 需要 Agent（LLM）+ Store。返回最终存入的条目数。
+pub async fn search_topic(query: &str, agent: &Agent, store: &Store) -> Result<usize> {
+    let client = build_feed_client();
+    let q = query.to_string();
+
+    // 并行搜索 HN + Reddit
+    let (hn_result, reddit_result) = tokio::join!(
+        search_hn_algolia(&client, &q),
+        search_reddit(&client, &q),
+    );
+
+    let mut items: Vec<RawFeedItem> = Vec::new();
+    match hn_result {
+        Ok(v) => items.extend(v),
+        Err(e) => warn!("HN search failed: {e}"),
+    }
+    match reddit_result {
+        Ok(v) => items.extend(v),
+        Err(e) => warn!("Reddit search failed: {e}"),
+    }
+
+    if items.is_empty() {
+        return Ok(0);
+    }
+    info!("Topic search '{q}': fetched {} raw items, sending to LLM", items.len());
+
+    let lang = store.prompt_lang();
+    let interests = q.clone(); // 搜索词本身就是兴趣上下文
+    let personality = store
+        .search_memories("identity personality traits", 5)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| m.content)
+        .collect::<Vec<_>>()
+        .join("; ");
+    let project_focus = String::new();
+
+    // LLM 打分 + 筛选
+    let mut events = filter_and_summarise(agent, &items, &lang, &interests, &personality).await;
+
+    // Deep read：抓取原文 + LLM 总结/建议
+    deep_read_items(&client, agent, &lang, &personality, &project_focus, &mut events).await;
+
+    // 存入 observations（去重）
+    let mut saved = 0;
+    for ev in &events {
+        if !store.has_feed_observation(&ev.title) {
+            if store.record_observation("feed", &ev.title, Some(&ev.body)).is_ok() {
+                saved += 1;
+            }
+        }
+    }
+
+    info!("Topic search '{q}': {saved}/{} items saved after LLM filter", events.len());
+    Ok(saved)
+}
+
+async fn search_hn_algolia(client: &Client, query: &str) -> Result<Vec<RawFeedItem>> {
+    let url = format!(
+        "https://hn.algolia.com/api/v1/search?query={}&tags=story&hitsPerPage=15",
+        urlencoding::encode(query)
+    );
+    let resp = client.get(&url).send().await?.error_for_status()?.json::<serde_json::Value>().await?;
+
+    let hits = resp["hits"].as_array().cloned().unwrap_or_default();
+    let items = hits.iter().filter_map(|h| {
+        let title = h["title"].as_str()?.to_string();
+        let item_url = h["url"].as_str().unwrap_or("").to_string();
+        let url = if item_url.is_empty() {
+            let object_id = h["objectID"].as_str().unwrap_or("");
+            format!("https://news.ycombinator.com/item?id={object_id}")
+        } else {
+            item_url
+        };
+        let points = h["points"].as_u64().unwrap_or(0);
+        Some(RawFeedItem {
+            title,
+            url,
+            snippet: format!("HN {points}pts"),
+            source: "hackernews".into(),
+        })
+    }).collect();
+
+    Ok(items)
+}
+
+async fn search_reddit(client: &Client, query: &str) -> Result<Vec<RawFeedItem>> {
+    let url = format!(
+        "https://www.reddit.com/search.json?q={}&sort=relevance&limit=15",
+        urlencoding::encode(query)
+    );
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "Sage/1.0")
+        .send().await?
+        .error_for_status()?
+        .json::<serde_json::Value>().await?;
+
+    let children = resp.pointer("/data/children")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let items = children.iter().filter_map(|child| {
+        let d = child.get("data")?;
+        let title = d["title"].as_str()?.to_string();
+        let sub = d["subreddit"].as_str().unwrap_or("?");
+        let ups = d["ups"].as_i64().unwrap_or(0);
+        let post_url = d["url"].as_str().unwrap_or("").to_string();
+        let permalink = d["permalink"].as_str().unwrap_or("");
+        let url = if post_url.is_empty() {
+            format!("https://reddit.com{permalink}")
+        } else {
+            post_url
+        };
+        Some(RawFeedItem {
+            title,
+            url,
+            snippet: format!("r/{sub} {ups}ups"),
+            source: "reddit".into(),
+        })
+    }).collect();
+
+    Ok(items)
 }
 
 // ─── Tests ───────────────────────────────────────────────

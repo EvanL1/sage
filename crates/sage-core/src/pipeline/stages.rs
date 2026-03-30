@@ -23,8 +23,9 @@ macro_rules! bool_stage {
         #[async_trait]
         impl CognitiveStage for $struct_name {
             fn name(&self) -> &str { $label }
-            async fn run(&self, agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineContext) -> Result<StageOutput> {
-                $fn_path(agent, store, ctx).await.map(StageOutput::Bool)
+            async fn run(&self, agent: Agent, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+                let ok = $fn_path(&agent, &store, &mut ctx).await?;
+                Ok((StageOutput::Bool(ok), ctx))
             }
         }
     };
@@ -44,16 +45,17 @@ pub struct EvolutionStage;
 #[async_trait]
 impl CognitiveStage for EvolutionStage {
     fn name(&self) -> &str { "evolution" }
-    async fn run(&self, agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineContext) -> Result<StageOutput> {
-        let result = crate::memory_evolution::evolve(agent, store).await?;
+    async fn run(&self, agent: Agent, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+        let result = crate::memory_evolution::evolve(&agent, &store).await?;
         ctx.evolution = Some(EvolutionOutput {
             consolidated: result.consolidated,
             condensed: result.condensed,
             linked: result.linked,
             decayed: result.decayed,
             promoted: result.promoted,
+            purged: result.purged,
         });
-        Ok(StageOutput::Evolution(result))
+        Ok((StageOutput::Evolution(result), ctx))
     }
 }
 
@@ -111,19 +113,19 @@ impl UserDefinedStage {
 impl CognitiveStage for UserDefinedStage {
     fn name(&self) -> &str { &self.stage_name }
 
-    async fn run(&self, agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineContext) -> Result<StageOutput> {
+    async fn run(&self, agent: Agent, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
         // ═══ PRE-HOOK（硬约束）═══
 
-        if !self.pre_condition.is_empty() && !actions::check_pre_condition(store, &self.pre_condition) {
+        if !self.pre_condition.is_empty() && !actions::check_pre_condition(&store, &self.pre_condition) {
             info!("{}: skipped (pre-condition not met)", self.stage_name);
-            return Ok(StageOutput::Bool(false));
+            return Ok((StageOutput::Bool(false), ctx));
         }
 
-        let context = actions::load_filtered_context(store, &self.allowed_inputs);
+        let context = actions::load_filtered_context(&store, &self.allowed_inputs);
 
         if context.is_empty() {
             info!("{}: skipped (no data from declared inputs)", self.stage_name);
-            return Ok(StageOutput::Bool(false));
+            return Ok((StageOutput::Bool(false), ctx));
         }
 
         // ═══ LLM 执行（软约束在 prompt 中）═══
@@ -137,17 +139,16 @@ impl CognitiveStage for UserDefinedStage {
         }
 
         agent.reset_counter();
-        let resp = agent.invoke(&prompt, None).await?;
-        let text = resp.text.trim();
+        let text = super::harness::invoke_text(&agent, &prompt, None).await?;
 
         if text.is_empty() || text == "NONE" {
-            return Ok(StageOutput::Bool(false));
+            return Ok((StageOutput::Bool(false), ctx));
         }
 
         // ═══ POST-HOOK（硬约束）═══
 
         let action_result = if !self.available_actions.is_empty() {
-            actions::execute_actions(text, &self.available_actions, store, &self.stage_name, self.max_actions)
+            actions::execute_actions(&text, &self.available_actions, &store, &self.stage_name, self.max_actions)
         } else {
             actions::ActionResult { count: 0, results: Vec::new() }
         };
@@ -174,10 +175,10 @@ impl CognitiveStage for UserDefinedStage {
 
         // 预设 ctx 桥接：把 ACTION 产出回填到 PipelineContext
         if let Some(key) = &self.preset_ctx_key {
-            write_preset_ctx(ctx, key, &action_result, &analysis);
+            write_preset_ctx(&mut ctx, key, &action_result, &analysis);
         }
 
-        Ok(StageOutput::Bool(action_result.count > 0 || !analysis.is_empty()))
+        Ok((StageOutput::Bool(action_result.count > 0 || !analysis.is_empty()), ctx))
     }
 }
 

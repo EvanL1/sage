@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::agent::Agent;
-use crate::pipeline::{CoachOutput, PipelineContext};
+use crate::pipeline::{harness, CoachOutput, PipelineContext};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
@@ -60,9 +60,7 @@ pub async fn learn(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> R
     let prompt = prompts::coach_user(&lang, &obs_text, &existing_text);
     let observe_guide = skills::load_section("sage-cognitive", "## Phase 1: OBSERVE");
     let system = format!("{observe_guide}\n\n{}", prompts::coach_system_suffix(&lang));
-    let resp = agent.invoke(&prompt, Some(&system)).await?;
-
-    let content = resp.text.trim();
+    let content = harness::invoke_text(agent, &prompt, Some(&system)).await?;
     let mut saved_insights = Vec::new();
     if !content.is_empty() {
         for line in content.lines() {

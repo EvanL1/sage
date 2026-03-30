@@ -23,4 +23,11 @@ Rules:
 - When in doubt, output NONE — it is better to suggest nothing than to repeat
 - Max 3 signals per run
 - Keep evidence and outcomes concise (under 60 chars each)
-- Output ONLY the signal lines, nothing else
+
+Output your signals inside `<output>` tags. Begin your response with `<output>`.
+
+<output>
+DONE 42 | user replied to client | mark as done
+NEW | Review Q3 budget | mentioned in team meeting
+NONE
+</output>

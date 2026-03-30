@@ -170,7 +170,8 @@ impl MemoryIntegrator {
             .replace("{related_text}", &related_text);
 
         let response = provider.invoke(&prompt, None).await?;
-        let action_line = response.lines().find(|l| {
+        let output = crate::pipeline::parser::extract_output_block(&response);
+        let action_line = output.lines().find(|l| {
             let t = l.trim();
             t.starts_with("UPDATE ") || t.starts_with("CREATE ") || t == "SKIP"
         });

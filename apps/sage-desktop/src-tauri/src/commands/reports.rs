@@ -69,6 +69,14 @@ pub async fn trigger_memory_evolution(state: State<'_, AppState>) -> Result<Stri
     Ok("Evolution 已在后台启动…".into())
 }
 
+/// 查询 evolution 实时进度（前端轮询用）
+#[tauri::command]
+pub async fn get_evolution_progress(state: State<'_, AppState>) -> Result<String, String> {
+    state.store.kv_get("evolution_progress")
+        .map_err(map_err)
+        .map(|v| v.unwrap_or_default())
+}
+
 #[tauri::command]
 pub async fn trigger_reconcile(state: State<'_, AppState>) -> Result<Value, String> {
     let revised = state.daemon.run_reconcile_full().await.map_err(map_err)?;

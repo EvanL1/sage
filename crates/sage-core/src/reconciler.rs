@@ -2,6 +2,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::agent::Agent;
+use crate::pipeline::harness;
 use crate::prompts;
 use crate::store::Store;
 
@@ -36,8 +37,8 @@ pub async fn reconcile(agent: &Agent, store: &Store, new_content: &str) -> Resul
     let lang = store.prompt_lang();
     let prompt = prompts::reconciler_incremental(&lang, new_content, &items_text);
     let system = prompts::reconciler_system(&lang);
-    let resp = agent.invoke(&prompt, Some(system)).await?;
-    apply_revisions(store, &resp.text, &existing)
+    let text = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    apply_revisions(store, &text, &existing)
 }
 
 /// 认知调和（全量扫描）：检查所有 decisions/strategy_insights 之间的内部矛盾、
@@ -73,8 +74,8 @@ pub async fn reconcile_full(agent: &Agent, store: &Store) -> Result<usize> {
     let lang = store.prompt_lang();
     let prompt = prompts::reconciler_full(&lang, &items_text);
     let system = prompts::reconciler_system(&lang);
-    let resp = agent.invoke(&prompt, Some(system)).await?;
-    apply_revisions(store, &resp.text, &all)
+    let text = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    apply_revisions(store, &text, &all)
 }
 
 fn format_items(items: &[&sage_types::Memory]) -> String {

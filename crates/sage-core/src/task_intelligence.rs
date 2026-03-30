@@ -1,9 +1,68 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use tracing::{info, warn};
 
 use crate::agent::Agent;
+use crate::pipeline::parser;
 use crate::prompts;
 use crate::store::Store;
+
+// ─── Typed Task Signal Commands ─────────────────────────────────────────────
+
+/// 结构化的任务信号命令
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskSignalCommand {
+    /// 任务已完成
+    Done { task_id: i64, evidence: String, suggested_outcome: Option<String> },
+    /// 任务应取消
+    Cancel { task_id: i64, reason: String, suggested_outcome: Option<String> },
+    /// 新任务建议
+    New { content: String, evidence: String },
+}
+
+/// 单行解析任务信号命令
+fn parse_task_signal_command(line: &str) -> Result<Option<TaskSignalCommand>> {
+    if let Some(rest) = line.strip_prefix("DONE ") {
+        let parts: Vec<&str> = rest.splitn(3, " | ").collect();
+        if parts.len() < 2 {
+            return Err(anyhow!("DONE: need at least task_id | evidence"));
+        }
+        let task_id: i64 = parts[0].trim().parse()
+            .map_err(|_| anyhow!("DONE: invalid task_id '{}'", parts[0].trim()))?;
+        let evidence = truncate(parts[1].trim(), 120);
+        let suggested = parts.get(2).map(|s| truncate(s.trim(), 120));
+        return Ok(Some(TaskSignalCommand::Done { task_id, evidence, suggested_outcome: suggested }));
+    }
+
+    if let Some(rest) = line.strip_prefix("CANCEL ") {
+        let parts: Vec<&str> = rest.splitn(3, " | ").collect();
+        if parts.len() < 2 {
+            return Err(anyhow!("CANCEL: need at least task_id | reason"));
+        }
+        let task_id: i64 = parts[0].trim().parse()
+            .map_err(|_| anyhow!("CANCEL: invalid task_id '{}'", parts[0].trim()))?;
+        let reason = truncate(parts[1].trim(), 120);
+        let suggested = parts.get(2).map(|s| truncate(s.trim(), 120));
+        return Ok(Some(TaskSignalCommand::Cancel { task_id, reason, suggested_outcome: suggested }));
+    }
+
+    if let Some(rest) = line.strip_prefix("NEW | ") {
+        let parts: Vec<&str> = rest.splitn(2, " | ").collect();
+        if parts.is_empty() || parts[0].trim().is_empty() {
+            return Err(anyhow!("NEW: empty task content"));
+        }
+        let content = truncate(parts[0].trim(), 120);
+        let evidence = parts.get(1).map(|s| truncate(s.trim(), 120)).unwrap_or_default();
+        return Ok(Some(TaskSignalCommand::New { content, evidence }));
+    }
+
+    // 非命令行（叙述文本）→ 跳过
+    Ok(None)
+}
+
+/// 从 LLM 响应解析任务信号，使用通用 parser 的 XML 提取
+fn parse_task_signal_response(text: &str) -> parser::ParseResult<TaskSignalCommand> {
+    parser::parse_commands(text, parse_task_signal_command)
+}
 
 /// Heuristic importance score for a single event, range [0.0, 1.0].
 /// No LLM call — purely rule-based for fast, cheap filtering.
@@ -84,33 +143,21 @@ pub async fn suggest_from_event(
 }
 
 fn parse_and_save_new_task_signals(response: &str, store: &Store, importance: f32) -> Result<usize> {
+    let parsed = parse_task_signal_response(response);
     let mut count = 0usize;
-    for line in response.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("NEW | ") {
-            let parts: Vec<&str> = rest.splitn(2, " | ").collect();
-            if parts.is_empty() {
-                continue;
-            }
-            let task_content = truncate(parts[0].trim(), 120);
-            let evidence = parts
-                .get(1)
-                .map(|s| truncate(s.trim(), 120))
-                .unwrap_or_default();
-            let title = format!("Suggested new task: {}", truncate(&task_content, 50));
+    for cmd in &parsed.commands {
+        if let TaskSignalCommand::New { content, evidence } = cmd {
+            let title = format!("Suggested new task: {}", truncate(content, 50));
             let id = store.save_task_signal_with_importance(
-                "new_task", None, &title, &evidence, Some(&task_content), importance,
+                "new_task", None, &title, evidence, Some(content), importance,
             )?;
             if id > 0 {
-                // 自动创建任务 + 接受信号（任务去重命中时 dismiss 孤立信号）
-                match store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence)) {
+                match store.create_task(content, "ai_signal", None, None, None, Some(evidence)) {
                     Ok(tid) if tid > 0 => {
                         let _ = store.update_signal_status(id, "accepted");
                         count += 1;
                     }
-                    _ => {
-                        let _ = store.update_signal_status(id, "dismissed");
-                    }
+                    _ => { let _ = store.update_signal_status(id, "dismissed"); }
                 }
             }
         }
@@ -266,94 +313,43 @@ pub async fn detect_task_signals(agent: &Agent, store: &Store) -> Result<usize> 
 }
 
 fn parse_and_save_signals(response: &str, store: &Store) -> Result<usize> {
+    let parsed = parse_task_signal_response(response);
+    if !parsed.rejected.is_empty() {
+        warn!("Task intelligence: {} commands rejected", parsed.rejected.len());
+    }
+
     let mut count = 0usize;
-
-    for line in response.lines() {
-        let line = line.trim();
-        if line.is_empty() || line == "NONE" {
-            continue;
-        }
-
-        if let Some(rest) = line.strip_prefix("DONE ") {
-            let parts: Vec<&str> = rest.splitn(3, " | ").collect();
-            if parts.len() < 2 {
-                warn!("Task intelligence: malformed DONE line: {line}");
-                continue;
+    for cmd in &parsed.commands {
+        match cmd {
+            TaskSignalCommand::Done { task_id, evidence, suggested_outcome } => {
+                let title = format!("Task looks completed: {}", truncate(evidence, 50));
+                let id = store.save_task_signal(
+                    "completion", Some(*task_id), &title, evidence, suggested_outcome.as_deref(),
+                )?;
+                if id > 0 { count += 1; }
             }
-            let task_id: i64 = match parts[0].trim().parse() {
-                Ok(id) => id,
-                Err(_) => {
-                    warn!("Task intelligence: invalid task_id in DONE: {}", parts[0]);
-                    continue;
-                }
-            };
-            let evidence = truncate(parts[1].trim(), 120);
-            let suggested = parts.get(2).map(|s| truncate(s.trim(), 120));
-            let title = format!("Task looks completed: {}", truncate(parts[1].trim(), 50));
-            let id = store.save_task_signal(
-                "completion",
-                Some(task_id),
-                &title,
-                &evidence,
-                suggested.as_deref(),
-            )?;
-            if id > 0 {
-                count += 1;
+            TaskSignalCommand::Cancel { task_id, reason, suggested_outcome } => {
+                let title = format!("Task may be irrelevant: {}", truncate(reason, 50));
+                let id = store.save_task_signal(
+                    "cancellation", Some(*task_id), &title, reason, suggested_outcome.as_deref(),
+                )?;
+                if id > 0 { count += 1; }
             }
-        } else if let Some(rest) = line.strip_prefix("CANCEL ") {
-            let parts: Vec<&str> = rest.splitn(3, " | ").collect();
-            if parts.len() < 2 {
-                warn!("Task intelligence: malformed CANCEL line: {line}");
-                continue;
-            }
-            let task_id: i64 = match parts[0].trim().parse() {
-                Ok(id) => id,
-                Err(_) => {
-                    warn!("Task intelligence: invalid task_id in CANCEL: {}", parts[0]);
-                    continue;
-                }
-            };
-            let evidence = truncate(parts[1].trim(), 120);
-            let suggested = parts.get(2).map(|s| truncate(s.trim(), 120));
-            let title = format!("Task may be irrelevant: {}", truncate(parts[1].trim(), 50));
-            let id = store.save_task_signal(
-                "cancellation",
-                Some(task_id),
-                &title,
-                &evidence,
-                suggested.as_deref(),
-            )?;
-            if id > 0 {
-                count += 1;
-            }
-        } else if let Some(rest) = line.strip_prefix("NEW | ") {
-            let parts: Vec<&str> = rest.splitn(2, " | ").collect();
-            if parts.is_empty() {
-                continue;
-            }
-            let task_content = truncate(parts[0].trim(), 120);
-            let evidence = parts
-                .get(1)
-                .map(|s| truncate(s.trim(), 120))
-                .unwrap_or_default();
-            let title = format!("Suggested new task: {}", truncate(&task_content, 50));
-            let id =
-                store.save_task_signal("new_task", None, &title, &evidence, Some(&task_content))?;
-            if id > 0 {
-                // 自动创建任务 + 接受信号（任务去重命中时 dismiss 孤立信号）
-                match store.create_task(&task_content, "ai_signal", None, None, None, Some(&evidence)) {
-                    Ok(tid) if tid > 0 => {
-                        let _ = store.update_signal_status(id, "accepted");
-                        count += 1;
-                    }
-                    _ => {
-                        let _ = store.update_signal_status(id, "dismissed");
+            TaskSignalCommand::New { content, evidence } => {
+                let title = format!("Suggested new task: {}", truncate(content, 50));
+                let id = store.save_task_signal("new_task", None, &title, evidence, Some(content))?;
+                if id > 0 {
+                    match store.create_task(content, "ai_signal", None, None, None, Some(evidence)) {
+                        Ok(tid) if tid > 0 => {
+                            let _ = store.update_signal_status(id, "accepted");
+                            count += 1;
+                        }
+                        _ => { let _ = store.update_signal_status(id, "dismissed"); }
                     }
                 }
             }
         }
     }
-
     Ok(count)
 }
 
@@ -515,5 +511,98 @@ mod tests {
         let result = calibrate_threshold(10, 10, 0.95);
         let actual = result.expect("should return Some");
         assert!((actual - 0.9).abs() < 0.001, "should clamp to 0.9, got {actual}");
+    }
+
+    // ─── Task Signal Parser Tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_done_signal() {
+        let cmd = parse_task_signal_command("DONE 42 | user replied | mark complete").unwrap().unwrap();
+        assert_eq!(cmd, TaskSignalCommand::Done {
+            task_id: 42,
+            evidence: "user replied".into(),
+            suggested_outcome: Some("mark complete".into()),
+        });
+    }
+
+    #[test]
+    fn parse_done_without_outcome() {
+        let cmd = parse_task_signal_command("DONE 7 | evidence here").unwrap().unwrap();
+        match cmd {
+            TaskSignalCommand::Done { task_id, suggested_outcome, .. } => {
+                assert_eq!(task_id, 7);
+                assert!(suggested_outcome.is_none());
+            }
+            _ => panic!("expected Done"),
+        }
+    }
+
+    #[test]
+    fn parse_done_invalid_id() {
+        assert!(parse_task_signal_command("DONE abc | evidence").is_err());
+    }
+
+    #[test]
+    fn parse_cancel_signal() {
+        let cmd = parse_task_signal_command("CANCEL 10 | meeting cancelled | remove").unwrap().unwrap();
+        assert_eq!(cmd, TaskSignalCommand::Cancel {
+            task_id: 10,
+            reason: "meeting cancelled".into(),
+            suggested_outcome: Some("remove".into()),
+        });
+    }
+
+    #[test]
+    fn parse_new_signal() {
+        let cmd = parse_task_signal_command("NEW | Review budget | mentioned in standup").unwrap().unwrap();
+        assert_eq!(cmd, TaskSignalCommand::New {
+            content: "Review budget".into(),
+            evidence: "mentioned in standup".into(),
+        });
+    }
+
+    #[test]
+    fn parse_new_without_evidence() {
+        let cmd = parse_task_signal_command("NEW | Do something").unwrap().unwrap();
+        match cmd {
+            TaskSignalCommand::New { content, evidence } => {
+                assert_eq!(content, "Do something");
+                assert!(evidence.is_empty());
+            }
+            _ => panic!("expected New"),
+        }
+    }
+
+    #[test]
+    fn parse_new_empty_content_is_err() {
+        assert!(parse_task_signal_command("NEW |  | evidence").is_err());
+    }
+
+    #[test]
+    fn parse_narrative_returns_none() {
+        assert!(parse_task_signal_command("Looking at the tasks...").unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_response_with_output_tags() {
+        let text = "Here is my analysis:\n<output>\nDONE 1 | shipped | close\nNEW | Test X | reason\nNONE\n</output>";
+        let result = parse_task_signal_response(text);
+        assert_eq!(result.commands.len(), 2);
+        assert!(result.rejected.is_empty());
+    }
+
+    #[test]
+    fn parse_response_without_tags() {
+        let text = "DONE 1 | evidence | outcome\nNONE";
+        let result = parse_task_signal_response(text);
+        assert_eq!(result.commands.len(), 1);
+    }
+
+    #[test]
+    fn parse_response_mixed_valid_and_rejected() {
+        let text = "<output>\nDONE 1 | ok | done\nDONE abc | bad id\nNEW | task | ev\n</output>";
+        let result = parse_task_signal_response(text);
+        assert_eq!(result.commands.len(), 2); // DONE 1 + NEW
+        assert_eq!(result.rejected.len(), 1); // DONE abc
     }
 }

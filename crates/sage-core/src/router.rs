@@ -6,6 +6,7 @@ use tracing::{error, info, warn};
 use sage_types::{Event, EventType};
 
 use crate::agent::Agent;
+use crate::pipeline::harness;
 use crate::applescript;
 use crate::coach;
 use crate::context_gatherer;
@@ -147,15 +148,9 @@ impl Router {
         let system = crate::prompts::cmd_task_extraction_system(&lang, &today);
 
         self.agent.reset_counter();
-        let resp = self.agent.invoke(&context, Some(&system)).await?;
-        let json_str = resp
-            .text
-            .trim()
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
-        let tasks: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
+        let tasks: Vec<serde_json::Value> = harness::invoke_json(&self.agent, &context, Some(&system))
+            .await
+            .unwrap_or_default();
 
         let mut count = 0;
         for t in &tasks {
@@ -272,11 +267,11 @@ impl Router {
         }
 
         self.agent.reset_counter();
-        let resp = self.agent.invoke(&prompt, Some(&system)).await?;
+        let report_text = harness::invoke_raw(&self.agent, &prompt, Some(&system)).await?;
 
         if let Err(e) = self
             .store
-            .record_suggestion(&event.source, &prompt, &resp.text)
+            .record_suggestion(&event.source, &prompt, &report_text)
         {
             error!("Failed to persist suggestion: {e}");
         }
@@ -289,20 +284,16 @@ impl Router {
                 context_gatherer::ReportType::WeeklyReport => "weekly",
                 context_gatherer::ReportType::WeekStart => "week_start",
             };
-            if let Err(e) = self.store.save_report(type_str, &resp.text) {
+            if let Err(e) = self.store.save_report(type_str, &report_text) {
                 error!("Failed to save report: {e}");
             }
 
             // 报告 → 记忆反哺：从报告中提取关键洞察存入 memories 表
-            let (extract_prompt, extract_system) = build_insight_extraction_prompts(&lang, &resp.text);
-            match self
-                .agent
-                .invoke(&extract_prompt, Some(extract_system))
-                .await
-            {
-                Ok(insights_resp) => {
-                    for line in insights_resp
-                        .text
+            let (extract_prompt, extract_system) = build_insight_extraction_prompts(&lang, &report_text);
+            let insights_text = harness::invoke_text(&self.agent, &extract_prompt, Some(extract_system)).await;
+            match insights_text {
+                Ok(text) => {
+                    for line in text
                         .lines()
                         .filter(|l| !l.trim().is_empty())
                         .take(3)
@@ -326,19 +317,19 @@ impl Router {
             }
         }
 
-        let notify_text = if resp.text.len() > 200 {
-            format!("{}...", truncate_str(&resp.text, 200))
+        let notify_text = if report_text.len() > 200 {
+            format!("{}...", truncate_str(&report_text, 200))
         } else {
-            resp.text.clone()
+            report_text.clone()
         };
         applescript::notify(&event.title, &notify_text, "/").await?;
 
         // 将决策写入 SQLite memories 表（替代 memory.rs 的 decisions.md）
         let decision_content = format!(
             "**Context**: {}\n**Decision**: {}",
-            &event.title, &resp.text
+            &event.title, &report_text
         );
-        if let Err(e) = self.store.append_decision(&event.title, &resp.text) {
+        if let Err(e) = self.store.append_decision(&event.title, &report_text) {
             error!("Failed to append decision: {e}");
         } else {
             // 认知调和：检查新决策是否推翻了旧推理
@@ -352,7 +343,7 @@ impl Router {
         // 日志层：记录 observation（低成本）
         let _ = self
             .store
-            .record_observation("scheduled", &event.title, Some(&resp.text));
+            .record_observation("scheduled", &event.title, Some(&report_text));
         Ok(())
     }
 
@@ -368,23 +359,23 @@ impl Router {
         }
 
         self.agent.reset_counter();
-        let resp = self.agent.invoke(&prompt, Some(&system)).await?;
+        let urgent_text = harness::invoke_raw(&self.agent, &prompt, Some(&system)).await?;
 
         if let Err(e) = self
             .store
-            .record_suggestion(&event.source, &prompt, &resp.text)
+            .record_suggestion(&event.source, &prompt, &urgent_text)
         {
             error!("Failed to persist suggestion: {e}");
         }
 
-        applescript::notify(&event.title, &resp.text, "/").await?;
+        applescript::notify(&event.title, &urgent_text, "/").await?;
 
         // 将决策写入 SQLite memories 表（替代 memory.rs 的 decisions.md）
         let decision_content = format!(
             "**Context**: {}\n**Decision**: {}",
-            &event.title, &resp.text
+            &event.title, &urgent_text
         );
-        if let Err(e) = self.store.append_decision(&event.title, &resp.text) {
+        if let Err(e) = self.store.append_decision(&event.title, &urgent_text) {
             error!("Failed to append decision: {e}");
         } else {
             if let Err(e) =
@@ -397,7 +388,7 @@ impl Router {
         let obs = format!("{}: {}", event.title, event.body);
         let _ = self
             .store
-            .record_observation("urgent", &obs, Some(&resp.text));
+            .record_observation("urgent", &obs, Some(&urgent_text));
 
         // 异步任务建议：高重要性事件立即触发 LLM 分析
         let importance = task_intelligence::score_event_importance("urgent", &event.title, &event.body);

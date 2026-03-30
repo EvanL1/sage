@@ -33,6 +33,8 @@ pub struct SessionSummary {
     pub message_count: usize,
     /// 基于前 3 条用户消息自动生成的一句话预览提示
     pub summary_hint: String,
+    /// 是否由 cron/scheduled trigger 自动触发（检测到 queue-operation enqueue）
+    pub is_automated: bool,
 }
 
 /// 逐行解析 JSONL session 文件，返回结构化的 `SessionSummary`。
@@ -122,6 +124,12 @@ pub fn analyze_session(jsonl_path: &Path) -> Result<SessionSummary> {
                             &mut summary.files_modified,
                         );
                     }
+                }
+            }
+            "queue-operation" => {
+                // cron/scheduled trigger 会有 enqueue 操作
+                if val["operation"].as_str() == Some("enqueue") {
+                    summary.is_automated = true;
                 }
             }
             other => {
@@ -298,7 +306,7 @@ pub fn ingest_sessions(claude_dir: &Path, store: &Store, hours: i64) -> Result<u
             let source_key = format!("claude-session:{file_stem}");
 
             match analyze_session(&path) {
-                Ok(summary) if summary.message_count > 0 => {
+                Ok(summary) if summary.message_count > 0 && !summary.is_automated => {
                     let content = format_session_summary(&summary, &project_name);
                     // Upsert: 删旧 → 插新
                     let _ = store.delete_memory_by_source(&source_key);
@@ -316,6 +324,10 @@ pub fn ingest_sessions(claude_dir: &Path, store: &Store, hours: i64) -> Result<u
                         summary.message_count,
                         summary.files_modified.len()
                     );
+                }
+                Ok(summary) if summary.is_automated => {
+                    // 自动触发的 session 不 ingest，清理之前可能已存的旧记忆
+                    let _ = store.delete_memory_by_source(&source_key);
                 }
                 Ok(_) => {} // 空 session，跳过
                 Err(e) => {
@@ -341,8 +353,13 @@ pub fn default_claude_dir() -> std::path::PathBuf {
 fn format_session_summary(s: &SessionSummary, project: &str) -> String {
     let mut parts = Vec::new();
 
-    // [项目名] 用户消息预览
-    parts.push(format!("[{project}] {}", s.summary_hint));
+    // [项目名] 用户消息预览（自动触发加 [cron] 前缀）
+    let prefix = if s.is_automated {
+        format!("[cron:{project}]")
+    } else {
+        format!("[{project}]")
+    };
+    parts.push(format!("{prefix} {}", s.summary_hint));
 
     // 消息统计
     parts.push(format!("{} msgs", s.message_count));
@@ -672,6 +689,7 @@ mod tests {
             },
             message_count: 10,
             summary_hint: "fix a bug | add tests".into(),
+            is_automated: false,
         };
         let formatted = format_session_summary(&summary, "digital-twin");
         assert!(formatted.contains("[digital-twin]"));
@@ -679,6 +697,19 @@ mod tests {
         assert!(formatted.contains("08:00~09:30"));
         assert!(formatted.contains("files:"));
         assert!(formatted.contains("tools:"));
+    }
+
+    #[test]
+    fn test_format_session_summary_cron() {
+        let summary = SessionSummary {
+            message_count: 5,
+            summary_hint: "auto task".into(),
+            is_automated: true,
+            ..Default::default()
+        };
+        let formatted = format_session_summary(&summary, "qu");
+        assert!(formatted.contains("[cron:qu]"));
+        assert!(!formatted.contains("[qu]"));
     }
 
     // ── 测试 extract_time ─────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use crate::agent::Agent;
 use crate::store::Store;
 
-use super::{CognitiveStage, PipelineContext, StageOutput};
+use super::{harness, CognitiveStage, PipelineContext, StageOutput};
 
 pub struct MetaStage;
 
@@ -17,12 +17,12 @@ pub struct MetaStage;
 impl CognitiveStage for MetaStage {
     fn name(&self) -> &str { "meta" }
 
-    async fn run(&self, agent: &Agent, store: &Arc<Store>, _ctx: &mut PipelineContext) -> Result<StageOutput> {
+    async fn run(&self, agent: Agent, store: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
         let mut total = 0;
-        total += evolve_pipeline_params(agent, store).await.unwrap_or(0);
-        total += evolve_prompts(agent, store).await.unwrap_or(0);
-        total += evolve_ui(agent, store).await.unwrap_or(0);
-        Ok(StageOutput::Bool(total > 0))
+        total += evolve_pipeline_params(&agent, &store).await.unwrap_or(0);
+        total += evolve_prompts(&agent, &store).await.unwrap_or(0);
+        total += evolve_ui(&agent, &store).await.unwrap_or(0);
+        Ok((StageOutput::Bool(total > 0), ctx))
     }
 }
 
@@ -55,9 +55,9 @@ async fn evolve_pipeline_params(agent: &Agent, store: &Arc<Store>) -> Result<usi
         lines.join("\n")
     );
 
-    let resp = agent.invoke(&prompt, None).await?;
+    let text = harness::invoke_text(agent, &prompt, None).await?;
     let mut changes = 0;
-    for line in resp.text.lines() {
+    for line in text.lines() {
         let line = line.trim();
         if line == "NONE" || line.is_empty() { continue; }
         changes += apply_meta_command(line, store);
@@ -156,9 +156,8 @@ async fn rewrite_prompt(agent: &Agent, store: &Store, name: &str, rules: &[&str]
          - Output ONLY the improved prompt, nothing else"
     );
 
-    let resp = agent.invoke(&prompt, None).await?;
-    let new_prompt = resp.text.trim();
-    if new_prompt.is_empty() || new_prompt.len() < current.len() / 2 {
+    let new_prompt = harness::invoke_raw(agent, &prompt, None).await?;
+    if new_prompt.is_empty() || new_prompt.len() < current.len() / 2  {
         warn!("Meta: prompt rewrite for '{name}' rejected (too short)");
         return Ok(0);
     }
@@ -216,12 +215,11 @@ async fn evolve_ui(agent: &Agent, store: &Arc<Store>) -> Result<usize> {
          Design ONE focused insight page. Output ONLY markdown. Start with `# Title`."
     );
 
-    let resp = agent.invoke(&prompt, None).await?;
-    let md = resp.text.trim();
+    let md = harness::invoke_raw(agent, &prompt, None).await?;
     if md.is_empty() || !md.starts_with('#') { return Ok(0); }
 
     let title = md.lines().next().unwrap_or("Auto Insight").trim_start_matches('#').trim();
-    store.save_custom_page(&format!("[auto] {title}"), md)?;
+    store.save_custom_page(&format!("[auto] {title}"), &md)?;
     info!("Meta UI: generated page '[auto] {title}'");
     Ok(1)
 }

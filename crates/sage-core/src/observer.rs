@@ -4,7 +4,7 @@ use tracing::info;
 
 use crate::agent::Agent;
 use crate::memory_integrator::{is_ephemeral_content, IncomingMemory, MemoryIntegrator};
-use crate::pipeline::{ObserverOutput, PipelineContext};
+use crate::pipeline::{harness, ObserverOutput, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 
@@ -70,10 +70,8 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineConte
     let prompt = prompts::observer_user(&lang, &obs_text, &history_text);
     let system = prompts::observer_system(&lang);
 
-    let resp = agent.invoke(&prompt, Some(system)).await?;
-
-    let entries: Vec<IncomingMemory> = resp
-        .text
+    let output_block = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    let entries: Vec<IncomingMemory> = output_block
         .lines()
         .map(|l| l.trim().trim_start_matches('-').trim())
         .filter(|l| !l.is_empty())
@@ -109,7 +107,7 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineConte
         Err(e) => {
             tracing::warn!("Observer: integration failed, falling back to simple insert: {e}");
             let mut saved = 0;
-            for line in resp.text.lines() {
+            for line in output_block.lines() {
                 let line = line.trim().trim_start_matches('-').trim();
                 if !line.is_empty() && !is_ephemeral_content(line) {
                     if store

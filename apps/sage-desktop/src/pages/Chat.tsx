@@ -42,7 +42,6 @@ function Chat() {
   const lastLocationKey = useRef("");
   const msgCountRef = useRef(0);
   const composingRef = useRef(false);
-  const justComposedRef = useRef(false);
   const [quote, setQuote] = useState<string | null>(null);
 
   // Scroll to bottom
@@ -227,7 +226,7 @@ function Chat() {
   }, [location.key]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && !composingRef.current && !justComposedRef.current && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+    if (e.key === "Enter" && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       sendMessage();
     }
@@ -349,11 +348,7 @@ function Chat() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { composingRef.current = true; }}
-              onCompositionEnd={() => {
-                composingRef.current = false;
-                justComposedRef.current = true;
-                setTimeout(() => { justComposedRef.current = false; }, 80);
-              }}
+              onCompositionEnd={() => { composingRef.current = false; }}
               placeholder={t("chat.placeholder")}
               rows={1}
               disabled={loading}

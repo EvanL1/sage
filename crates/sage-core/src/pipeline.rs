@@ -4,6 +4,8 @@
 //! 管线顺序由 config.toml 的 `[pipeline]` 段驱动，不再硬编码。
 
 pub mod actions;
+pub mod harness;
+pub mod parser;
 pub mod stages;
 
 use std::collections::HashMap;
@@ -94,6 +96,7 @@ pub struct EvolutionOutput {
     pub linked: usize,
     pub decayed: usize,
     pub promoted: usize,
+    pub purged: usize,
 }
 
 // ─── Trait + Output ──────────────────────────────────────────────────────────
@@ -106,7 +109,7 @@ pub enum StageOutput {
 #[async_trait]
 pub trait CognitiveStage: Send + Sync {
     fn name(&self) -> &str;
-    async fn run(&self, agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineContext) -> Result<StageOutput>;
+    async fn run(&self, agent: Agent, store: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)>;
 }
 
 // ─── Pipeline Registry ──────────────────────────────────────────────────────
@@ -114,10 +117,12 @@ pub trait CognitiveStage: Send + Sync {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct StageConfig {
     pub max_iterations: Option<usize>,
+    /// 阶段级超时（秒）。超时后阶段标记为 Error("timeout")，后续阶段继续执行。
+    pub timeout_secs: Option<u64>,
 }
 
 pub struct CognitivePipeline {
-    stages: HashMap<String, Box<dyn CognitiveStage>>,
+    stages: HashMap<String, Arc<dyn CognitiveStage>>,
     adj: HashMap<String, Vec<String>>,
     rev_adj: HashMap<String, Vec<String>>,
     all_nodes: Vec<String>,
@@ -167,7 +172,7 @@ impl CognitivePipeline {
         }
     }
 
-    pub fn register(&mut self, stage: Box<dyn CognitiveStage>) {
+    pub fn register(&mut self, stage: Arc<dyn CognitiveStage>) {
         self.stages.insert(stage.name().to_string(), stage);
     }
 
@@ -192,57 +197,157 @@ impl CognitivePipeline {
 
         let mut completed: HashSet<String> = HashSet::new();
 
-        while let Some(name) = ready.pop_front() {
-            if completed.contains(&name) || !node_set.contains(name.as_str()) { continue; }
-
-            if is_stage_disabled(store, &name) {
-                info!("{name}: skipped (disabled by self-evolution)");
-                ctx.stage_results.push(StageResult {
-                    name: name.clone(), status: StageStatus::Skipped, duration_ms: 0,
-                });
-                completed.insert(name.clone());
-                self.push_ready(&name, &node_set, &mut in_degree, &completed, &mut ready);
-                continue;
+        // Wave-based 并行执行：每波取出所有 ready stage，区分可并行和需串行的
+        while !ready.is_empty() {
+            let mut wave: Vec<String> = Vec::new();
+            while let Some(name) = ready.pop_front() {
+                if completed.contains(&name) || !node_set.contains(name.as_str()) { continue; }
+                if is_stage_disabled(store, &name) {
+                    info!("{name}: skipped (disabled by self-evolution)");
+                    ctx.stage_results.push(StageResult { name: name.clone(), status: StageStatus::Skipped, duration_ms: 0 });
+                    completed.insert(name.clone());
+                    self.push_ready(&name, &node_set, &mut in_degree, &completed, &mut ready);
+                    continue;
+                }
+                if self.stages.contains_key(&name) {
+                    wave.push(name);
+                } else {
+                    warn!("Pipeline: unknown stage '{name}', skipping");
+                    completed.insert(name.clone());
+                    self.push_ready(&name, &node_set, &mut in_degree, &completed, &mut ready);
+                }
             }
 
-            let Some(stage) = self.stages.get(&name) else {
-                warn!("Pipeline: unknown stage '{name}', skipping");
+            if wave.is_empty() { break; }
+
+            // 分类：ctx 写入者串行，其余真并行
+            let ctx_writers: HashSet<&str> = ["observer", "coach", "mirror", "questioner", "evolution"].into();
+            let (serial, parallel): (Vec<_>, Vec<_>) = wave.into_iter()
+                .partition(|name| ctx_writers.contains(name.as_str()));
+
+            // 1. 串行组：顺序传递 ctx
+            for name in &serial {
+                let (result_ctx, elapsed, outcome, log_msg, status) =
+                    self.run_stage_owned(name, agent, store, ctx).await;
+                ctx = result_ctx;
+                if !log_msg.is_empty() { info!("{log_msg}"); }
+                ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
+                let _ = store.log_pipeline_run(name, pipeline_name, outcome, elapsed as i64);
                 completed.insert(name.clone());
-                self.push_ready(&name, &node_set, &mut in_degree, &completed, &mut ready);
-                continue;
-            };
+                self.push_ready(name, &node_set, &mut in_degree, &completed, &mut ready);
+            }
 
-            let stage_agent = self.make_stage_agent(&name, agent, store);
-            let start = std::time::Instant::now();
-
-            let (outcome, log_msg, status) = match stage.run(&stage_agent, store, &mut ctx).await {
-                Ok(StageOutput::Bool(true)) => ("ok", format!("{name}: completed"), StageStatus::Ok),
-                Ok(StageOutput::Bool(false)) => ("empty", String::new(), StageStatus::Empty),
-                Ok(StageOutput::Evolution(r)) => {
-                    let total = r.consolidated + r.condensed + r.linked + r.decayed + r.promoted;
-                    if total > 0 {
-                        ("ok", format!(
-                            "{name}: consolidated={}, condensed={}, linked={}, decayed={}, promoted={}",
-                            r.consolidated, r.condensed, r.linked, r.decayed, r.promoted
-                        ), StageStatus::Ok)
-                    } else {
-                        ("empty", String::new(), StageStatus::Empty)
-                    }
+            // 2. 并行组：tokio::spawn 真并行
+            if parallel.len() == 1 {
+                let name = &parallel[0];
+                let (result_ctx, elapsed, outcome, log_msg, status) =
+                    self.run_stage_owned(name, agent, store, ctx).await;
+                ctx = result_ctx;
+                if !log_msg.is_empty() { info!("{log_msg}"); }
+                ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
+                let _ = store.log_pipeline_run(name, pipeline_name, outcome, elapsed as i64);
+                completed.insert(name.clone());
+                self.push_ready(name, &node_set, &mut in_degree, &completed, &mut ready);
+            } else if parallel.len() > 1 {
+                info!("Pipeline: spawning {} parallel stages: {:?}", parallel.len(), &parallel);
+                let mut handles = Vec::new();
+                for name in &parallel {
+                    let stage = Arc::clone(self.stages.get(name).unwrap());
+                    let stage_agent = self.make_stage_agent(name, agent, store);
+                    let store_clone = Arc::clone(store);
+                    let name_clone = name.clone();
+                    let default_timeout = if name == "evolution" { 600u64 } else { 120 };
+                    let timeout = std::time::Duration::from_secs(
+                        self.stage_configs.get(name).and_then(|c| c.timeout_secs).unwrap_or(default_timeout)
+                    );
+                    // 每个 parallel stage 拿空 ctx（不读上游），spawn 真并行
+                    let handle = tokio::spawn(async move {
+                        let start = std::time::Instant::now();
+                        let result = tokio::time::timeout(
+                            timeout,
+                            stage.run(stage_agent, store_clone, PipelineContext::default()),
+                        ).await;
+                        let elapsed = start.elapsed().as_millis() as u64;
+                        (name_clone, result, elapsed)
+                    });
+                    handles.push(handle);
                 }
-                Err(e) => {
-                    error!("{name} failed: {e}");
-                    ("error", String::new(), StageStatus::Error(e.to_string()))
-                }
-            };
 
-            if !log_msg.is_empty() { info!("{log_msg}"); }
-            let elapsed = start.elapsed().as_millis() as u64;
-            ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
-            let _ = store.log_pipeline_run(&name, pipeline_name, outcome, elapsed as i64);
-            completed.insert(name.clone());
-            self.push_ready(&name, &node_set, &mut in_degree, &completed, &mut ready);
+                for handle in handles {
+                    let (name, result, elapsed) = handle.await.unwrap_or_else(|e| {
+                        ("panic".into(), Ok(Err(anyhow::anyhow!("stage panicked: {e}"))), 0)
+                    });
+                    let (outcome, log_msg, status) = Self::classify_result(&name, result);
+                    if !log_msg.is_empty() { info!("{log_msg}"); }
+                    ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
+                    let _ = store.log_pipeline_run(&name, pipeline_name, outcome, elapsed as i64);
+                    completed.insert(name.clone());
+                    self.push_ready(&name, &node_set, &mut in_degree, &completed, &mut ready);
+                }
+            }
         }
         ctx
+    }
+
+    fn classify_result(
+        name: &str,
+        result: Result<Result<(StageOutput, PipelineContext)>, tokio::time::error::Elapsed>,
+    ) -> (&'static str, String, StageStatus) {
+        match result {
+            Ok(Ok((StageOutput::Bool(true), _))) => ("ok", format!("{name}: completed"), StageStatus::Ok),
+            Ok(Ok((StageOutput::Bool(false), _))) => ("empty", String::new(), StageStatus::Empty),
+            Ok(Ok((StageOutput::Evolution(r), _))) => {
+                let total = r.consolidated + r.condensed + r.linked + r.decayed + r.promoted + r.purged;
+                if total > 0 {
+                    ("ok", format!("{name}: consolidated={}, condensed={}, linked={}, decayed={}, promoted={}, purged={}",
+                        r.consolidated, r.condensed, r.linked, r.decayed, r.promoted, r.purged), StageStatus::Ok)
+                } else {
+                    ("empty", String::new(), StageStatus::Empty)
+                }
+            }
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if msg.contains("已达上限") {
+                    warn!("{name}: LLM budget exhausted, degrading");
+                    ("degraded", String::new(), StageStatus::Degraded("llm_budget_exhausted".into()))
+                } else {
+                    error!("{name} failed: {msg}");
+                    ("error", String::new(), StageStatus::Error(msg))
+                }
+            }
+            Err(_) => {
+                error!("{name} timed out");
+                ("error", String::new(), StageStatus::Error("timeout".into()))
+            }
+        }
+    }
+
+    /// 执行单个 stage（owned ctx 传入传出），返回 (ctx, elapsed_ms, outcome, log_msg, status)
+    async fn run_stage_owned(
+        &self, name: &str, agent: &Agent, store: &Arc<Store>, ctx: PipelineContext,
+    ) -> (PipelineContext, u64, &'static str, String, StageStatus) {
+        let Some(stage) = self.stages.get(name) else {
+            return (ctx, 0, "error", String::new(), StageStatus::Error("not found".into()));
+        };
+        let stage_agent = self.make_stage_agent(name, agent, store);
+        let start = std::time::Instant::now();
+        let default_timeout = if name == "evolution" { 600u64 } else { 120 };
+        let timeout = std::time::Duration::from_secs(
+            self.stage_configs.get(name).and_then(|c| c.timeout_secs).unwrap_or(default_timeout)
+        );
+        let stage_result = tokio::time::timeout(
+            timeout,
+            stage.run(stage_agent, Arc::clone(store), ctx),
+        ).await;
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        // 从结果中取回 ctx（成功时从返回值，失败/超时时用默认）
+        let returned_ctx = match &stage_result {
+            Ok(Ok((_, ref c))) => c.clone(),
+            _ => PipelineContext::default(),
+        };
+        let (outcome, log_msg, status) = Self::classify_result(name, stage_result);
+        (returned_ctx, elapsed, outcome, log_msg, status)
     }
 
     pub async fn run_evening(&self, agent: &Agent, store: &Arc<Store>) -> PipelineContext {
@@ -306,16 +411,16 @@ pub fn build_pipeline(config: &crate::config::PipelineConfig, store: &Store) -> 
         .collect();
 
     // 内置 stage：如果有同名预设则跳过
-    if !preset_names.contains(&"observer".into()) { p.register(Box::new(ObserverStage)); }
-    if !preset_names.contains(&"coach".into()) { p.register(Box::new(CoachStage)); }
-    if !preset_names.contains(&"mirror".into()) { p.register(Box::new(MirrorStage)); }
-    if !preset_names.contains(&"questioner".into()) { p.register(Box::new(QuestionerStage)); }
-    p.register(Box::new(EvolutionStage));
-    if !preset_names.contains(&"person_observer".into()) { p.register(Box::new(PersonObserverStage)); }
-    if !preset_names.contains(&"calibrator".into()) { p.register(Box::new(CalibratorStage)); }
-    if !preset_names.contains(&"strategist".into()) { p.register(Box::new(StrategistStage)); }
-    p.register(Box::new(MirrorWeeklyStage));
-    p.register(Box::new(MetaStage));
+    if !preset_names.contains(&"observer".into()) { p.register(Arc::new(ObserverStage)); }
+    if !preset_names.contains(&"coach".into()) { p.register(Arc::new(CoachStage)); }
+    if !preset_names.contains(&"mirror".into()) { p.register(Arc::new(MirrorStage)); }
+    if !preset_names.contains(&"questioner".into()) { p.register(Arc::new(QuestionerStage)); }
+    p.register(Arc::new(EvolutionStage));
+    if !preset_names.contains(&"person_observer".into()) { p.register(Arc::new(PersonObserverStage)); }
+    if !preset_names.contains(&"calibrator".into()) { p.register(Arc::new(CalibratorStage)); }
+    if !preset_names.contains(&"strategist".into()) { p.register(Arc::new(StrategistStage)); }
+    p.register(Arc::new(MirrorWeeklyStage));
+    p.register(Arc::new(MetaStage));
 
     // 自定义/预设 stage
     for cs in &custom_stages {
@@ -327,7 +432,7 @@ pub fn build_pipeline(config: &crate::config::PipelineConfig, store: &Store) -> 
             "questioner" => Some(PresetCtxKey::Questioner),
             _ => None,
         };
-        p.register(Box::new(UserDefinedStage::new(
+        p.register(Arc::new(UserDefinedStage::new(
             cs.name.clone(), cs.prompt.clone(), cs.output_format.clone(),
             cs.available_actions.clone(), cs.allowed_inputs.clone(),
             cs.max_actions, cs.pre_condition.clone(),
@@ -377,9 +482,9 @@ mod tests {
     #[async_trait]
     impl CognitiveStage for MockStage {
         fn name(&self) -> &str { &self.label }
-        async fn run(&self, _: &Agent, _: &Arc<Store>, _: &mut PipelineContext) -> Result<StageOutput> {
+        async fn run(&self, _: Agent, _: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
             self.log.lock().await.push(self.label.clone());
-            Ok(StageOutput::Bool(true))
+            Ok((StageOutput::Bool(true), ctx))
         }
     }
 
@@ -394,7 +499,7 @@ mod tests {
             weekly: vec![], ..Default::default()
         });
         for name in ["a", "b", "c"] {
-            p.register(Box::new(MockStage { label: name.into(), log: Arc::clone(&log) }));
+            p.register(Arc::new(MockStage { label: name.into(), log: Arc::clone(&log) }));
         }
         p.run_evening(&mock_agent(), &mock_store()).await;
         assert_eq!(*log.lock().await, vec!["a", "b", "c"]);
@@ -408,7 +513,7 @@ mod tests {
             weekly: vec![], ..Default::default()
         });
         for name in ["a", "b"] {
-            p.register(Box::new(MockStage { label: name.into(), log: Arc::clone(&log) }));
+            p.register(Arc::new(MockStage { label: name.into(), log: Arc::clone(&log) }));
         }
         p.run_evening(&mock_agent(), &mock_store()).await;
         assert_eq!(*log.lock().await, vec!["a", "b"]);
@@ -436,7 +541,7 @@ mod tests {
         };
         let mut p = CognitivePipeline::new(&config);
         for name in ["a", "b", "c", "d"] {
-            p.register(Box::new(MockStage { label: name.into(), log: Arc::clone(&log) }));
+            p.register(Arc::new(MockStage { label: name.into(), log: Arc::clone(&log) }));
         }
         p.run_evening(&mock_agent(), &mock_store()).await;
         let executed = log.lock().await;

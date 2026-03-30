@@ -83,8 +83,35 @@ impl Agent {
             Some(sp) => format!("{time_header}{sp}"),
             None => time_header,
         };
-        let text = self.provider.invoke_with_timeout(prompt, Some(&enriched_system), timeout_secs).await?;
-        Ok(AgentResponse { text })
+        let prompt_chars = prompt.len();
+        let start = std::time::Instant::now();
+        let result = self.provider.invoke_with_timeout(prompt, Some(&enriched_system), timeout_secs).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match &result {
+            Ok(text) => {
+                info!(
+                    provider = %self.provider.name(),
+                    prompt_chars,
+                    response_chars = text.len(),
+                    duration_ms,
+                    call_index = count,
+                    "llm_call_ok"
+                );
+                Ok(AgentResponse { text: text.clone() })
+            }
+            Err(e) => {
+                info!(
+                    provider = %self.provider.name(),
+                    prompt_chars,
+                    duration_ms,
+                    call_index = count,
+                    error = %e,
+                    "llm_call_failed"
+                );
+                result.map(|t| AgentResponse { text: t })
+            }
+        }
     }
 
     /// 调用 LLM 做推理（自动路由到 Claude/Codex/Gemini）

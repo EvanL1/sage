@@ -68,6 +68,7 @@ function Settings() {
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
   const [providersLoading, setProvidersLoading] = useState(true);
   const [reconcileRunning, setReconcileRunning] = useState(false);
+  const [evolutionProgress, setEvolutionProgress] = useState("");
 
   useEffect(() => {
     invoke<UserProfile | null>("get_profile")
@@ -106,6 +107,24 @@ function Settings() {
         setProvidersLoading(false);
       });
 
+  }, []);
+
+  // 进入页面时检查 evolution 是否在跑，如果是则恢复轮询
+  useEffect(() => {
+    let poll: ReturnType<typeof setInterval> | null = null;
+    invoke<string>("get_evolution_progress").then((p) => {
+      if (p) {
+        setEvolutionProgress(p);
+        poll = setInterval(async () => {
+          try {
+            const v = await invoke<string>("get_evolution_progress");
+            setEvolutionProgress(v || "");
+            if (!v && poll) { clearInterval(poll); poll = null; }
+          } catch { if (poll) { clearInterval(poll); poll = null; } setEvolutionProgress(""); }
+        }, 2000);
+      }
+    }).catch(() => {});
+    return () => { if (poll) clearInterval(poll); };
   }, []);
 
   const showToast = (type: "success" | "error", msg: string) => {
@@ -545,18 +564,38 @@ function Settings() {
                 </div>
                 <button
                   className="btn btn-primary btn-sm"
+                  disabled={!!evolutionProgress}
                   onClick={async () => {
                     try {
                       const msg = await invoke<string>("trigger_memory_evolution");
-                      showToast("success", msg + " " + t("settings.evolutionNotif"));
+                      showToast("success", msg);
+                      const poll = setInterval(async () => {
+                        try {
+                          const p = await invoke<string>("get_evolution_progress");
+                          setEvolutionProgress(p || "");
+                          if (!p) { clearInterval(poll); showToast("success", t("settings.evolutionNotif")); }
+                        } catch { clearInterval(poll); setEvolutionProgress(""); }
+                      }, 2000);
                     } catch (err) {
                       showToast("error", String(err));
                     }
                   }}
                 >
-                  {t("settings.runNow")}
+                  {evolutionProgress ? "..." : t("settings.runNow")}
                 </button>
               </div>
+              {evolutionProgress && (
+                <div style={{
+                  padding: "8px 12px",
+                  background: "var(--bg-secondary)",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "var(--text-secondary)",
+                  fontFamily: "monospace",
+                }}>
+                  {evolutionProgress}
+                </div>
+              )}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{t("settings.reconcile")}</div>

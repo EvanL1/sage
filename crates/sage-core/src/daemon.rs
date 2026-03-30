@@ -444,6 +444,33 @@ impl Daemon {
             }
         }
 
+        // Outlook AppleScript 邮件轮询（独立于 IMAP channel）
+        if let Ok(outlook_sources) = self.store.get_message_sources_by_type("outlook") {
+            for src in &outlook_sources {
+                match crate::channels::outlook::fetch_outlook_emails(src.id, 30).await {
+                    Ok(emails) => {
+                        let _ = self.store.save_emails(&emails);
+                        for email in &emails {
+                            let importance = crate::channels::email_filter::classify(
+                                &email.from_addr, &email.subject, &email.body_text,
+                            );
+                            if importance == "noise" { continue; }
+                            let direction = if email.folder == "Sent" { "sent" } else { "received" };
+                            let sender = if direction == "sent" { "我" } else { email.from_addr.as_str() };
+                            let _ = self.store.save_message_with_direction(
+                                sender, &email.subject, Some(&email.body_text),
+                                "email", "email", &email.date, direction,
+                            );
+                        }
+                        if !emails.is_empty() {
+                            info!("Outlook poll: {} emails from source {}", emails.len(), src.id);
+                        }
+                    }
+                    Err(e) => error!("Outlook poll failed (source {}): {e}", src.id),
+                }
+            }
+        }
+
         if let Some(ref calendar) = self.calendar {
             match calendar.poll().await {
                 Ok(events) => all_events.extend(events),
@@ -667,10 +694,10 @@ impl Daemon {
         agent.reset_counter();
         let system = crate::prompts::feed_digest_system(&lang);
         let user = crate::prompts::feed_digest_user(&lang, &lines.join("\n"));
-        match agent.invoke(&user, Some(system)).await {
-            Ok(resp) => {
+        match crate::pipeline::harness::invoke_raw(agent, &user, Some(system)).await {
+            Ok(digest) => {
                 let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                if let Err(e) = self.store.save_feed_digest(&today, &resp.text) {
+                if let Err(e) = self.store.save_feed_digest(&today, &digest) {
                     error!("缓存 feed digest 失败: {e}");
                 }
                 info!("Feed digest 已生成并缓存（{today}）");

@@ -82,6 +82,24 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_shell::init())
+        // 拦截 WebView 导航：外部 URL 用系统浏览器打开，不在 WebView 内跳转
+        .plugin(tauri::plugin::Builder::<tauri::Wry, ()>::new("nav-guard")
+            .on_navigation(|_webview, url| {
+                let scheme = url.scheme();
+                if scheme == "tauri" || scheme == "about" {
+                    return true;
+                }
+                if (scheme == "http" || scheme == "https")
+                    && matches!(url.host_str(), Some("localhost" | "tauri.localhost")) {
+                    return true;
+                }
+                // 外部 URL → 系统浏览器
+                tracing::info!("拦截外部导航: {url}");
+                let url_string = url.to_string();
+                std::thread::spawn(move || { let _ = open::that(&url_string); });
+                false
+            })
+            .build())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::update_config_natural,
@@ -106,6 +124,7 @@ fn main() {
             commands::delete_chat_session,
             commands::get_chat_history,
             commands::get_memories,
+            commands::get_all_memories,
             commands::extract_memories,
             commands::sync_memory,
             commands::delete_memory,
@@ -118,6 +137,7 @@ fn main() {
             commands::get_daily_question,
             commands::trigger_report,
             commands::trigger_memory_evolution,
+            commands::get_evolution_progress,
             commands::trigger_reconcile,
             commands::trigger_strategist,
             commands::list_custom_stages,
@@ -164,6 +184,7 @@ fn main() {
             commands::dismiss_signal,
             commands::accept_signal,
             commands::get_feed_items,
+            commands::search_feed_topic,
             commands::trigger_feed_poll,
             commands::get_feed_config,
             commands::save_feed_config,

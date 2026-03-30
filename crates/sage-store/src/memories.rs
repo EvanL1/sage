@@ -481,6 +481,38 @@ impl Store {
         Ok(deleted)
     }
 
+    /// 清除所有非活跃记忆（硬删除 archived / compiled / expired 行）
+    pub fn purge_archived_memories(&self) -> Result<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM memories WHERE status IN ('archived', 'compiled', 'expired')",
+                [],
+            )
+            .context("清除非活跃 memory 失败")?;
+        Ok(deleted)
+    }
+
+    /// 归档过期 episodic 记忆（超过 days 天且 confidence < max_conf）
+    pub fn archive_stale_episodics(&self, days: i64, max_conf: f64) -> Result<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let archived = conn
+            .execute(
+                "UPDATE memories SET status = 'archived', evolution_note = 'episodic expired', updated_at = datetime('now') \
+                 WHERE status = 'active' AND depth = 'episodic' AND confidence < ?1 \
+                 AND updated_at < datetime('now', ?2)",
+                rusqlite::params![max_conf, format!("-{days} days")],
+            )
+            .context("归档过期 episodic 失败")?;
+        Ok(archived)
+    }
+
     /// 更新记忆的内容和置信度
     pub fn update_memory(&self, id: i64, content: &str, confidence: f64) -> Result<()> {
         let conn = self
@@ -997,6 +1029,54 @@ impl Store {
             [],
             |row| row.get(0),
         )?;
+        Ok(count)
+    }
+
+    /// 记忆驱逐：当 active 记忆超过 cap 时，按 weighted_score 淘汰末尾批次。
+    /// 只淘汰 tier='working' AND depth IN ('episodic','semantic')，不碰 core/procedural/axiom。
+    pub fn evict_low_quality_memories(&self, cap: usize, evict_count: usize) -> Result<usize> {
+        if self.count_memories()? <= cap {
+            return Ok(0);
+        }
+        let memories = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+                 about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note \
+                 FROM memories \
+                 WHERE tier = 'working' AND depth IN ('episodic','semantic') AND status = 'active'",
+            ).context("准备驱逐查询失败")?;
+            let rows = stmt.query_map([], Self::row_to_memory)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut scored: Vec<(i64, f64)> = memories
+            .iter()
+            .map(|m| (m.id, weighted_score(m, m.confidence)))
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let to_evict: Vec<i64> = scored.into_iter().take(evict_count).map(|(id, _)| id).collect();
+        if to_evict.is_empty() {
+            return Ok(0);
+        }
+
+        let placeholders: String = to_evict.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "UPDATE memories SET status = 'archived' WHERE id IN ({placeholders})"
+        );
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let params: Vec<&dyn rusqlite::ToSql> = to_evict.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let count = conn.execute(&sql, params.as_slice()).context("驱逐记忆失败")?;
         Ok(count)
     }
 

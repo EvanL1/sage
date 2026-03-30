@@ -21,6 +21,15 @@ use crate::memory_integrator::{IncomingMemory, MemoryIntegrator};
 use crate::store::Store;
 use sage_types::{BridgeBehaviorEvent, BridgeImportRequest};
 
+/// 复用 provider 发现逻辑，避免硬编码 AgentConfig
+fn make_bridge_provider(store: &Arc<Store>) -> anyhow::Result<Box<dyn crate::provider::LlmProvider>> {
+    let discovered = crate::discovery::discover_providers(store);
+    let configs = store.load_provider_configs().unwrap_or_default();
+    let (info, config) = crate::discovery::select_best_provider(&discovered, &configs)
+        .ok_or_else(|| anyhow::anyhow!("no provider available"))?;
+    Ok(crate::provider::create_provider_from_config(&info, &config, &crate::config::AgentConfig::default()))
+}
+
 pub const DEFAULT_PORT: u16 = 18522;
 
 /// 扩展最后活跃时间（Unix 秒），每次收到请求时更新
@@ -143,23 +152,7 @@ async fn try_llm_integration(
     store: &Arc<Store>,
     entries: Vec<IncomingMemory>,
 ) -> anyhow::Result<crate::memory_integrator::IntegrationResult> {
-    let discovered = crate::discovery::discover_providers(store);
-    let configs = store.load_provider_configs().unwrap_or_default();
-    let (info, config) = crate::discovery::select_best_provider(&discovered, &configs)
-        .ok_or_else(|| anyhow::anyhow!("no provider available"))?;
-
-    let agent_config = crate::config::AgentConfig {
-        provider: "claude".into(),
-        claude_binary: "claude".into(),
-        codex_binary: String::new(),
-        gemini_binary: String::new(),
-        default_model: "claude-sonnet-4-6".into(),
-        project_dir: ".".into(),
-        max_budget_usd: 0.5,
-        permission_mode: "default".into(),
-        max_iterations: 10,
-    };
-    let provider = crate::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = make_bridge_provider(store)?;
     let integrator = MemoryIntegrator::new(Arc::clone(store));
     integrator.integrate(entries, provider.as_ref()).await
 }
@@ -221,27 +214,10 @@ async fn conversation_handler(
     };
 
     // 获取 LLM
-    let discovered = crate::discovery::discover_providers(&store);
-    let configs = store.load_provider_configs().unwrap_or_default();
-    let (prov_info, prov_config) = match crate::discovery::select_best_provider(&discovered, &configs)
-    {
-        Some(pair) => pair,
-        None => return Ok(Json(json!({"success": false, "error": "无可用 AI 服务"}))),
+    let provider = match make_bridge_provider(&store) {
+        Ok(p) => p,
+        Err(_) => return Ok(Json(json!({"success": false, "error": "无可用 AI 服务"}))),
     };
-
-    let agent_config = crate::config::AgentConfig {
-        provider: "claude".into(),
-        claude_binary: "claude".into(),
-        codex_binary: String::new(),
-        gemini_binary: String::new(),
-        default_model: "claude-sonnet-4-6".into(),
-        project_dir: ".".into(),
-        max_budget_usd: 0.5,
-        permission_mode: "default".into(),
-        max_iterations: 10,
-    };
-    let provider =
-        crate::provider::create_provider_from_config(&prov_info, &prov_config, &agent_config);
 
     let lang = store.prompt_lang();
     let prompt = crate::prompts::cmd_extract_memories_user(&lang, &existing_text, content);
@@ -255,12 +231,9 @@ async fn conversation_handler(
         }
     };
 
-    // 解析 JSON 数组
-    let json_str = result
-        .find('[')
-        .and_then(|start| result.rfind(']').map(|end| &result[start..=end]))
-        .unwrap_or("[]");
-    let insights: Vec<Value> = serde_json::from_str(json_str).unwrap_or_default();
+    // 解析 JSON 数组（通过 harness parser 提取 <output> 块 + 去 fence）
+    let output = crate::pipeline::parser::extract_output_block(&result);
+    let insights: Vec<Value> = crate::pipeline::parser::parse_json_fenced(output).unwrap_or_default();
 
     let bridge_source = format!("browser:{source}");
     let mut saved = 0usize;
@@ -345,8 +318,8 @@ async fn behavior_handler(
             .get("direction")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        // sender 为 Unknown/空 → 视为自己发的消息
-        let direction = if raw_dir == "sent" || sender == "Unknown" || sender.is_empty() {
+        // 只信任显式 direction 字段，Unknown sender 默认为 received
+        let direction = if raw_dir == "sent" {
             "sent"
         } else {
             "received"
@@ -443,27 +416,10 @@ async fn chat_handler(
     State(store): State<Arc<Store>>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    let discovered = crate::discovery::discover_providers(&store);
-    let configs = store.load_provider_configs().unwrap_or_default();
-    let (info, config) = match crate::discovery::select_best_provider(&discovered, &configs) {
-        Some(pair) => pair,
-        None => {
-            return Ok(Json(json!({"error": "未配置 LLM provider"})));
-        }
+    let provider = match make_bridge_provider(&store) {
+        Ok(p) => p,
+        Err(_) => return Ok(Json(json!({"error": "未配置 LLM provider"}))),
     };
-
-    let agent_config = crate::config::AgentConfig {
-        provider: "claude".into(),
-        claude_binary: "claude".into(),
-        codex_binary: String::new(),
-        gemini_binary: String::new(),
-        default_model: "claude-sonnet-4-6".into(),
-        project_dir: ".".into(),
-        max_budget_usd: 1.0,
-        permission_mode: "default".into(),
-        max_iterations: 10,
-    };
-    let provider = crate::provider::create_provider_from_config(&info, &config, &agent_config);
     let persona = crate::persona::Persona::new(Arc::clone(&store));
 
     match persona.chat(&req.message, provider.as_ref()).await {

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 static CODEX_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -191,11 +191,68 @@ impl LlmProvider for ClaudeProvider {
     }
 
     async fn invoke(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
-        self.run_cli(prompt, system_prompt, DEFAULT_TIMEOUT_SECS).await
+        self.run_cli_with_retry(prompt, system_prompt, DEFAULT_TIMEOUT_SECS).await
     }
 
     async fn invoke_with_timeout(&self, prompt: &str, system_prompt: Option<&str>, timeout_secs: u64) -> Result<String> {
-        self.run_cli(prompt, system_prompt, timeout_secs).await
+        self.run_cli_with_retry(prompt, system_prompt, timeout_secs).await
+    }
+}
+
+impl ClaudeProvider {
+    /// 暂时性错误判定：超时、网络问题、服务端错误、空响应
+    fn is_transient(err_msg: &str) -> bool {
+        err_msg.contains("timed out")
+            || err_msg.contains("timeout")
+            || err_msg.contains("connection")
+            || err_msg.contains("Connection")
+            || err_msg.contains("503")
+            || err_msg.contains("overloaded")
+            || err_msg.contains("spawn")
+    }
+
+    /// 永久性错误判定：预算耗尽不应重试
+    fn is_permanent(err_msg: &str) -> bool {
+        err_msg.contains("budget")
+            || err_msg.contains("Budget")
+            || err_msg.contains("Cost limit")
+            || err_msg.contains("上限")
+    }
+
+    /// 带指数退避重试的 CLI 调用（最多 3 次尝试）
+    async fn run_cli_with_retry(&self, prompt: &str, system_prompt: Option<&str>, timeout_secs: u64) -> Result<String> {
+        const MAX_ATTEMPTS: u8 = 3;
+        let mut last_err = String::new();
+
+        for attempt in 0..MAX_ATTEMPTS {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_secs(2u64.pow(attempt as u32));
+                warn!("claude: retry attempt {} after {}s delay", attempt + 1, delay.as_secs());
+                tokio::time::sleep(delay).await;
+            }
+
+            match self.run_cli(prompt, system_prompt, timeout_secs).await {
+                Ok(text) if text.trim().is_empty() && attempt < MAX_ATTEMPTS - 1 => {
+                    warn!("claude: empty response on attempt {}, retrying", attempt + 1);
+                    last_err = "empty response".into();
+                }
+                Ok(text) => return Ok(text),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if Self::is_permanent(&msg) {
+                        return Err(e);
+                    }
+                    if !Self::is_transient(&msg) && attempt > 0 {
+                        // 非暂时性、非永久性错误：只重试 1 次
+                        return Err(e);
+                    }
+                    warn!("claude: attempt {} failed: {}", attempt + 1, &msg[..msg.len().min(200)]);
+                    last_err = msg;
+                }
+            }
+        }
+
+        anyhow::bail!("claude: failed after {MAX_ATTEMPTS} attempts. Last error: {last_err}")
     }
 }
 

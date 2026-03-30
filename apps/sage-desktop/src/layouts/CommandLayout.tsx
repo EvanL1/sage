@@ -6,6 +6,7 @@ import { DashData, TYPE_COLORS, TYPE_LABEL, reportLabel, preview } from "./types
 import { loadPinned, togglePin, isPinned as checkPinned, onPinChange, unpinItem, type PinnedItem } from "./pinStore";
 import { useLang } from "../LangContext";
 import InteractiveReport from "../components/InteractiveReport";
+import CompletionDialog from "../components/CompletionDialog";
 
 /* ═══ Widget Registry ═══ */
 
@@ -224,7 +225,6 @@ interface TaskItem {
   outcome: string | null; verification: string | null;
 }
 
-interface VeriItem { q: string; options?: string[]; }
 
 interface TaskSignalLight {
   id: number;
@@ -238,8 +238,6 @@ function TasksWidget() {
   const [signals, setSignals] = useState<TaskSignalLight[]>([]);
   const [input, setInput] = useState("");
   const [completing, setCompleting] = useState<TaskItem | null>(null);
-  const [answers, setAnswers] = useState<Record<number, string[]>>({});
-  const [notes, setNotes] = useState("");
 
   const load = useCallback(() => {
     invoke<TaskItem[]>("list_tasks", { status: "open", limit: 8 }).then(setTasks).catch(e => console.error("list_tasks widget:", e));
@@ -257,39 +255,6 @@ function TasksWidget() {
       .then(() => { setInput(""); load(); }).catch(e => console.error("create_task:", e));
   };
 
-  const openComplete = (task: TaskItem) => {
-    setCompleting(task);
-    setAnswers({});
-    setNotes("");
-  };
-
-  const saveComplete = (skip: boolean) => {
-    if (!completing) return;
-    let outcome: string | null = null;
-    if (!skip) {
-      const veri: VeriItem[] = (() => { try { return JSON.parse(completing.verification ?? "[]"); } catch { return []; } })();
-      const parts: string[] = [];
-      veri.forEach((q, i) => {
-        const chips = answers[i] ?? [];
-        if (chips.length) parts.push(`${q.q}: ${chips.join(", ")}`);
-      });
-      if (notes.trim()) parts.push(notes.trim());
-      if (parts.length) outcome = parts.join(" | ");
-    }
-    invoke("complete_task", { taskId: completing.id, status: "done", outcome })
-      .then(() => { setCompleting(null); load(); })
-      .catch(e => console.error("complete_task:", e));
-  };
-
-  const toggleChip = (qi: number, chip: string) => {
-    setAnswers(prev => {
-      const cur = prev[qi] ?? [];
-      return { ...prev, [qi]: cur.includes(chip) ? cur.filter(c => c !== chip) : [...cur, chip] };
-    });
-  };
-
-  const veri: VeriItem[] = completing ? (() => { try { return JSON.parse(completing.verification ?? "[]"); } catch { return []; } })() : [];
-
   return (<div className="cmd-card-body">
     <div className="cmd-task-add">
       <input className="cmd-task-input" placeholder={t("widget.taskPlaceholder")} value={input}
@@ -299,7 +264,7 @@ function TasksWidget() {
     </div>
     {tasks.map(task => (
       <div key={task.id} className="cmd-task-row">
-        <button className="cmd-done-btn" onClick={() => openComplete(task)} title="Done">✓</button>
+        <button className="cmd-done-btn" onClick={() => setCompleting(task)} title="Done">✓</button>
         <span className="cmd-task-text">{task.content}</span>
       </div>
     ))}
@@ -311,52 +276,7 @@ function TasksWidget() {
     )}
     <a href="#/tasks" className="cmd-task-viewall">{t("widget.viewAllTasks")}</a>
 
-    {/* Completion dialog */}
-    {completing && (
-      <div className="completion-dialog-overlay" onClick={() => setCompleting(null)}>
-        <div className="completion-dialog" onClick={e => e.stopPropagation()}>
-          <button className="completion-dialog-close" onClick={() => setCompleting(null)}>&times;</button>
-          <div className="cd-task-content">{completing.content}</div>
-          <div className="cd-task-meta">
-            {completing.due_date && <span className="cd-meta-item">{t("widget.due")} {completing.due_date}</span>}
-            {completing.priority !== "normal" && <span className="cd-meta-item cd-priority">{completing.priority}</span>}
-            <span className="cd-meta-item">{t("widget.source")} {completing.source}</span>
-          </div>
-          <div className="completion-dialog-status done"><span className="completion-dialog-status-dot" />{t("widget.completing")}</div>
-          {veri.length > 0 ? (
-            <div className="cd-questions">
-              {veri.map((q, qi) => (
-                <div key={qi} className="cd-q-item">
-                  <div className="cd-q-label">{q.q}</div>
-                  {q.options && q.options.length > 0 && (
-                    <div className="cd-q-chips">
-                      {q.options.map(opt => (
-                        <button key={opt} className={`cd-q-chip${(answers[qi] ?? []).includes(opt) ? " active" : ""}`}
-                          onClick={() => toggleChip(qi, opt)}>{opt}</button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="cd-q-chips" style={{ marginBottom: 10 }}>
-              {[t("widget.completedAsPlanned"), t("widget.partiallyDone"), t("widget.delegated")].map(c => (
-                <button key={c} className={`cd-q-chip${(answers[0] ?? []).includes(c) ? " active" : ""}`}
-                  onClick={() => toggleChip(0, c)}>{c}</button>
-              ))}
-            </div>
-          )}
-          <textarea className="completion-dialog-textarea" placeholder={t("widget.notesPlaceholder")}
-            value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-            onKeyDown={e => { if (e.key === "Escape") setCompleting(null); }} />
-          <div className="completion-dialog-actions">
-            <button className="completion-dialog-skip" onClick={() => saveComplete(true)}>{t("widget.skipBtn")}</button>
-            <button className="completion-dialog-save" onClick={() => saveComplete(false)}>{t("widget.saveBtn")}</button>
-          </div>
-        </div>
-      </div>
-    )}
+    {completing && <CompletionDialog task={completing} onClose={() => setCompleting(null)} onRefresh={load} />}
   </div>);
 }
 
@@ -400,7 +320,7 @@ function NewsWidget() {
       const src = extractSource(item.url);
       return (
         <a key={item.id ?? i} className="cmd-news-card" href={item.url || undefined}
-          target="_blank" rel="noopener noreferrer" onClick={e => { if (!item.url) e.preventDefault(); }}>
+          onClick={e => { if (!item.url) e.preventDefault(); }}>
           <div className="cmd-news-meta">
             <span className="cmd-news-source" style={{ color: src.color }}>{src.label}</span>
             <span className="cmd-news-dots">{"●".repeat(Math.min(item.score, 5))}</span>

@@ -1,9 +1,106 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use std::collections::HashSet;
 use tracing::info;
 
 use crate::agent::Agent;
+use crate::pipeline::parser;
 use crate::prompts;
 use crate::store::Store;
+
+// ─── Typed Evolution Commands ──────────────────────────────────────────────
+
+/// 结构化的演化命令 — 从 LLM 自由文本解析而来
+#[derive(Debug, Clone, PartialEq)]
+pub enum EvolutionCommand {
+    /// 去重：归档这些 ID 的记忆
+    Dedup { ids: Vec<i64> },
+    /// 编译：将多条记忆合并为新记忆
+    Compile { ids: Vec<i64>, depth: String, category: String, content: String },
+    /// 信念：将多条记忆编译为 axiom（legacy 格式，等价于 Compile → axiom:values）
+    Belief { ids: Vec<i64>, content: String },
+    /// 压缩：精简单条记忆的内容
+    Condense { id: i64, content: String },
+    /// 重分类：修正记忆的深度层级
+    Reclassify { id: i64, depth: String },
+}
+
+/// 解析 ID 列表（逗号分隔），过滤不在 batch 中的 ID
+fn parse_ids(s: &str, valid: &HashSet<i64>) -> Vec<i64> {
+    s.split(',')
+        .filter_map(|t| t.trim().parse::<i64>().ok())
+        .filter(|id| valid.contains(id))
+        .collect()
+}
+
+/// 单行命令解析器 — 返回 Ok(Some(cmd)) / Ok(None) / Err(reason)
+fn parse_evolution_command(line: &str, valid_ids: &HashSet<i64>) -> Result<Option<EvolutionCommand>> {
+    // DEDUP [id1, id2, ...]
+    if let Some(rest) = line.strip_prefix("DEDUP [") {
+        let ids_str = rest.strip_suffix(']')
+            .ok_or_else(|| anyhow!("DEDUP: missing closing ]"))?;
+        let ids = parse_ids(ids_str, valid_ids);
+        if ids.is_empty() { return Err(anyhow!("DEDUP: no valid IDs")); }
+        return Ok(Some(EvolutionCommand::Dedup { ids }));
+    }
+
+    // COMPILE [id1,id2,...] → depth:category content
+    if let Some(rest) = line.strip_prefix("COMPILE [") {
+        let (ids_str, target) = rest.split_once("] → ")
+            .or_else(|| rest.split_once("] -> "))
+            .ok_or_else(|| anyhow!("COMPILE: missing ] → separator"))?;
+        let ids = parse_ids(ids_str, valid_ids);
+        if ids.len() < 2 { return Err(anyhow!("COMPILE: need ≥2 IDs, got {}", ids.len())); }
+        let (depth, category, content) = if let Some((dc, c)) = target.split_once(' ') {
+            if let Some((d, cat)) = dc.split_once(':') { (d.to_string(), cat.to_string(), c.to_string()) }
+            else { ("semantic".into(), "values".into(), target.to_string()) }
+        } else { ("semantic".into(), "values".into(), target.to_string()) };
+        if content.is_empty() { return Err(anyhow!("COMPILE: empty content")); }
+        return Ok(Some(EvolutionCommand::Compile { ids, depth, category, content }));
+    }
+
+    // BELIEF [id1,id2,...] → content
+    if let Some(rest) = line.strip_prefix("BELIEF [") {
+        let (ids_str, content) = rest.split_once("] → ")
+            .or_else(|| rest.split_once("] -> "))
+            .ok_or_else(|| anyhow!("BELIEF: missing ] → separator"))?;
+        let ids = parse_ids(ids_str, valid_ids);
+        if ids.len() < 3 { return Err(anyhow!("BELIEF: need ≥3 source IDs, got {}", ids.len())); }
+        if content.is_empty() { return Err(anyhow!("BELIEF: empty content")); }
+        return Ok(Some(EvolutionCommand::Belief { ids, content: content.to_string() }));
+    }
+
+    // CONDENSE [id] → content
+    if let Some(rest) = line.strip_prefix("CONDENSE [") {
+        let (id_str, content) = rest.split_once("] → ")
+            .or_else(|| rest.split_once("] -> "))
+            .ok_or_else(|| anyhow!("CONDENSE: missing ] → separator"))?;
+        let id: i64 = id_str.trim().parse().map_err(|_| anyhow!("CONDENSE: invalid ID '{id_str}'"))?;
+        if !valid_ids.contains(&id) { return Err(anyhow!("CONDENSE: ID {id} not in batch")); }
+        if content.is_empty() { return Err(anyhow!("CONDENSE: empty content")); }
+        return Ok(Some(EvolutionCommand::Condense { id, content: content.to_string() }));
+    }
+
+    // RECLASSIFY [id] semantic|procedural
+    if let Some(rest) = line.strip_prefix("RECLASSIFY [") {
+        let (id_str, target) = rest.split_once("] ")
+            .ok_or_else(|| anyhow!("RECLASSIFY: missing ] separator"))?;
+        let id: i64 = id_str.trim().parse().map_err(|_| anyhow!("RECLASSIFY: invalid ID '{id_str}'"))?;
+        if !valid_ids.contains(&id) { return Err(anyhow!("RECLASSIFY: ID {id} not in batch")); }
+        let depth = target.trim();
+        if depth != "semantic" && depth != "procedural" {
+            return Err(anyhow!("RECLASSIFY: invalid depth '{depth}' (must be semantic|procedural)"));
+        }
+        return Ok(Some(EvolutionCommand::Reclassify { id, depth: depth.to_string() }));
+    }
+
+    // 非命令行（叙述文本）→ 跳过
+    Ok(None)
+}
+
+/// 从 LLM 响应解析所有命令，使用通用 parser 的 XML 提取 + 行解析
+fn parse_evolution_response(text: &str, valid_ids: &HashSet<i64>) -> parser::ParseResult<EvolutionCommand> {
+    parser::parse_commands(text, |line| parse_evolution_command(line, valid_ids))
+}
 
 /// 记忆进化返回值
 pub struct EvolutionResult {
@@ -16,6 +113,13 @@ pub struct EvolutionResult {
     pub compiled_axiom: usize,
     pub distilled: usize,
     pub reclassified: usize,
+    pub purged: usize,
+    /// 按 weighted_score 淘汰的低质量记忆数（仅 working/episodic/semantic）
+    pub evicted: usize,
+    /// LLM 输出中成功解析的命令数
+    pub commands_parsed: usize,
+    /// LLM 输出中被拒绝的命令行数
+    pub commands_rejected: usize,
     /// 面向用户的演化摘要
     pub summary: String,
 }
@@ -47,8 +151,6 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
     let memories = store.load_active_memories()?;
     elog(&format!("Active memories: {}", memories.len()));
 
-    // ── Phase 1: Unified LLM call — only semantic/procedural/axiom (episodic = evidence, never touch) ──
-    agent.reset_counter();
     let evolvable: Vec<_> = memories.iter()
         .filter(|m| m.depth != "episodic")
         .collect();
@@ -58,149 +160,152 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
         elog("=== Evolution done: nothing to evolve ===");
         return Ok(EvolutionResult {
             consolidated: 0, condensed: 0, decayed: 0, promoted: 0,
-            linked: 0, compiled_semantic: 0, compiled_axiom: 0, distilled: 0, reclassified: 0,
+            linked: 0, compiled_semantic: 0, compiled_axiom: 0, distilled: 0, reclassified: 0, purged: 0,
+            evicted: 0,
+            commands_parsed: 0, commands_rejected: 0,
             summary: "无变更".to_string(),
         });
     }
 
-    let content_list: Vec<String> = evolvable.iter()
-        .map(|m| format!("[id:{} | {} | {}] {}", m.id, m.category, m.depth, m.content))
-        .collect();
     let lang = store.prompt_lang();
-
-    // Orient: build a status summary so LLM has global context before operating
     let total = memories.len();
+    let (mut merged, mut compiled_semantic, mut compiled_axiom, mut condensed, mut distilled, mut reclassified) = (0, 0, 0, 0, 0, 0);
+    let (mut commands_parsed, mut commands_rejected) = (0usize, 0usize);
+    let synthesized = 0;
+
+    // ── 构建 orient 摘要（各批次共享）──
     let n_episodic = memories.iter().filter(|m| m.depth == "episodic").count();
     let n_semantic = memories.iter().filter(|m| m.depth == "semantic").count();
     let n_procedural = memories.iter().filter(|m| m.depth == "procedural").count();
     let n_axiom = memories.iter().filter(|m| m.depth == "axiom").count();
-    let avg_len = if evolvable.is_empty() { 0 } else {
-        evolvable.iter().map(|m| m.content.len()).sum::<usize>() / evolvable.len()
-    };
     const MEMORY_BUDGET: usize = 200;
     let budget_msg = if total > MEMORY_BUDGET * 9 / 10 {
-        "⚠ Budget nearly full. Be MORE aggressive with DEDUP — quality over quantity."
+        "⚠ Budget nearly full. Be MORE aggressive with DEDUP."
     } else if total > MEMORY_BUDGET {
-        "🚨 OVER BUDGET. Aggressively DEDUP — remove all redundancy."
+        "🚨 OVER BUDGET. Aggressively DEDUP."
     } else {
-        "Within budget. Normal consolidation."
+        "Within budget."
     };
     let orient_summary = format!(
-        "Total: {total} memories ({n_episodic} episodic, {n_semantic} semantic, {n_procedural} procedural, {n_axiom} axiom)\n\
-         Budget: {total}/{MEMORY_BUDGET}. {budget_msg}\n\
-         Avg content length: {avg_len} chars (target: 20-60)",
+        "Total: {total} ({n_episodic} episodic, {n_semantic} semantic, {n_procedural} procedural, {n_axiom} axiom). Budget: {total}/{MEMORY_BUDGET}. {budget_msg}",
     );
-    elog(&format!("Orient: {orient_summary}"));
 
-    let prompt = prompts::evolution_unified(&lang, evolvable.len(), &content_list.join("\n"), &orient_summary);
+    // ── Phase 1: DEDUP — 按 category 分组，并行去重（≤30 条/批，最多 3 并发）──
+    const BATCH_SIZE: usize = 30;
+    const MAX_CONCURRENT: usize = 3;
+    let mut by_category: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+    for m in &evolvable {
+        by_category.entry(m.category.clone()).or_default().push(*m);
+    }
 
-    elog("Calling LLM for unified evolution...");
-    let (mut merged, mut compiled_semantic, mut compiled_axiom, mut condensed, mut distilled, mut reclassified) = (0, 0, 0, 0, 0, 0);
-    let synthesized = 0; // legacy, kept for EvolutionResult compat
+    // 构建所有批次（category + 记忆列表）
+    let mut batches: Vec<(String, Vec<sage_types::Memory>)> = Vec::new();
+    for (category, items) in &by_category {
+        if items.len() < 2 { continue; }
+        for chunk in items.chunks(BATCH_SIZE) {
+            if chunk.len() < 2 { continue; }
+            batches.push((category.clone(), chunk.iter().map(|m| (*m).clone()).collect()));
+        }
+    }
+    let total_batches = batches.len();
+    elog(&format!("Phase 1: {total_batches} batches, {MAX_CONCURRENT} concurrent"));
+    let _ = store.kv_set("evolution_progress", &format!("0/{total_batches} — starting..."));
 
-    match agent.invoke(&prompt, None).await {
-        Ok(resp) => {
-            elog(&format!("LLM response: {} chars", resp.text.len()));
-            let batch_ids: std::collections::HashSet<i64> = evolvable.iter().map(|m| m.id).collect();
+    // 用 Semaphore 控制并发，tokio::spawn 并行调 LLM，结果收集后串行写 Store
+    use std::sync::Arc;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT));
+    let mut handles = Vec::new();
 
-            for line in resp.text.lines() {
-                let line = line.trim();
+    for (category, batch_memories) in batches {
+        let sem = Arc::clone(&semaphore);
+        let batch_agent = agent.clone();
+        let batch_lang = lang.clone();
+        let batch_orient = orient_summary.clone();
+        let log_path_clone = log_path.clone();
 
-                // DEDUP [id1, id2, ...]
-                if let Some(rest) = line.strip_prefix("DEDUP [") {
-                    if let Some(ids_str) = rest.strip_suffix(']') {
-                        let ids: Vec<i64> = ids_str.split(',')
-                            .filter_map(|s| s.trim().parse().ok())
-                            .filter(|id| batch_ids.contains(id))
-                            .collect();
-                        for id in &ids { let _ = store.archive_memory(*id, "dedup: 与其他记忆重复"); }
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let batch_elog = |msg: &str| {
+                if let Some(ref p) = log_path_clone {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+                        let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
+                    }
+                }
+            };
+
+            let content_list: Vec<String> = batch_memories.iter()
+                .map(|m| format!("[id:{} | {} | {}] {}", m.id, m.category, m.depth, m.content))
+                .collect();
+            let prompt = prompts::evolution_unified(&batch_lang, batch_memories.len(), &content_list.join("\n"), &batch_orient);
+            batch_elog(&format!("[{category}] {} memories — started", batch_memories.len()));
+
+            batch_agent.reset_counter();
+            match batch_agent.invoke(&prompt, None).await {
+                Ok(resp) => {
+                    let batch_ids: HashSet<i64> = batch_memories.iter().map(|m| m.id).collect();
+                    let parsed = parse_evolution_response(&resp.text, &batch_ids);
+                    batch_elog(&format!("[{category}] done: {} cmds, {} rejected", parsed.commands.len(), parsed.rejected.len()));
+                    (category, parsed.commands, parsed.rejected.len())
+                }
+                Err(e) => {
+                    batch_elog(&format!("[{category}] FAILED: {e}"));
+                    (category, Vec::new(), 0)
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    // 逐个 await 收集结果，同时更新进度 + 串行写 Store
+    for (i, handle) in handles.into_iter().enumerate() {
+        let _ = store.kv_set("evolution_progress", &format!("{}/{total_batches} batches done", i));
+        if let Ok((cat, cmds, rejected)) = handle.await {
+            commands_parsed += cmds.len();
+            commands_rejected += rejected;
+            for cmd in &cmds {
+                match cmd {
+                    EvolutionCommand::Dedup { ids } => {
+                        for id in ids { let _ = store.archive_memory(*id, "dedup: 与其他记忆重复"); }
                         merged += ids.len();
-                        if !ids.is_empty() { elog(&format!("DEDUP: archived {} memories", ids.len())); }
                     }
-                }
-
-                // COMPILE [id1,id2,...] → depth:category content
-                if let Some(rest) = line.strip_prefix("COMPILE [") {
-                    if let Some((ids_str, target)) = rest.split_once("] → ") {
-                        let ids: Vec<i64> = ids_str.split(',')
-                            .filter_map(|s| s.trim().parse().ok())
-                            .filter(|id| batch_ids.contains(id))
-                            .collect();
-                        if ids.len() >= 2 {
-                            // Parse "depth:category content"
-                            let (depth, category, content) = if let Some((dc, c)) = target.split_once(' ') {
-                                if let Some((d, cat)) = dc.split_once(':') { (d, cat, c) }
-                                else { ("semantic", "values", target) }
-                            } else { ("semantic", "values", target) };
-
-                            if !content.is_empty() {
-                                let conf = if depth == "axiom" { 0.95 } else { 0.8 };
-                                let note = format!("compile: {}条→{depth}:{category}", ids.len());
-                                if let Ok(new_id) = store.save_memory_with_provenance(category, content, "evolution", conf, &ids, &note) {
-                                    let _ = store.update_memory_depth(new_id, depth);
-                                    for &id in &ids { let _ = store.archive_memory(id, &format!("compiled into #{new_id}")); }
-                                    if depth == "axiom" { compiled_axiom += 1; distilled += 1; }
-                                    else { compiled_semantic += 1; }
-                                    elog(&format!("COMPILE → {depth}:{category} from {} sources", ids.len()));
-                                }
-                            }
+                    EvolutionCommand::Compile { ids, depth, category, content } => {
+                        let conf = if depth == "axiom" { 0.95 } else { 0.8 };
+                        let note = format!("compile: {}条→{depth}:{category}", ids.len());
+                        if let Ok(new_id) = store.save_memory_with_provenance(category, content, "evolution", conf, ids, &note) {
+                            let _ = store.update_memory_depth(new_id, depth);
+                            for &id in ids { let _ = store.archive_memory(id, &format!("compiled into #{new_id}")); }
+                            if depth == "axiom" { compiled_axiom += 1; distilled += 1; }
+                            else { compiled_semantic += 1; }
                         }
                     }
-                }
-
-                // BELIEF [id1,id2,...] → content (legacy format, treat as COMPILE → axiom:values)
-                if let Some(rest) = line.strip_prefix("BELIEF [") {
-                    if let Some((ids_str, content)) = rest.split_once("] → ") {
-                        let ids: Vec<i64> = ids_str.split(',')
-                            .filter_map(|s| s.trim().parse().ok())
-                            .filter(|id| batch_ids.contains(id))
-                            .collect();
-                        if ids.len() >= 3 && !content.is_empty() {
-                            let note = format!("belief: {}条→axiom:values", ids.len());
-                            if let Ok(new_id) = store.save_memory_with_provenance("values", content, "evolution", 0.95, &ids, &note) {
-                                let _ = store.update_memory_depth(new_id, "axiom");
-                                for &id in &ids { let _ = store.archive_memory(id, &format!("compiled into #{new_id}")); }
-                                distilled += 1;
-                                elog(&format!("BELIEF → axiom from {} sources", ids.len()));
-                            }
+                    EvolutionCommand::Belief { ids, content } => {
+                        let note = format!("belief: {}条→axiom:values", ids.len());
+                        if let Ok(new_id) = store.save_memory_with_provenance("values", content, "evolution", 0.95, ids, &note) {
+                            let _ = store.update_memory_depth(new_id, "axiom");
+                            for &id in ids { let _ = store.archive_memory(id, &format!("compiled into #{new_id}")); }
+                            distilled += 1;
                         }
                     }
-                }
-
-                // CONDENSE [id] → shorter version
-                if let Some(rest) = line.strip_prefix("CONDENSE [") {
-                    if let Some((id_str, new_content)) = rest.split_once("] → ") {
-                        if let Ok(id) = id_str.trim().parse::<i64>() {
-                            if batch_ids.contains(&id) && !new_content.is_empty() {
-                                let conf = memories.iter().find(|m| m.id == id).map(|m| m.confidence).unwrap_or(0.7);
-                                if store.update_memory(id, new_content, conf).is_ok() {
-                                    condensed += 1;
-                                    elog(&format!("CONDENSE [{id}]"));
-                                }
-                            }
-                        }
+                    EvolutionCommand::Condense { id, content } => {
+                        let conf = memories.iter().find(|m| m.id == *id).map(|m| m.confidence).unwrap_or(0.7);
+                        if store.update_memory(*id, content, conf).is_ok() { condensed += 1; }
                     }
-                }
-
-                // RECLASSIFY [id] semantic|procedural
-                if let Some(rest) = line.strip_prefix("RECLASSIFY [") {
-                    if let Some((id_str, target_depth)) = rest.split_once("] ") {
-                        if let Ok(id) = id_str.trim().parse::<i64>() {
-                            if batch_ids.contains(&id) {
-                                let depth = target_depth.trim();
-                                if depth == "semantic" || depth == "procedural" {
-                                    let _ = store.update_memory_depth(id, depth);
-                                    reclassified += 1;
-                                    elog(&format!("RECLASSIFY [{id}] → {depth}"));
-                                }
-                            }
-                        }
+                    EvolutionCommand::Reclassify { id, depth } => {
+                        let _ = store.update_memory_depth(*id, depth);
+                        reclassified += 1;
                     }
                 }
             }
+            if !cmds.is_empty() { elog(&format!("[{cat}] applied: dedup={merged} compile={compiled_semantic}+{compiled_axiom}")); }
         }
-        Err(e) => { elog(&format!("LLM call FAILED: {e}")); }
     }
+    elog(&format!("Phase 1 done: dedup={merged} compile_sem={compiled_semantic} axiom={compiled_axiom} condensed={condensed} reclassified={reclassified}"));
+    let _ = store.kv_set("evolution_progress", "linking memories...");
+
+    // ── Phase 1.5: Episodic cleanup — 过期事件记忆自动归档 ──
+    let episodic_archived = store.archive_stale_episodics(14, 0.7).unwrap_or(0);
+    if episodic_archived > 0 { elog(&format!("episodic cleanup: archived {episodic_archived} expired episodic memories")); }
 
     // ── Phase 2: Non-LLM operations (fast, no API calls) ──
     let linked = match link_memories(agent, store).await {
@@ -209,7 +314,9 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
     };
     let decayed = decay_unused(store).unwrap_or(0);
     let promoted = promote_validated(store).unwrap_or(0);
-    elog(&format!("=== Evolution done: dedup={merged} compiled_sem={compiled_semantic} axiom={compiled_axiom} distilled={distilled} condensed={condensed} reclassified={reclassified} linked={linked} decayed={decayed} promoted={promoted} ==="));
+    // 清除所有已归档记忆（DEDUP/COMPILE/BELIEF/decay 产生的 archived 行）
+    let purged = store.purge_archived_memories().unwrap_or(0);
+    elog(&format!("=== Evolution done: dedup={merged} compiled_sem={compiled_semantic} axiom={compiled_axiom} distilled={distilled} condensed={condensed} reclassified={reclassified} linked={linked} decayed={decayed} promoted={promoted} purged={purged} ==="));
 
     let total_consolidated = merged + synthesized;
     if total_consolidated + condensed + decayed + promoted + linked + compiled_semantic + compiled_axiom + distilled + reclassified > 0 {
@@ -218,6 +325,8 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
         );
     }
     let mut summary_parts = Vec::new();
+    if episodic_archived > 0 { summary_parts.push(format!("过期事件 {episodic_archived} 条")); }
+    if purged > 0 { summary_parts.push(format!("清除 {purged} 条归档")); }
     if merged > 0 { summary_parts.push(format!("去重 {merged} 条")); }
     if compiled_semantic > 0 { summary_parts.push(format!("归纳 {compiled_semantic} 条模式")); }
     if compiled_axiom > 0 { summary_parts.push(format!("凝结 {compiled_axiom} 条核心信念")); }
@@ -230,6 +339,11 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
         format!("今日演化：{}", summary_parts.join("，"))
     };
 
+    let evicted = store.evict_low_quality_memories(2000, 100).unwrap_or(0);
+    if evicted > 0 { elog(&format!("evict_low_quality: archived {evicted} low-score memories")); }
+
+    let _ = store.kv_delete("evolution_progress");
+
     Ok(EvolutionResult {
         consolidated: total_consolidated,
         condensed,
@@ -240,6 +354,10 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
         compiled_axiom,
         distilled,
         reclassified,
+        purged,
+        evicted,
+        commands_parsed,
+        commands_rejected,
         summary,
     })
 }
@@ -1537,5 +1655,123 @@ mod tests {
         // 也不应出现在按 depth 查询的活跃结果中
         let episodic = store.load_memories_by_depth("episodic").unwrap();
         assert!(!episodic.iter().any(|m| m.id == id));
+    }
+
+    // ─── Evolution Command Parser Tests ────────────────────────────────────
+
+    #[test]
+    fn parse_dedup_basic() {
+        let ids: HashSet<i64> = [1, 2, 3, 4, 5].into();
+        let cmd = parse_evolution_command("DEDUP [1, 3, 5]", &ids).unwrap().unwrap();
+        assert_eq!(cmd, EvolutionCommand::Dedup { ids: vec![1, 3, 5] });
+    }
+
+    #[test]
+    fn parse_dedup_filters_invalid_ids() {
+        let ids: HashSet<i64> = [1, 2].into();
+        let cmd = parse_evolution_command("DEDUP [1, 99, 2]", &ids).unwrap().unwrap();
+        assert_eq!(cmd, EvolutionCommand::Dedup { ids: vec![1, 2] });
+    }
+
+    #[test]
+    fn parse_dedup_all_invalid_returns_err() {
+        let ids: HashSet<i64> = [1, 2].into();
+        assert!(parse_evolution_command("DEDUP [99, 100]", &ids).is_err());
+    }
+
+    #[test]
+    fn parse_compile_basic() {
+        let ids: HashSet<i64> = [1, 2, 3].into();
+        let cmd = parse_evolution_command("COMPILE [1,2,3] → procedural:behavior when X, does Y", &ids).unwrap().unwrap();
+        assert_eq!(cmd, EvolutionCommand::Compile {
+            ids: vec![1, 2, 3],
+            depth: "procedural".into(),
+            category: "behavior".into(),
+            content: "when X, does Y".into(),
+        });
+    }
+
+    #[test]
+    fn parse_compile_ascii_arrow() {
+        let ids: HashSet<i64> = [1, 2].into();
+        let cmd = parse_evolution_command("COMPILE [1,2] -> semantic:values some content", &ids).unwrap().unwrap();
+        assert!(matches!(cmd, EvolutionCommand::Compile { .. }));
+    }
+
+    #[test]
+    fn parse_compile_needs_two_ids() {
+        let ids: HashSet<i64> = [1].into();
+        assert!(parse_evolution_command("COMPILE [1] → semantic:values content", &ids).is_err());
+    }
+
+    #[test]
+    fn parse_belief_basic() {
+        let ids: HashSet<i64> = [1, 2, 3, 4].into();
+        let cmd = parse_evolution_command("BELIEF [1,2,3] → core belief content", &ids).unwrap().unwrap();
+        assert_eq!(cmd, EvolutionCommand::Belief { ids: vec![1, 2, 3], content: "core belief content".into() });
+    }
+
+    #[test]
+    fn parse_belief_needs_three_ids() {
+        let ids: HashSet<i64> = [1, 2].into();
+        assert!(parse_evolution_command("BELIEF [1,2] → content", &ids).is_err());
+    }
+
+    #[test]
+    fn parse_condense_basic() {
+        let ids: HashSet<i64> = [42].into();
+        let cmd = parse_evolution_command("CONDENSE [42] → shorter version", &ids).unwrap().unwrap();
+        assert_eq!(cmd, EvolutionCommand::Condense { id: 42, content: "shorter version".into() });
+    }
+
+    #[test]
+    fn parse_condense_invalid_id() {
+        let ids: HashSet<i64> = [1].into();
+        assert!(parse_evolution_command("CONDENSE [99] → content", &ids).is_err());
+    }
+
+    #[test]
+    fn parse_reclassify_semantic() {
+        let ids: HashSet<i64> = [10].into();
+        let cmd = parse_evolution_command("RECLASSIFY [10] semantic", &ids).unwrap().unwrap();
+        assert_eq!(cmd, EvolutionCommand::Reclassify { id: 10, depth: "semantic".into() });
+    }
+
+    #[test]
+    fn parse_reclassify_invalid_depth() {
+        let ids: HashSet<i64> = [10].into();
+        assert!(parse_evolution_command("RECLASSIFY [10] axiom", &ids).is_err());
+    }
+
+    #[test]
+    fn parse_narrative_returns_none() {
+        let ids: HashSet<i64> = [1].into();
+        assert!(parse_evolution_command("Looking at the memories...", &ids).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_response_with_output_tags() {
+        let ids: HashSet<i64> = [1, 2, 3].into();
+        let text = "<thinking>\nAnalysis: 1 and 2 overlap\n</thinking>\n<output>\nDEDUP [1, 2]\nCONDENSE [3] → short\n</output>";
+        let result = parse_evolution_response(text, &ids);
+        assert_eq!(result.commands.len(), 2);
+        assert!(result.rejected.is_empty());
+    }
+
+    #[test]
+    fn parse_response_without_tags_fallback() {
+        let ids: HashSet<i64> = [1, 2].into();
+        let text = "DEDUP [1, 2]";
+        let result = parse_evolution_response(text, &ids);
+        assert_eq!(result.commands.len(), 1);
+    }
+
+    #[test]
+    fn parse_response_mixed_valid_and_rejected() {
+        let ids: HashSet<i64> = [1, 2, 3].into();
+        let text = "<output>\nDEDUP [1, 2]\nCOMPILE [3] → semantic:values only one id\nCONDENSE [3] → ok\n</output>";
+        let result = parse_evolution_response(text, &ids);
+        assert_eq!(result.commands.len(), 2); // DEDUP + CONDENSE
+        assert_eq!(result.rejected.len(), 1); // COMPILE with <2 ids
     }
 }

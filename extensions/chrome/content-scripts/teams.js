@@ -431,8 +431,15 @@
       timestamp = timeEl.getAttribute("datetime");
     }
     if (!timestamp) {
-      timestamp = queryText(el, TS_SELS);
+      var rawTs = queryText(el, TS_SELS);
+      // 验证 fallback 时间戳是否可解析，防止把"星期四 10:26"等日期分隔行当成消息
+      if (rawTs && !isNaN(new Date(rawTs).getTime())) {
+        timestamp = rawTs;
+      }
     }
+
+    // 跳过没有有效 sender 且没有有效 timestamp 的元素（日期分隔行、系统消息等）
+    if (sender === "Unknown" && !timestamp) return;
 
     // fui-ChatMyMessage = 自己发的消息
     var isMine = el.matches && (el.matches(".fui-ChatMyMessage") || el.matches('[class*="ChatMyMessage"]'));

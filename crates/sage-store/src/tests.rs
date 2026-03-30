@@ -2902,3 +2902,205 @@ fn test_decay_semantic_uses_90_day_threshold() {
     let a = axioms.iter().find(|m| m.id == aid).unwrap();
     assert!((a.confidence - 0.95).abs() < 0.01, "axiom confidence 不应变化");
 }
+
+// ─── evict_low_quality_memories 测试 ──────────────────────────────
+
+/// 插入 n 条 working/episodic 记忆，confidence 从 low_conf 到 1.0 线性分布
+/// 使用差异化内容避免相似度去重合并
+fn insert_working_episodic(store: &Store, n: usize, low_conf: f64) -> Vec<i64> {
+    // 预定义足够多的不同内容，避免 LCS > 60% 触发去重
+    let topics = [
+        "周一早会记录：讨论了产品路线图和 Q2 目标",
+        "收到客户张总的邮件：要求下周交付演示版本",
+        "代码审查：合并了认证模块的 PR，有 3 个 comment",
+        "下午 3 点参加了技术架构讨论，决定采用微服务方案",
+        "本周读了《深度工作》前两章，感触颇深",
+        "和设计师对齐了新版首页的视觉风格",
+        "修复了生产环境的内存泄漏问题，耗时两小时",
+        "完成了季度 OKR 自评，提交给 HR",
+        "下午参与了产品演示，客户反馈积极",
+        "整理了技术债清单，共 12 项待处理",
+        "和导师进行了月度 1on1，讨论了职业发展方向",
+        "完成了 API 文档的更新，覆盖所有新接口",
+        "参加了行业线上分享会，主题是 LLM 应用实践",
+        "处理了 5 封重要邮件，回复了合作伙伴的询价",
+        "完成了前端性能优化，首屏加载缩短 40%",
+        "下周的项目排期已确认，优先级已和 PM 对齐",
+        "阅读了竞品分析报告，整理了 3 点差异化机会",
+        "修改了用户研究访谈提纲，增加了情境问题",
+        "完成了本月安全漏洞扫描，无高危问题",
+        "参与了招聘面试，候选人技术能力符合预期",
+        "整理了上线后的异常日志，发现 2 个潜在 bug",
+        "和运营团队对齐了活动方案，确定了推广渠道",
+        "学习了新的 Rust async 模式，记录了最佳实践",
+        "完成了数据库索引优化，查询速度提升 3 倍",
+        "向老板汇报了项目进展，获得了额外预算支持",
+        "下午调试了 WebSocket 连接断开问题",
+        "完成了压力测试，系统在 1000 并发下稳定运行",
+        "梳理了用户反馈，归纳为 5 个核心诉求",
+        "和法务确认了新合同条款，无风险点",
+        "参加了公司全员会议，了解了 H2 战略方向",
+        "完成了登录流程的可访问性改造，符合 WCAG AA",
+        "和同事结对编程解决了一个复杂的并发 bug",
+        "整理了本季度的技术分享主题，提交给团队",
+        "协助新同事完成了开发环境配置",
+        "阅读了 3 篇关于向量数据库的论文并做了摘要",
+        "参与了 sprint 回顾，提出了 2 项流程改进建议",
+        "更新了 CI/CD 流水线，减少了部署时间",
+        "完成了多语言支持的 i18n 文案整理",
+        "处理了一个线上紧急事故，恢复时间 15 分钟",
+        "和产品讨论了新功能的 MVP 范围",
+        "完成了个人年度总结文档",
+        "参加了外部技术沙龙，结识了两位业内人士",
+        "代码重构：将 utils.rs 拆分为 3 个专用模块",
+        "和市场团队对齐了品牌视觉规范的使用方式",
+        "完成了本月的技术债还款计划，关闭 4 个 issue",
+        "参与了跨部门需求评审会，明确了接口协议",
+        "进行了月度数据备份检查，确认备份正常",
+        "完成了新手引导流程的 A/B 测试分析",
+        "处理了用户投诉：账号被误封问题，已恢复",
+        "整理了本周的学习笔记并发布到内部 wiki",
+    ];
+    (0..n)
+        .map(|i| {
+            let conf = low_conf + (1.0 - low_conf) * (i as f64 / (n as f64).max(1.0));
+            let content = topics[i % topics.len()];
+            // 加 index 后缀确保与同 category 其它条目无重复
+            let content = format!("{content} [{i}]");
+            let id = store
+                .save_memory("session", &content, "test", conf)
+                .unwrap();
+            // session → working tier (already), force episodic depth
+            store.update_memory_depth(id, "episodic").unwrap();
+            id
+        })
+        .collect()
+}
+
+#[test]
+fn test_evict_over_cap_archives_lowest_scored() {
+    let store = Store::open_in_memory().unwrap();
+    // 插入 50 条 working/episodic，confidence 0.1~1.0
+    insert_working_episodic(&store, 50, 0.1);
+    assert_eq!(store.count_memories().unwrap(), 50);
+
+    // cap=30 → 应驱逐 min(evict_count=20, available) 条
+    let evicted = store.evict_low_quality_memories(30, 20).unwrap();
+    assert_eq!(evicted, 20, "应归档 20 条低分记忆");
+
+    let remaining_active = store.count_memories().unwrap();
+    assert_eq!(remaining_active, 30, "活跃记忆应剩 30 条");
+}
+
+#[test]
+fn test_evict_under_cap_evicts_nothing() {
+    let store = Store::open_in_memory().unwrap();
+    // 插入 20 条，cap=30 → 无需驱逐
+    insert_working_episodic(&store, 20, 0.3);
+    let evicted = store.evict_low_quality_memories(30, 10).unwrap();
+    assert_eq!(evicted, 0, "低于 cap 时不应驱逐任何记忆");
+    assert_eq!(store.count_memories().unwrap(), 20);
+}
+
+#[test]
+fn test_evict_skips_core_and_deep_memories() {
+    let store = Store::open_in_memory().unwrap();
+
+    // 插入 5 条 core tier（identity 类，各内容独特防止去重）
+    let core_topics = [
+        "我是一名后端工程师，专注分布式系统设计",
+        "我的核心价值观：诚实、负责、持续学习",
+        "我在职业中最重视的是技术影响力与团队成长",
+        "我的个人原则：先理解再执行，先问题再方案",
+        "我对高质量代码有执念：可读性优先于性能",
+    ];
+    for content in &core_topics {
+        store.save_memory("identity", content, "user", 0.9).unwrap();
+    }
+    // 插入 5 条 working/procedural（使用 session 类型，再覆写 depth）
+    let proc_topics = [
+        "每次 code review 前先跑一遍本地测试",
+        "重要邮件回复前整理三点要点再写",
+        "每周五下午做本周工作复盘和下周计划",
+        "遇到卡点超过 30 分钟就向同事或文档求助",
+        "新项目第一步：画出数据流图",
+    ];
+    for content in &proc_topics {
+        let id = store.save_memory("session", content, "test", 0.5).unwrap();
+        store.update_memory_depth(id, "procedural").unwrap();
+    }
+    // 插入 5 条 working/axiom（使用 session 类型，再覆写 depth）
+    let axiom_topics = [
+        "简单优于复杂，永远选择最小够用方案",
+        "团队效能大于个人英雄主义",
+        "产品思维：用户的痛点才是北极星",
+        "技术决策要有可逆性，避免过早锁定",
+        "沟通成本是系统的隐性瓶颈",
+    ];
+    for content in &axiom_topics {
+        let id = store.save_memory("session", content, "test", 0.5).unwrap();
+        store.update_memory_depth(id, "axiom").unwrap();
+    }
+
+    // 插入 10 条 working/episodic（可被驱逐），使总数超过 cap=10
+    insert_working_episodic(&store, 10, 0.1);
+
+    let total = store.count_memories().unwrap();
+    // 至少有 25 条（可能有合并，但各组内容独特应全部插入）
+    assert_eq!(total, 25, "初始应有 25 条活跃记忆");
+
+    // cap=10，evict_count=20：只有 working/episodic 10 条可被驱逐
+    let evicted = store.evict_low_quality_memories(10, 20).unwrap();
+    assert_eq!(evicted, 10, "只应驱逐 working/episodic 条目");
+
+    // core + procedural + axiom 全部保留（15 条）
+    let remaining = store.count_memories().unwrap();
+    assert_eq!(remaining, 15, "core/procedural/axiom 不应被驱逐");
+}
+
+// ─── append_negative_rule 测试 ────────────────────────────────────────────────
+
+#[test]
+fn test_append_negative_rule_adds_to_empty_profile() {
+    let store = Store::open_in_memory().unwrap();
+    store.append_negative_rule("不要发重复提醒").unwrap();
+    let profile = store.load_profile().unwrap().unwrap();
+    assert_eq!(profile.negative_rules, vec!["不要发重复提醒"]);
+}
+
+#[test]
+fn test_append_negative_rule_no_duplicate() {
+    let store = Store::open_in_memory().unwrap();
+    store.append_negative_rule("不要发重复提醒").unwrap();
+    store.append_negative_rule("不要发重复提醒").unwrap(); // 重复插入
+    let profile = store.load_profile().unwrap().unwrap();
+    assert_eq!(profile.negative_rules.len(), 1, "重复规则不应被写入两次");
+}
+
+#[test]
+fn test_append_negative_rule_multiple_distinct() {
+    let store = Store::open_in_memory().unwrap();
+    store.append_negative_rule("规则A").unwrap();
+    store.append_negative_rule("规则B").unwrap();
+    store.append_negative_rule("规则A").unwrap(); // 重复
+    let profile = store.load_profile().unwrap().unwrap();
+    assert_eq!(profile.negative_rules, vec!["规则A", "规则B"]);
+}
+
+#[test]
+fn test_append_negative_rule_trims_whitespace() {
+    let store = Store::open_in_memory().unwrap();
+    store.append_negative_rule("  规则带空格  ").unwrap();
+    store.append_negative_rule("规则带空格").unwrap(); // trim 后与上面相同
+    let profile = store.load_profile().unwrap().unwrap();
+    assert_eq!(profile.negative_rules.len(), 1);
+    assert_eq!(profile.negative_rules[0], "规则带空格");
+}
+
+#[test]
+fn test_append_negative_rule_empty_is_noop() {
+    let store = Store::open_in_memory().unwrap();
+    store.append_negative_rule("").unwrap();
+    store.append_negative_rule("   ").unwrap();
+    assert!(store.load_profile().unwrap().is_none(), "空规则不应创建 profile");
+}

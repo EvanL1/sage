@@ -97,8 +97,10 @@ function MessageSourcesSection({ showToast }: Props) {
     }
   };
 
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const handleDelete = async (id: number) => {
-    if (!confirm("Remove this email source? Cached emails will also be deleted.")) return;
+    if (deleteConfirm !== id) { setDeleteConfirm(id); return; }
+    setDeleteConfirm(null);
     try {
       await invoke("delete_message_source", { id });
       loadSources();
@@ -136,7 +138,10 @@ function MessageSourcesSection({ showToast }: Props) {
                 <button className="btn btn-secondary btn-sm" onClick={() => handleEdit(src)}>Edit</button>
               </>
             )}
-            <button className="btn btn-ghost btn-sm" style={{ color: "var(--error-text)" }} onClick={() => handleDelete(src.id)}>Delete</button>
+            <button className="btn btn-ghost btn-sm" style={{ color: "var(--error-text)", fontWeight: deleteConfirm === src.id ? 700 : undefined }}
+              onClick={() => handleDelete(src.id)}
+              onBlur={() => { if (deleteConfirm === src.id) setDeleteConfirm(null); }}
+            >{deleteConfirm === src.id ? "Confirm?" : "Delete"}</button>
           </div>
         ))}
 

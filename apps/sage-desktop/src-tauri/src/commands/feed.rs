@@ -78,6 +78,25 @@ pub async fn get_feed_items(
     Ok(result)
 }
 
+/// 即时搜索：按 topic 搜索 HN + Reddit → LLM 打分 → deep read → 存入 feed
+#[tauri::command]
+pub async fn search_feed_topic(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<usize, String> {
+    use sage_core::channels::feed::search_topic;
+
+    let discovered = sage_core::discovery::discover_providers(&state.store);
+    let configs = state.store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or("没有可用的 AI 服务")?;
+    let agent_config = super::default_agent_config();
+    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let agent = sage_core::agent::Agent::with_provider(provider);
+
+    search_topic(&query, &agent, &state.store).await.map_err(map_err)
+}
+
 /// 手动触发 Feed 抓取
 #[tauri::command]
 pub async fn trigger_feed_poll(state: State<'_, AppState>) -> Result<String, String> {

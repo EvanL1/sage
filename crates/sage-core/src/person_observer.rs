@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::agent::Agent;
-use crate::pipeline::PipelineContext;
+use crate::pipeline::{harness, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 
@@ -52,15 +52,15 @@ pub async fn extract_persons(agent: &Agent, store: &Store, _ctx: &mut PipelineCo
     }
 
     agent.reset_counter();
-    let resp = agent.invoke(&prompt, None).await?;
+    let text = harness::invoke_text(agent, &prompt, None).await?;
 
-    if resp.text.trim() == "NONE" {
+    if text.trim() == "NONE" {
         info!("PersonObserver: no person insights today");
         return Ok(false);
     }
 
     let mut count = 0;
-    for line in resp.text.lines() {
+    for line in text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("PERSON [") {
             if let Some(bracket_end) = rest.find(']') {

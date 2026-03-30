@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::agent::Agent;
-use crate::pipeline::PipelineContext;
+use crate::pipeline::{harness, PipelineContext};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
@@ -72,9 +72,7 @@ pub async fn strategize(agent: &Agent, store: &Store, _ctx: &mut PipelineContext
         prompts::strategist_system_suffix(&lang)
     );
 
-    let resp = agent.invoke(&prompt, Some(&system)).await?;
-
-    let content = resp.text.trim();
+    let content = harness::invoke_text(agent, &prompt, Some(&system)).await?;
     let mut saved = 0;
     if !content.is_empty() {
         for line in content.lines() {
@@ -97,7 +95,7 @@ pub async fn strategize(agent: &Agent, store: &Store, _ctx: &mut PipelineContext
     }
 
     // 记录去重标记
-    store.record_suggestion("strategist", "weekly-strategy", &resp.text)?;
+    store.record_suggestion("strategist", "weekly-strategy", &content)?;
 
     Ok(saved > 0)
 }

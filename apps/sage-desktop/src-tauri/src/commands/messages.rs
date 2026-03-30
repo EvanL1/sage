@@ -343,10 +343,31 @@ pub fn get_connections_status(state: State<'_, AppState>) -> Result<Value, Strin
         json!({ "status": "idle", "label": if en { "No data yet" } else { "暂无数据" } })
     };
 
+    // Email sources (IMAP)
+    let imap_sources = state.store.get_message_sources_by_type("imap").unwrap_or_default();
+    let imap_status = if imap_sources.is_empty() {
+        json!({ "status": "offline", "label": if en { "Not configured" } else { "未配置" } })
+    } else {
+        let count = imap_sources.len();
+        json!({ "status": "connected", "label": if en { format!("{count} source(s)") } else { format!("{count} 个源") } })
+    };
+
+    // Calendar (AppleScript)
+    let calendar_ok = std::process::Command::new("osascript")
+        .arg("-e").arg("tell application \"System Events\" to (name of processes) contains \"Microsoft Outlook\"")
+        .output().map(|o| String::from_utf8_lossy(&o.stdout).contains("true")).unwrap_or(false);
+    let calendar_status = if calendar_ok {
+        json!({ "status": "connected", "label": if en { "Outlook Calendar" } else { "Outlook 日历" } })
+    } else {
+        json!({ "status": "offline", "label": if en { "Outlook not running" } else { "Outlook 未运行" } })
+    };
+
     Ok(json!({
-        "browser_extension": browser_status,
+        "email_imap": imap_status,
         "outlook": outlook_status,
+        "calendar": calendar_status,
         "claude_code": claude_status,
+        "browser_extension": browser_status,
         "behavior_tracking": behavior_status,
     }))
 }

@@ -52,6 +52,20 @@ impl Store {
         }
     }
 
+    /// 追加一条 negative_rule（去重），写回 profile
+    pub fn append_negative_rule(&self, rule: &str) -> Result<()> {
+        let rule = rule.trim().to_string();
+        if rule.is_empty() {
+            return Ok(());
+        }
+        let mut profile = self.load_profile()?.unwrap_or_default();
+        if !profile.negative_rules.iter().any(|r| r == &rule) {
+            profile.negative_rules.push(rule);
+            self.save_profile(&profile)?;
+        }
+        Ok(())
+    }
+
     /// 从 profile 表读 sop_version
     pub fn get_sop_version(&self) -> Result<u32> {
         let conn = self

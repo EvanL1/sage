@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
+use crate::pipeline::harness;
 
 use crate::agent::Agent;
 use crate::store::Store;
@@ -180,10 +181,8 @@ async fn classify_messages(
         format!("对以下每条消息进行分类。考虑：这是否仍需要回复或处理？还是已经过了足够长的时间，不再相关？\n\n{msg_text}")
     };
 
-    let resp = agent.invoke(&prompt, Some(system)).await?;
-
-    let mut result: Vec<String> = resp
-        .text
+    let output_block = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    let mut result: Vec<String> = output_block
         .lines()
         .map(|l| l.trim().to_lowercase())
         .filter(|l| !l.is_empty())

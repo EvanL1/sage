@@ -497,6 +497,33 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// 通用 KV 读写（用于 evolution 进度等轻量状态）
+    pub fn kv_set(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, datetime('now'))",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE key = ?1")?;
+        let result = stmt.query_row(rusqlite::params![key], |row| row.get::<_, String>(0));
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn kv_delete(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute("DELETE FROM kv_store WHERE key = ?1", rusqlite::params![key])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

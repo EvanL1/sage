@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::agent::Agent;
-use crate::pipeline::{PipelineContext, QuestionerOutput};
+use crate::pipeline::{harness, PipelineContext, QuestionerOutput};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
@@ -21,11 +21,11 @@ pub async fn ask(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Res
         // 重新浮现：以变体形式再次提出
         let lang = store.prompt_lang();
         let prompt = prompts::questioner_resurface(&lang, ask_count.max(0) as u32, &question_text);
-        let resp = agent.invoke(&prompt, None).await?;
-        store.record_suggestion("questioner", "daily-question", &resp.text)?;
+        let question = harness::invoke_text(agent, &prompt, None).await?;
+        store.record_suggestion("questioner", "daily-question", &question)?;
         store.bump_question_ask(q_id)?;
         info!("Questioner: resurfaced question #{q_id} (ask #{ask_count})");
-        ctx.questioner = Some(QuestionerOutput { question: resp.text, is_resurface: true });
+        ctx.questioner = Some(QuestionerOutput { question, is_resurface: true });
         return Ok(true);
     }
 
@@ -65,15 +65,15 @@ pub async fn ask(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Res
         "{question_guide}\n\n{}",
         prompts::questioner_system_suffix(&lang)
     );
-    let resp = agent.invoke(&prompt, Some(&system)).await?;
+    let question = harness::invoke_text(agent, &prompt, Some(&system)).await?;
 
     // 存入 suggestions 并同时追踪到 open_questions
-    let suggestion_id = store.record_suggestion("questioner", "daily-question", &resp.text)?;
-    store.save_open_question(&resp.text, Some(suggestion_id))?;
+    let suggestion_id = store.record_suggestion("questioner", "daily-question", &question)?;
+    store.save_open_question(&question, Some(suggestion_id))?;
     info!("Questioner: generated daily question and tracked in open_questions");
 
     // 写入上下文
-    ctx.questioner = Some(QuestionerOutput { question: resp.text, is_resurface: false });
+    ctx.questioner = Some(QuestionerOutput { question, is_resurface: false });
 
     Ok(true)
 }
