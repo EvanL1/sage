@@ -69,7 +69,8 @@ pub fn build_router(store: Arc<Store>) -> Router {
         .route("/api/behaviors", post(behavior_handler))
         .route("/api/messages", get(messages_handler))
         .route("/api/chat", post(chat_handler))
-        .route("/api/conversations", post(conversation_handler));
+        .route("/api/conversations", post(conversation_handler))
+        .route("/api/claude-hooks", post(claude_hooks_handler));
 
     // 挂载只读 REST API 扩展端点
     bridge_api::mount(base)
@@ -331,6 +332,37 @@ async fn behavior_handler(
     }
 
     Ok(Json(json!({"success": true})))
+}
+
+/// Claude Code hooks 接收端点：存入 browser_behaviors，source="claude-hooks"
+async fn claude_hooks_handler(
+    State(store): State<Arc<Store>>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let event_name = payload
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let session_id = payload
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let tool_name = payload
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let metadata = serde_json::to_string(&payload).unwrap_or_default();
+    match store.save_browser_behavior("claude-hooks", event_name, &metadata) {
+        Ok(_) => {
+            info!("Hook: {event_name} session={session_id} tool={tool_name}");
+        }
+        Err(e) => {
+            error!("Hook: failed to save {event_name}: {e}");
+        }
+    }
+    // 纯观察，不阻塞 Claude Code
+    Json(json!({}))
 }
 
 #[derive(serde::Deserialize)]
@@ -759,5 +791,52 @@ mod tests {
         let context = json["context"].as_str().unwrap();
         assert!(context.contains("software engineer"), "context missing identity memory");
         assert!(context.contains("prefers concise answers"), "context missing behavior memory");
+    }
+
+    #[tokio::test]
+    async fn test_claude_hooks_stores_event() {
+        let (app, store) = test_app();
+        let body = json!({
+            "session_id": "test-session-123",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cargo check"},
+            "cwd": "/Users/test/dev/sage"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/claude-hooks")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let behaviors = store.get_browser_behaviors(10).unwrap();
+        assert_eq!(behaviors.len(), 1);
+        assert_eq!(behaviors[0].source, "claude-hooks");
+        assert_eq!(behaviors[0].event_type, "PostToolUse");
+        let meta: Value = serde_json::from_str(behaviors[0].metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta["tool_name"], "Bash");
+        assert_eq!(meta["session_id"], "test-session-123");
+    }
+
+    #[tokio::test]
+    async fn test_claude_hooks_handles_minimal_payload() {
+        let (app, store) = test_app();
+        // 最小 payload — 只有 hook_event_name
+        let body = json!({"hook_event_name": "SessionStart"});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/claude-hooks")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let behaviors = store.get_browser_behaviors(10).unwrap();
+        assert_eq!(behaviors.len(), 1);
+        assert_eq!(behaviors[0].event_type, "SessionStart");
     }
 }
