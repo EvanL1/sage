@@ -29,11 +29,6 @@ pub use stages::{UserDefinedStage, PresetCtxKey};
 /// 管线共享上下文 — 每个 stage 读上游结果、写自己的结果
 #[derive(Debug, Clone, Default)]
 pub struct PipelineContext {
-    pub observer: Option<ObserverOutput>,
-    pub coach: Option<CoachOutput>,
-    pub mirror: Option<MirrorOutput>,
-    pub questioner: Option<QuestionerOutput>,
-    pub evolution: Option<EvolutionOutput>,
     pub stage_results: Vec<StageResult>,
 }
 
@@ -69,32 +64,6 @@ pub enum StageStatus {
     Degraded(String),
     Skipped,
     Error(String),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ObserverOutput { pub notes: Vec<String> }
-
-#[derive(Debug, Clone, Default)]
-pub struct CoachOutput {
-    pub insights: Vec<String>,
-    pub observations_archived: usize,
-    pub degraded: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct MirrorOutput { pub reflection: String, pub notified: bool }
-
-#[derive(Debug, Clone, Default)]
-pub struct QuestionerOutput { pub question: String, pub is_resurface: bool }
-
-#[derive(Debug, Clone, Default)]
-pub struct EvolutionOutput {
-    pub consolidated: usize,
-    pub condensed: usize,
-    pub linked: usize,
-    pub decayed: usize,
-    pub promoted: usize,
-    pub purged: usize,
 }
 
 // ─── Trait + Output ──────────────────────────────────────────────────────────

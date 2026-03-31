@@ -296,26 +296,16 @@ impl Daemon {
         &self,
     ) -> Result<crate::pipeline::EvolutionResult> {
         info!("手动触发记忆进化（已迁移到预设 stage）");
-        self.router.lock().await.run_memory_evolution().await
+        Ok(crate::pipeline::EvolutionResult {
+            summary: "已迁移到预设 stage — 通过 Evening Review 自动运行".into(),
+            ..Default::default()
+        })
     }
 
-    /// 手动触发人物认知提取（现由预设 stage 驱动，此方法保留兼容性）
-    pub async fn trigger_person_observer(&self) -> Result<bool> {
-        info!("PersonObserver: 已迁移到预设 stage，手动触发已弃用");
-        Ok(false)
-    }
-
-    /// 手动触发战略家分析（现由预设 stage 驱动，此方法保留兼容性）
-    pub async fn trigger_strategist(&self) -> Result<bool> {
-        info!("Strategist: 已迁移到预设 stage，手动触发已弃用");
-        Ok(false)
-    }
-
-    /// 单独触发记忆图谱连接（已迁移到预设 stage，保留兼容性）
-    pub async fn trigger_memory_linking(&self) -> Result<usize> {
-        info!("记忆连接：已迁移到 evolution_link 预设 stage");
-        Ok(0)
-    }
+    // TODO: deprecated — kept for Tauri command compatibility; no-op stubs
+    pub async fn trigger_person_observer(&self) -> Result<bool> { Ok(false) }
+    pub async fn trigger_strategist(&self) -> Result<bool> { Ok(false) }
+    pub async fn trigger_memory_linking(&self) -> Result<usize> { Ok(0) }
 
     /// 认知调和（增量）：检查新内容是否推翻了旧 decisions/insights
     pub async fn run_reconcile(&self, new_content: &str) -> Result<usize> {

@@ -8,15 +8,12 @@ use tracing::info;
 
 use crate::store::Store;
 
-use super::{
-    ConstrainedInvoker, CognitiveStage, PipelineContext, StageOutput,
-    ObserverOutput, CoachOutput, MirrorOutput, QuestionerOutput,
-};
+use super::{ConstrainedInvoker, CognitiveStage, PipelineContext, StageOutput};
 use super::actions;
 
 // ─── UserDefinedStage（预设 + 自定义共用引擎）────────────────────────────
 
-/// 预设 stage 的上下文输出类型
+/// 预设 stage 的上下文标记（供 build_pipeline 配置，暂无实际 I/O 用途）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PresetCtxKey {
     Observer,
@@ -36,7 +33,8 @@ pub struct UserDefinedStage {
     pre_condition: String,
     /// 预设 stage 的 post-hook：归档已消费的 observations
     archive_observations: bool,
-    /// 预设 stage 写入 PipelineContext 的 key
+    /// 预设 stage 类型标记（保留供将来 stage 间通信使用）
+    #[allow(dead_code)]
     preset_ctx_key: Option<PresetCtxKey>,
 }
 
@@ -68,7 +66,7 @@ impl UserDefinedStage {
 impl CognitiveStage for UserDefinedStage {
     fn name(&self) -> &str { &self.stage_name }
 
-    async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+    async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
         // ═══ PRE-HOOK（硬约束）═══
 
         if !self.pre_condition.is_empty() && !actions::check_pre_condition(&store, &self.pre_condition) {
@@ -128,50 +126,6 @@ impl CognitiveStage for UserDefinedStage {
             }
         }
 
-        // 预设 ctx 桥接：把 ACTION 产出回填到 PipelineContext
-        if let Some(key) = &self.preset_ctx_key {
-            write_preset_ctx(&mut ctx, key, &action_result, &analysis);
-        }
-
         Ok((StageOutput::Bool(action_result.count > 0 || !analysis.is_empty()), ctx))
-    }
-}
-
-/// 将预设 stage 的 ACTION 执行结果回填到 PipelineContext
-fn write_preset_ctx(
-    ctx: &mut PipelineContext,
-    key: &PresetCtxKey,
-    result: &actions::ActionResult,
-    analysis: &[&str],
-) {
-    match key {
-        PresetCtxKey::Observer => {
-            ctx.observer = Some(ObserverOutput {
-                notes: analysis.iter().map(|s| s.to_string()).collect(),
-            });
-        }
-        PresetCtxKey::Coach => {
-            let insights: Vec<String> = result.results.iter()
-                .filter(|(name, _)| name == "save_memory" || name == "save_memory_visible")
-                .map(|(_, id)| format!("insight#{id}"))
-                .collect();
-            ctx.coach = Some(CoachOutput {
-                insights,
-                observations_archived: 0,
-                degraded: false,
-            });
-        }
-        PresetCtxKey::Mirror => {
-            ctx.mirror = Some(MirrorOutput {
-                reflection: analysis.join("\n"),
-                notified: result.results.iter().any(|(n, _)| n == "notify_user"),
-            });
-        }
-        PresetCtxKey::Questioner => {
-            ctx.questioner = Some(QuestionerOutput {
-                question: analysis.join("\n"),
-                is_resurface: false,
-            });
-        }
     }
 }
