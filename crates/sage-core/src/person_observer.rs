@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::agent::Agent;
-use crate::pipeline::{harness, PipelineContext};
+use crate::pipeline::{actions, harness, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 
@@ -59,25 +59,37 @@ pub async fn extract_persons(agent: &Agent, store: &Store, _ctx: &mut PipelineCo
         return Ok(false);
     }
 
+    // rate limit：每次运行最多保存 30 条人物观察
+    const MAX_PERSON_OBSERVATIONS: usize = 30;
     let mut count = 0;
     for line in text.lines() {
+        if count >= MAX_PERSON_OBSERVATIONS {
+            warn!("PersonObserver: rate limit reached ({MAX_PERSON_OBSERVATIONS}), skipping remaining");
+            break;
+        }
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("PERSON [") {
             if let Some(bracket_end) = rest.find(']') {
                 let name = rest[..bracket_end].trim();
                 let observation = rest[bracket_end + 1..].trim();
-                if !name.is_empty() && !observation.is_empty() {
-                    match store.save_memory_about_person(
-                        "behavior",
-                        observation,
-                        "person_observer",
-                        0.6,
-                        "private",
-                        name,
-                    ) {
-                        Ok(_) => count += 1,
-                        Err(e) => warn!("PersonObserver: 保存人物观察失败 {name}: {e}"),
-                    }
+                if name.is_empty() || observation.is_empty() { continue; }
+                // 约束层验证：人物观察内容合法性
+                let action_line = format!("save_person_memory | {name} | behavior | {observation} | confidence:0.6 | visibility:private");
+                let parts: Vec<&str> = action_line.splitn(6, '|').map(|s| s.trim()).collect();
+                if let Some(reason) = actions::validate_action_params("save_person_memory", &parts) {
+                    warn!("PersonObserver: BLOCKED invalid person memory for {name}: {reason}");
+                    continue;
+                }
+                match store.save_memory_about_person(
+                    "behavior",
+                    observation,
+                    "person_observer",
+                    0.6,
+                    "private",
+                    name,
+                ) {
+                    Ok(_) => count += 1,
+                    Err(e) => warn!("PersonObserver: 保存人物观察失败 {name}: {e}"),
                 }
             }
         }

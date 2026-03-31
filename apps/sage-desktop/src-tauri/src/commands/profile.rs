@@ -62,12 +62,11 @@ pub async fn generate_first_impression(
             if trimmed.is_empty() {
                 return None;
             }
-            let _ = state.store.save_memory_with_visibility(
-                "insight",
-                &trimmed,
-                "onboarding",
-                0.9,
-                "public",
+            let action_line = format!(
+                "save_memory_visible | insight | {trimmed} | confidence:0.9 | visibility:public"
+            );
+            sage_core::pipeline::actions::execute_single_action(
+                &action_line, &["save_memory_visible"], &state.store, "tauri_profile",
             );
             trigger_memory_sync(&state.store);
             tracing::info!("Onboarding first impression 已生成并存储");

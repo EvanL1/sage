@@ -11,9 +11,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{debug, error, info, warn};
 
+use crate::pipeline::actions;
 use crate::prompts;
 use crate::provider::LlmProvider;
 use crate::store::Store;
+
+/// 每次 integrate 调用最多写入的记忆数
+const MAX_WRITES_PER_BATCH: usize = 15;
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -101,12 +105,18 @@ impl MemoryIntegrator {
         provider: &dyn LlmProvider,
     ) -> Result<IntegrationResult> {
         let mut result = IntegrationResult::default();
+        let mut writes = 0usize;
 
         for entry in entries {
+            if writes >= MAX_WRITES_PER_BATCH {
+                warn!("MemoryIntegrator: rate limit reached ({MAX_WRITES_PER_BATCH}), skipping remaining");
+                result.skipped += 1;
+                continue;
+            }
             match self.integrate_one(&entry, provider).await {
                 Ok(action) => match action {
-                    Action::Created => result.created += 1,
-                    Action::Updated => result.updated += 1,
+                    Action::Created => { result.created += 1; writes += 1; }
+                    Action::Updated => { result.updated += 1; writes += 1; }
                     Action::Skipped => result.skipped += 1,
                 },
                 Err(e) => {
@@ -114,6 +124,7 @@ impl MemoryIntegrator {
                     if !is_ephemeral_content(entry.content.trim()) {
                         self.fallback_insert(&entry);
                         result.created += 1;
+                        writes += 1;
                     } else {
                         result.skipped += 1;
                     }
@@ -199,6 +210,15 @@ impl MemoryIntegrator {
                 let text = text_part.trim();
                 if let Ok(id) = id_str.parse::<i64>() {
                     if !text.is_empty() {
+                        // 约束层验证：UPDATE 内容合法性
+                        let parts_str = format!("save_memory | revised | {text} | confidence:0.5");
+                        let parts: Vec<&str> = parts_str.splitn(6, '|').map(|s| s.trim()).collect();
+                        if let Some(reason) = actions::validate_action_params("save_memory", &parts) {
+                            warn!("MemoryIntegrator: BLOCKED invalid UPDATE: {reason}");
+                            // 内容非法时降级为 create
+                            self.execute_create(entry)?;
+                            return Ok(Action::Created);
+                        }
                         debug!("MemoryIntegrator: UPDATE id={id} content='{text}'");
                         self.store.update_memory_content(id, text)?;
                         return Ok(Action::Updated);
@@ -232,6 +252,21 @@ impl MemoryIntegrator {
     }
 
     fn execute_create(&self, entry: &IncomingMemory) -> Result<()> {
+        // 约束层验证：检查参数合法性
+        let validation_line = if entry.about_person.is_some() {
+            format!("save_person_memory | {} | {} | {} | confidence:{:.1} | visibility:public",
+                entry.about_person.as_deref().unwrap_or(""), entry.category, entry.content, entry.confidence)
+        } else {
+            format!("save_memory | {} | {} | confidence:{:.1}",
+                entry.category, entry.content, entry.confidence)
+        };
+        let action_name = if entry.about_person.is_some() { "save_person_memory" } else { "save_memory" };
+        let parts: Vec<&str> = validation_line.splitn(6, '|').map(|s| s.trim()).collect();
+        if let Some(reason) = actions::validate_action_params(action_name, &parts) {
+            warn!("MemoryIntegrator: BLOCKED invalid {action_name}: {reason}");
+            return Ok(());
+        }
+
         let id = if let Some(ref person) = entry.about_person {
             self.store.save_memory_about_person(
                 &entry.category,

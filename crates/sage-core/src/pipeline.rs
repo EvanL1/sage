@@ -252,7 +252,12 @@ impl CognitivePipeline {
                 info!("Pipeline: spawning {} parallel stages: {:?}", parallel.len(), &parallel);
                 let mut handles = Vec::new();
                 for name in &parallel {
-                    let stage = Arc::clone(self.stages.get(name).unwrap());
+                    let Some(stage_ref) = self.stages.get(name) else {
+                        warn!("Pipeline: stage '{name}' not registered, skipping");
+                        completed.insert(name.clone());
+                        continue;
+                    };
+                    let stage = Arc::clone(stage_ref);
                     let stage_agent = self.make_stage_agent(name, agent, store);
                     let store_clone = Arc::clone(store);
                     let name_clone = name.clone();

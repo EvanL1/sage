@@ -1,8 +1,8 @@
 use anyhow::Result;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::agent::Agent;
-use crate::pipeline::{harness, PipelineContext};
+use crate::pipeline::{actions, harness, PipelineContext};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
@@ -73,22 +73,34 @@ pub async fn strategize(agent: &Agent, store: &Store, _ctx: &mut PipelineContext
     );
 
     let content = harness::invoke_text(agent, &prompt, Some(&system)).await?;
+    // rate limit：每次运行最多保存 20 条战略洞察
+    const MAX_STRATEGIES: usize = 20;
     let mut saved = 0;
     if !content.is_empty() {
         for line in content.lines() {
+            if saved >= MAX_STRATEGIES {
+                warn!("Strategist: rate limit reached ({MAX_STRATEGIES}), skipping remaining insights");
+                break;
+            }
             let line = line.trim().trim_start_matches('-').trim();
-            if !line.is_empty() {
-                if let Err(e) = store.save_memory_with_visibility(
-                    "strategy_insight",
-                    line,
-                    "strategist",
-                    0.85,
-                    "subconscious",
-                ) {
-                    tracing::error!("Strategist: failed to save insight: {e}");
-                } else {
-                    saved += 1;
-                }
+            if line.is_empty() { continue; }
+            // 约束层验证：战略洞察内容合法性
+            let action_line = format!("save_memory_visible | strategy_insight | {line} | confidence:0.85 | visibility:subconscious");
+            let parts: Vec<&str> = action_line.splitn(6, '|').map(|s| s.trim()).collect();
+            if let Some(reason) = actions::validate_action_params("save_memory_visible", &parts) {
+                warn!("Strategist: BLOCKED invalid strategy insight: {reason}");
+                continue;
+            }
+            if let Err(e) = store.save_memory_with_visibility(
+                "strategy_insight",
+                line,
+                "strategist",
+                0.85,
+                "subconscious",
+            ) {
+                tracing::error!("Strategist: failed to save insight: {e}");
+            } else {
+                saved += 1;
             }
         }
         info!("Strategist: {saved} strategic insights saved");

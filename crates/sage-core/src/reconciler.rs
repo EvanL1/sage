@@ -2,9 +2,12 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::agent::Agent;
-use crate::pipeline::harness;
+use crate::pipeline::{actions, harness};
 use crate::prompts;
 use crate::store::Store;
+
+/// 每次 reconcile 最多修改记忆数量（防止 LLM 批量篡改）
+const MAX_REVISIONS: usize = 10;
 
 /// 认知调和（增量）：新记忆写入后，检查是否与现有 decisions/strategy_insights 矛盾。
 pub async fn reconcile(agent: &Agent, store: &Store, new_content: &str) -> Result<usize> {
@@ -100,6 +103,11 @@ fn apply_revisions(
 
     let mut revised = 0;
     for line in text.lines() {
+        // rate limit：最多修改 MAX_REVISIONS 条
+        if revised >= MAX_REVISIONS {
+            warn!("Reconciler: rate limit reached ({MAX_REVISIONS}), skipping remaining revisions");
+            break;
+        }
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("REVISE ") {
             if let Some((id_str, reason)) = rest.split_once(':') {
@@ -108,6 +116,13 @@ fn apply_revisions(
                 if let Ok(id) = id_str.parse::<i64>() {
                     if let Some(mem) = candidates.iter().find(|m| m.id == id) {
                         let annotated = format!("[REVISED] {}\n— Reason: {}", mem.content, reason);
+                        // 通过 ACTION 约束系统验证内容合法性
+                        let action_line = format!("save_memory | revised | {annotated} | confidence:0.05");
+                        let parts: Vec<&str> = action_line.splitn(6, '|').map(|s| s.trim()).collect();
+                        if let Some(reason_block) = actions::validate_action_params("save_memory", &parts) {
+                            warn!("Reconciler: BLOCKED invalid revision: {reason_block}");
+                            continue;
+                        }
                         if let Err(e) = store.update_memory(id, &annotated, 0.05) {
                             warn!("Reconciler: failed to revise memory {id}: {e}");
                         } else {

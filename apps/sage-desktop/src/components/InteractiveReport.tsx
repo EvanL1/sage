@@ -8,7 +8,7 @@ import { useLang } from "../LangContext";
 
 function contentKey(s: string): string {
   let h = 0;
-  for (let i = 0; i < Math.min(s.length, 500); i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
   return "ir_" + (h >>> 0).toString(36);
 }
 
@@ -163,7 +163,7 @@ function InteractiveTable({ table, reportType, sectionIdx, tableIdx, persisted, 
 
   const createTask = async (i: number, row: TableRow) => {
     try {
-      const text = row.cells.slice(0, 2).join(": ").replace(/\*\*/g, "").slice(0, 200);
+      const text = row.cells.slice(0, 2).join(": ").replace(/\*\*/g, "");
       const taskId = await invoke<number>("create_task", {
         content: text, source: reportType, sourceId: null,
         priority: "high", dueDate: null, description: row.cells.join(" — "),
@@ -245,7 +245,7 @@ function InteractiveItems({ items, reportType, sectionIdx, persisted, onPersist 
     if (!accurate) {
       try {
         await invoke("save_report_correction", {
-          reportType, wrongClaim: text.slice(0, 200),
+          reportType, wrongClaim: text,
           correctFact: "用户标记此项不准确", contextHint: "item_feedback",
         });
       } catch {}
@@ -254,7 +254,7 @@ function InteractiveItems({ items, reportType, sectionIdx, persisted, onPersist 
 
   const createTask = async (i: number, item: ListItem) => {
     try {
-      const clean = item.text.replace(/\*\*/g, "").replace(/\s*—\s*/, ": ").slice(0, 200);
+      const clean = item.text.replace(/\*\*/g, "").replace(/\s*—\s*/, ": ");
       const taskId = await invoke<number>("create_task", {
         content: clean, source: reportType, sourceId: null,
         priority: item.priority === "high" ? "high" : "medium",
@@ -313,7 +313,7 @@ export default function InteractiveReport({ content, reportType }: {
   const handleCorrect = useCallback(async (summary: string, correct: string) => {
     try {
       await invoke("save_report_correction", {
-        reportType, wrongClaim: summary.slice(0, 200),
+        reportType, wrongClaim: summary,
         correctFact: correct, contextHint: "interactive_correction",
       });
     } catch (err) {

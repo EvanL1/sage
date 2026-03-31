@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::agent::Agent;
 use crate::pipeline::{harness, CoachOutput, PipelineContext};
@@ -61,16 +61,24 @@ pub async fn learn(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> R
     let observe_guide = skills::load_section("sage-cognitive", "## Phase 1: OBSERVE");
     let system = format!("{observe_guide}\n\n{}", prompts::coach_system_suffix(&lang));
     let content = harness::invoke_text(agent, &prompt, Some(&system)).await?;
+    // rate limit：每次运行最多保存 20 条洞察
+    const MAX_INSIGHTS: usize = 20;
     let mut saved_insights = Vec::new();
     if !content.is_empty() {
         for line in content.lines() {
+            if saved_insights.len() >= MAX_INSIGHTS {
+                warn!("Coach: rate limit reached ({MAX_INSIGHTS}), skipping remaining insights");
+                break;
+            }
             let line = line.trim().trim_start_matches('-').trim();
-            if !line.is_empty() {
-                if let Err(e) = store.save_coach_insight(line) {
-                    tracing::error!("Coach: failed to save insight: {e}");
-                } else {
-                    saved_insights.push(line.to_string());
-                }
+            // 验证内容：非空且不超过 500 字节
+            if line.is_empty() || line.len() > 500 {
+                continue;
+            }
+            if let Err(e) = store.save_coach_insight(line) {
+                tracing::error!("Coach: failed to save insight: {e}");
+            } else {
+                saved_insights.push(line.to_string());
             }
         }
         info!("Coach: {} insight lines saved to SQLite", saved_insights.len());

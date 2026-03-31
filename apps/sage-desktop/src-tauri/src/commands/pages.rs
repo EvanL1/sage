@@ -43,6 +43,10 @@ pub async fn generate_page(
         .await
         .map_err(map_err)?;
 
+    // 约束层：验证生成的页面内容
+    if markdown.trim().is_empty() || markdown.len() > 50000 {
+        return Err("生成的页面内容无效".into());
+    }
     let title = extract_title(&markdown);
     let id = state
         .store

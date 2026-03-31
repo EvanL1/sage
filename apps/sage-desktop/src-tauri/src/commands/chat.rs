@@ -34,6 +34,10 @@ pub async fn chat(
                 sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
             let system_prompt = sage_core::prompts::page_gen_system(&lang).to_string();
             if let Ok(markdown) = provider.invoke(&message, Some(&system_prompt)).await {
+                // 约束层：验证页面内容
+                if markdown.trim().is_empty() || markdown.len() > 50000 {
+                    return Err("页面内容无效".into());
+                }
                 let title = extract_page_title(&markdown);
                 if let Ok(page_id) = state.store.save_custom_page(&title, &markdown) {
                     let reply = if lang == "en" {

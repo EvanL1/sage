@@ -9,13 +9,14 @@ RECENT ACTIONS (last 24h):
 For each finding, output ONE line:
 - DONE {task_id} | {evidence summary} | {suggested outcome}
 - CANCEL {task_id} | {reason} | {suggested outcome}
-- NEW | {suggested task content} | {evidence}
+- NEW | {suggested task content} | {evidence} | due:YYYY-MM-DD
 - NONE (if no signals detected)
 
 Rules:
 - Only flag DONE if there is clear evidence the task was acted upon
 - Only flag CANCEL if circumstances clearly changed
 - NEW tasks should be actionable and specific
+- NEW tasks MUST include `due:YYYY-MM-DD` when the user mentions a deadline (today, tomorrow, this week, etc.). Today is {today}. Omit `due:` only when no deadline is implied
 - **CRITICAL: Do NOT suggest anything similar to items in ALREADY SUGGESTED or ALREADY COMPLETED sections**
 - **CRITICAL: Do NOT suggest a NEW task if an OPEN TASK already covers the same topic**
 - **CRITICAL: If multiple OPEN TASKs overlap or cover the same topic, CANCEL the duplicates (keep the one with most detail). NEVER create a NEW "merge" or "consolidate" task — just CANCEL the redundant ones**
@@ -28,6 +29,6 @@ Output your signals inside `<output>` tags. Begin your response with `<output>`.
 
 <output>
 DONE 42 | user replied to client | mark as done
-NEW | Review Q3 budget | mentioned in team meeting
+NEW | Review Q3 budget | mentioned in team meeting | due:2026-04-02
 NONE
 </output>

@@ -359,6 +359,43 @@ fn parse_confidence(parts: &[&str], idx: usize) -> f64 {
         .unwrap_or(0.7)
 }
 
+// ─── 公共约束层（供 pipeline 外模块调用）─────────────────────────────
+
+/// 受约束的单条 ACTION 执行（不依赖完整 stage 上下文）
+/// action_line 格式："create_task | content | priority:P1 | due:2026-04-01"（不含 "ACTION " 前缀）
+pub fn execute_single_action(
+    action_line: &str, whitelist: &[&str], store: &Store, caller: &str,
+) -> Option<i64> {
+    let parts: Vec<&str> = action_line.splitn(6, '|').map(|s| s.trim()).collect();
+    if parts.is_empty() { return None; }
+    let action_name = parts[0];
+    if !whitelist.contains(&action_name) {
+        warn!("{caller}: BLOCKED unauthorized action '{action_name}'");
+        return None;
+    }
+    if let Some(reason) = validate_action_params(action_name, &parts) {
+        warn!("{caller}: BLOCKED invalid {action_name}: {reason}");
+        return None;
+    }
+    dispatch_action(action_name, &parts, store, caller)
+}
+
+/// 受约束的批量执行（带 rate limit）
+pub fn execute_constrained_actions(
+    action_lines: &[String], whitelist: &[&str], store: &Store,
+    caller: &str, max_actions: usize,
+) -> Vec<Option<i64>> {
+    let mut results = Vec::new();
+    for line in action_lines {
+        if results.len() >= max_actions {
+            warn!("{caller}: rate limit reached ({max_actions}), skipping remaining");
+            break;
+        }
+        results.push(execute_single_action(line, whitelist, store, caller));
+    }
+    results
+}
+
 // ─── 输入过滤 ──────────────────────────────────────────────────────
 
 /// 按 allowed_inputs 声明过滤上下文（硬约束：不在列表中的数据源不传给 LLM）

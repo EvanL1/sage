@@ -164,13 +164,15 @@ pub async fn summarize_channel(
 
     let mut tasks_created = 0;
     if create_tasks.unwrap_or(true) {
-        let task_source = format!("teams:{channel}");
-        let description = format!("From channel: {channel}");
         for (priority, desc) in &actions {
-            let p = match priority.as_str() { "P0" => "urgent", "P2" => "low", _ => "normal" };
-            match state.store.create_task(desc, &task_source, None, Some(p), None, Some(&description)) {
-                Ok(_) => tasks_created += 1,
-                Err(e) => tracing::warn!("Failed to create task from channel summary: {e}"),
+            let p = match priority.as_str() { "P0" => "P0", "P2" => "P2", _ => "P1" };
+            let action_line = format!("create_task | {desc} | priority:{p}");
+            if sage_core::pipeline::actions::execute_single_action(
+                &action_line, &["create_task"], &state.store, "tauri_messages",
+            ).is_some() {
+                tasks_created += 1;
+            } else {
+                tracing::warn!("Failed to create task from channel summary (ACTION rejected)");
             }
         }
     }
@@ -488,7 +490,13 @@ async fn refine_negative_rule(
     match provider.invoke(&prompt, None).await {
         Ok(refined) => {
             let rule = refined.trim().to_string();
-            if rule.is_empty() { user_complaint.to_string() } else { rule }
+            // 约束层：验证精炼后的规则（空或过长则回退到原始吐槽）
+            if rule.is_empty() || rule.len() > 500 {
+                tracing::warn!("Feedback: BLOCKED invalid negative rule (empty or too long)");
+                user_complaint.to_string()
+            } else {
+                rule
+            }
         }
         Err(_) => user_complaint.to_string(),
     }

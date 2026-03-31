@@ -9,7 +9,14 @@ use tracing::{info, warn};
 use crate::agent::Agent;
 use crate::store::Store;
 
-use super::{harness, CognitiveStage, PipelineContext, StageOutput};
+use super::{actions, harness, CognitiveStage, PipelineContext, StageOutput};
+
+/// 每次 evolve_pipeline_params 最多执行元命令数
+const MAX_META_COMMANDS: usize = 5;
+/// 每次 rewrite_prompt 最多 bake 规则数
+const MAX_BAKED_RULES: usize = 5;
+/// 每次 evolve_ui 最多生成页面数
+const MAX_UI_PAGES: usize = 3;
 
 pub struct MetaStage;
 
@@ -58,6 +65,11 @@ async fn evolve_pipeline_params(agent: &Agent, store: &Arc<Store>) -> Result<usi
     let text = harness::invoke_text(agent, &prompt, None).await?;
     let mut changes = 0;
     for line in text.lines() {
+        // rate limit：最多执行 MAX_META_COMMANDS 条元命令
+        if changes >= MAX_META_COMMANDS {
+            warn!("Meta: rate limit reached ({MAX_META_COMMANDS}), skipping remaining commands");
+            break;
+        }
         let line = line.trim();
         if line == "NONE" || line.is_empty() { continue; }
         changes += apply_meta_command(line, store);
@@ -73,6 +85,11 @@ fn apply_meta_command(line: &str, store: &Store) -> usize {
 
     if let Some(stage) = cmd.strip_prefix("DISABLE ") {
         let stage = stage.trim();
+        // 验证 stage 名称只含字母数字和下划线
+        if !is_valid_stage_name(stage) {
+            warn!("Meta: BLOCKED invalid stage name: {stage}");
+            return 0;
+        }
         if ["observer", "coach", "evolution"].contains(&stage) {
             warn!("Meta: refused to disable core stage '{stage}'");
             return 0;
@@ -84,6 +101,10 @@ fn apply_meta_command(line: &str, store: &Store) -> usize {
     if let Some(rest) = cmd.strip_prefix("INCREASE ") {
         let tokens: Vec<&str> = rest.trim().splitn(2, ' ').collect();
         if tokens.len() == 2 {
+            if !is_valid_stage_name(tokens[0]) {
+                warn!("Meta: BLOCKED invalid stage name: {}", tokens[0]);
+                return 0;
+            }
             let _ = store.set_pipeline_override(tokens[0], "max_iterations", tokens[1], reason);
             info!("Meta: increased '{}' max_iterations to {} — {reason}", tokens[0], tokens[1]);
             return 1;
@@ -92,17 +113,31 @@ fn apply_meta_command(line: &str, store: &Store) -> usize {
     if let Some(rest) = cmd.strip_prefix("DECREASE ") {
         let tokens: Vec<&str> = rest.trim().splitn(2, ' ').collect();
         if tokens.len() == 2 {
+            if !is_valid_stage_name(tokens[0]) {
+                warn!("Meta: BLOCKED invalid stage name: {}", tokens[0]);
+                return 0;
+            }
             let _ = store.set_pipeline_override(tokens[0], "max_iterations", tokens[1], reason);
             info!("Meta: decreased '{}' max_iterations to {} — {reason}", tokens[0], tokens[1]);
             return 1;
         }
     }
     if let Some(stage) = cmd.strip_prefix("ENABLE ") {
-        let _ = store.delete_pipeline_override(stage.trim(), "enabled");
-        info!("Meta: re-enabled '{}' — {reason}", stage.trim());
+        let stage = stage.trim();
+        if !is_valid_stage_name(stage) {
+            warn!("Meta: BLOCKED invalid stage name: {stage}");
+            return 0;
+        }
+        let _ = store.delete_pipeline_override(stage, "enabled");
+        info!("Meta: re-enabled '{stage}' — {reason}");
         return 1;
     }
     0
+}
+
+/// stage 名称只允许字母、数字和下划线
+fn is_valid_stage_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 // ─── Phase 2: Prompt 自我编辑 ───────────────────────────────────────────────
@@ -174,8 +209,17 @@ async fn rewrite_prompt(agent: &Agent, store: &Store, name: &str, rules: &[&str]
     std::fs::write(&path, new_prompt)?;
     info!("Meta: rewrote prompt '{}' at {}", name, path.display());
 
+    // 通过 ACTION 约束系统写入 baked 规则，最多 MAX_BAKED_RULES 条
+    let mut baked = 0;
     for rule in rules {
-        let _ = store.save_memory("calibration_baked", &format!("[baked:{name}] {rule}"), "meta", 0.5);
+        if baked >= MAX_BAKED_RULES {
+            warn!("Meta: baked rule rate limit reached ({MAX_BAKED_RULES}), skipping remaining");
+            break;
+        }
+        let action_line = format!("save_memory | calibration_baked | [baked:{name}] {rule} | confidence:0.5");
+        if actions::execute_single_action(&action_line, &["save_memory"], store, "meta_rewrite").is_some() {
+            baked += 1;
+        }
     }
     Ok(1)
 }
@@ -215,8 +259,20 @@ async fn evolve_ui(agent: &Agent, store: &Arc<Store>) -> Result<usize> {
          Design ONE focused insight page. Output ONLY markdown. Start with `# Title`."
     );
 
+    // rate limit：本次运行最多生成 MAX_UI_PAGES 个页面
+    if auto_pages.len() >= MAX_UI_PAGES {
+        warn!("Meta UI: rate limit reached ({MAX_UI_PAGES} pages), skipping generation");
+        return Ok(0);
+    }
+
     let md = harness::invoke_raw(agent, &prompt, None).await?;
     if md.is_empty() || !md.starts_with('#') { return Ok(0); }
+
+    // 验证内容长度：非空且不超过 10000 字节
+    if md.trim().is_empty() || md.len() > 10000 {
+        warn!("Meta: BLOCKED evolve_ui — 内容长度非法 ({}字节)", md.len());
+        return Ok(0);
+    }
 
     let title = md.lines().next().unwrap_or("Auto Insight").trim_start_matches('#').trim();
     store.save_custom_page(&format!("[auto] {title}"), &md)?;

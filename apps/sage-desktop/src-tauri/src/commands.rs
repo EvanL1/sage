@@ -252,6 +252,27 @@ pub(crate) async fn extract_and_save_memories(
         });
     }
 
+    // task 类型条目从 entries 中分离出来，走 create_task ACTION，不走 MemoryIntegrator
+    let (task_entries, mem_entries): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .partition(|e| e.category == "task");
+
+    // task 类型 → 通过 ACTION 约束层创建任务
+    let mut tasks_saved = 0usize;
+    for entry in &task_entries {
+        let action_line = format!("create_task | {} | priority:normal", entry.content);
+        if sage_core::pipeline::actions::execute_single_action(
+            &action_line,
+            &["create_task"],
+            store,
+            "chat",
+        )
+        .is_some()
+        {
+            tasks_saved += 1;
+        }
+    }
+
     let saved;
     let integrator =
         sage_core::memory_integrator::MemoryIntegrator::new(std::sync::Arc::clone(store));
@@ -262,43 +283,53 @@ pub(crate) async fn extract_and_save_memories(
         let agent_config = default_agent_config();
         let provider =
             sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
-        match integrator.integrate(entries, provider.as_ref()).await {
+        match integrator.integrate(mem_entries, provider.as_ref()).await {
             Ok(result) => {
-                saved = result.created + result.updated;
+                saved = tasks_saved + result.created + result.updated;
             }
             Err(e) => {
                 tracing::warn!("Memory integration failed, skipping: {e}");
-                saved = 0;
+                saved = tasks_saved;
             }
         }
     } else {
-        saved = entries.len();
-        for entry in &entries {
-            let id = if let Some(ref person) = entry.about_person {
-                store.save_memory_about_person(
-                    &entry.category,
-                    &entry.content,
-                    "chat",
-                    entry.confidence,
-                    "private",
-                    person,
+        // 无可用 provider 时，通过 ACTION 约束层写入记忆（fallback 路径）
+        let mut fallback_saved = tasks_saved;
+        for entry in &mem_entries {
+            let action_line = if let Some(ref person) = entry.about_person {
+                format!(
+                    "save_person_memory | {person} | {} | {} | confidence:{} | visibility:private",
+                    entry.category, entry.content, entry.confidence
                 )
             } else {
-                store.save_memory_with_visibility(
-                    &entry.category,
-                    &entry.content,
-                    "chat",
-                    entry.confidence,
-                    "private",
+                format!(
+                    "save_memory_visible | {} | {} | confidence:{} | visibility:private",
+                    entry.category, entry.content, entry.confidence
                 )
             };
-            if let (Ok(id), Some(ref depth)) = (&id, &entry.depth) {
-                let valid = ["episodic", "semantic", "procedural", "axiom"];
-                if valid.contains(&depth.as_str()) {
-                    let _ = store.update_memory_depth(*id, depth);
+            let whitelist = &[
+                "save_memory_visible",
+                "save_memory",
+                "save_person_memory",
+                "create_task",
+            ];
+            if let Some(id) = sage_core::pipeline::actions::execute_single_action(
+                &action_line,
+                whitelist,
+                store,
+                "chat",
+            ) {
+                fallback_saved += 1;
+                // LLM 指定的 depth 单独写入
+                if let Some(ref depth) = entry.depth {
+                    let valid = ["episodic", "semantic", "procedural", "axiom"];
+                    if valid.contains(&depth.as_str()) {
+                        let _ = store.update_memory_depth(id, depth);
+                    }
                 }
             }
         }
+        saved = fallback_saved;
     }
 
     let display = format!("{}{}", raw[..start_idx].trim_end(), &raw[block_end..]);

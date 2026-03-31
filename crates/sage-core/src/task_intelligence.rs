@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use tracing::{info, warn};
 
 use crate::agent::Agent;
-use crate::pipeline::parser;
+use crate::pipeline::{actions, parser};
 use crate::prompts;
 use crate::store::Store;
 
@@ -16,7 +16,7 @@ pub enum TaskSignalCommand {
     /// 任务应取消
     Cancel { task_id: i64, reason: String, suggested_outcome: Option<String> },
     /// 新任务建议
-    New { content: String, evidence: String },
+    New { content: String, evidence: String, due_date: Option<String> },
 }
 
 /// 单行解析任务信号命令
@@ -46,13 +46,17 @@ fn parse_task_signal_command(line: &str) -> Result<Option<TaskSignalCommand>> {
     }
 
     if let Some(rest) = line.strip_prefix("NEW | ") {
-        let parts: Vec<&str> = rest.splitn(2, " | ").collect();
+        let parts: Vec<&str> = rest.splitn(3, " | ").collect();
         if parts.is_empty() || parts[0].trim().is_empty() {
             return Err(anyhow!("NEW: empty task content"));
         }
         let content = truncate(parts[0].trim(), 120);
         let evidence = parts.get(1).map(|s| truncate(s.trim(), 120)).unwrap_or_default();
-        return Ok(Some(TaskSignalCommand::New { content, evidence }));
+        // 从第3段或 evidence 中提取 due:YYYY-MM-DD
+        let due_date = parts.get(2)
+            .and_then(|s| extract_due_date(s))
+            .or_else(|| extract_due_date(&evidence));
+        return Ok(Some(TaskSignalCommand::New { content, evidence, due_date }));
     }
 
     // 非命令行（叙述文本）→ 跳过
@@ -112,10 +116,14 @@ pub async fn suggest_from_event(
         .map(|(_, content, _, _, _, _, _, _, _, _, _)| content.clone())
         .collect();
 
-    let system = "You are a task detection assistant. Given a single event and the user's current \
+    let today = chrono::Local::now().format("%Y-%m-%d");
+    let system = format!(
+        "You are a task detection assistant. Given a single event and the user's current \
         open tasks, determine if this event requires a new task. \
-        Output format: `NEW | <task title> | <evidence>` for each new task (max 2). \
-        If nothing actionable, output `NONE`.";
+        Output format: `NEW | <task title> | <evidence> | due:YYYY-MM-DD` for each new task (max 2). \
+        Include due:YYYY-MM-DD when a deadline is mentioned or implied (today is {today}). \
+        If nothing actionable, output `NONE`."
+    );
 
     let open_tasks_text = if open_titles.is_empty() {
         "(none)".to_string()
@@ -129,7 +137,7 @@ pub async fn suggest_from_event(
          Does this event require a new task? Output NEW or NONE."
     );
 
-    let resp = agent.invoke(&prompt, Some(system)).await?;
+    let resp = agent.invoke(&prompt, Some(&system)).await?;
     let count = parse_and_save_new_task_signals(&resp.text, store, importance)?;
 
     // Record dedup marker (source=_async_task with underscore prefix → hidden from History page)
@@ -142,18 +150,29 @@ pub async fn suggest_from_event(
     Ok(count)
 }
 
+/// 构建约束层 ACTION 行并执行 create_task
+fn constrained_create_task(content: &str, due_date: Option<&str>, store: &Store, caller: &str) -> Option<i64> {
+    let due_part = due_date.map(|d| format!(" | due:{d}")).unwrap_or_default();
+    let action_line = format!("create_task | {content} | priority:normal{due_part}");
+    actions::execute_single_action(&action_line, &["create_task"], store, caller)
+}
+
+const MAX_SUGGEST_TASKS: usize = 2;
+const MAX_DETECT_TASKS: usize = 3;
+
 fn parse_and_save_new_task_signals(response: &str, store: &Store, importance: f32) -> Result<usize> {
     let parsed = parse_task_signal_response(response);
     let mut count = 0usize;
     for cmd in &parsed.commands {
-        if let TaskSignalCommand::New { content, evidence } = cmd {
+        if count >= MAX_SUGGEST_TASKS { break; }
+        if let TaskSignalCommand::New { content, evidence, due_date } = cmd {
             let title = format!("Suggested new task: {}", truncate(content, 50));
             let id = store.save_task_signal_with_importance(
                 "new_task", None, &title, evidence, Some(content), importance,
             )?;
             if id > 0 {
-                match store.create_task(content, "ai_signal", None, None, None, Some(evidence)) {
-                    Ok(tid) if tid > 0 => {
+                match constrained_create_task(content, due_date.as_deref(), store, "task_suggest") {
+                    Some(tid) if tid > 0 => {
                         let _ = store.update_signal_status(id, "accepted");
                         count += 1;
                     }
@@ -274,12 +293,14 @@ pub async fn detect_task_signals(agent: &Agent, store: &Store) -> Result<usize> 
     let learned_rules = load_learned_rules(store);
 
     let lang = store.prompt_lang();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let prompt = prompts::task_intelligence_user_template(&lang)
         .replace("{tasks_text}", &tasks_text)
         .replace("{actions_text}", &actions_text)
         .replace("{pending_section}", &pending_section)
         .replace("{done_section}", &done_section)
-        .replace("{learned_rules}", &learned_rules);
+        .replace("{learned_rules}", &learned_rules)
+        .replace("{today}", &today);
     let system = prompts::task_intelligence_system(&lang);
     let resp = agent.invoke(&prompt, Some(system)).await?;
     let response = resp.text;
@@ -319,6 +340,7 @@ fn parse_and_save_signals(response: &str, store: &Store) -> Result<usize> {
     }
 
     let mut count = 0usize;
+    let mut task_count = 0usize;
     for cmd in &parsed.commands {
         match cmd {
             TaskSignalCommand::Done { task_id, evidence, suggested_outcome } => {
@@ -335,13 +357,18 @@ fn parse_and_save_signals(response: &str, store: &Store) -> Result<usize> {
                 )?;
                 if id > 0 { count += 1; }
             }
-            TaskSignalCommand::New { content, evidence } => {
+            TaskSignalCommand::New { content, evidence, due_date } => {
+                if task_count >= MAX_DETECT_TASKS {
+                    warn!("detect_task_signals: rate limit reached ({MAX_DETECT_TASKS} tasks), skipping");
+                    continue;
+                }
                 let title = format!("Suggested new task: {}", truncate(content, 50));
                 let id = store.save_task_signal("new_task", None, &title, evidence, Some(content))?;
                 if id > 0 {
-                    match store.create_task(content, "ai_signal", None, None, None, Some(evidence)) {
-                        Ok(tid) if tid > 0 => {
+                    match constrained_create_task(content, due_date.as_deref(), store, "task_detect") {
+                        Some(tid) if tid > 0 => {
                             let _ = store.update_signal_status(id, "accepted");
+                            task_count += 1;
                             count += 1;
                         }
                         _ => { let _ = store.update_signal_status(id, "dismissed"); }
@@ -410,13 +437,18 @@ async fn self_reflect_on_dismissals(agent: &Agent, store: &Store) -> Result<()> 
     );
 
     let resp = agent.invoke(&prompt, None).await?;
+    const MAX_RULES: usize = 3;
     let mut rule_count = 0;
     for line in resp.text.lines() {
+        if rule_count >= MAX_RULES { break; }
         let trimmed = line.trim();
         if let Some(rule) = trimmed.strip_prefix("Rule:").or_else(|| trimmed.strip_prefix("规则：")).or_else(|| trimmed.strip_prefix("规则:")) {
             let rule = rule.trim();
             if !rule.is_empty() {
-                store.save_memory("calibration_task", rule, "self_reflect", 0.8)?;
+                let action = format!("save_memory | calibration_task | {rule} | confidence:0.8");
+                if actions::execute_single_action(&action, &["save_memory"], store, "task_reflect").is_none() {
+                    continue;
+                }
                 rule_count += 1;
                 info!("Task self-evolution: new rule learned — {rule}");
             }
@@ -435,6 +467,28 @@ fn truncate(s: &str, max: usize) -> String {
         let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
         format!("{}…", &s[..end])
     }
+}
+
+/// 从文本中提取 due:YYYY-MM-DD 或裸 YYYY-MM-DD 格式的日期
+fn extract_due_date(s: &str) -> Option<String> {
+    let s = s.trim();
+    // 优先匹配 due:YYYY-MM-DD
+    if let Some(rest) = s.strip_prefix("due:").or_else(|| s.strip_prefix("due：")) {
+        let date = rest.trim();
+        if date.len() >= 10 && date[..10].chars().all(|c| c.is_ascii_digit() || c == '-') {
+            return Some(date[..10].to_string());
+        }
+    }
+    // 回退：匹配裸 YYYY-MM-DD
+    for word in s.split_whitespace() {
+        let w = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '-');
+        if w.len() == 10 && w.chars().filter(|&c| c == '-').count() == 2
+            && w[..4].chars().all(|c| c.is_ascii_digit())
+        {
+            return Some(w.to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -558,6 +612,7 @@ mod tests {
         assert_eq!(cmd, TaskSignalCommand::New {
             content: "Review budget".into(),
             evidence: "mentioned in standup".into(),
+            due_date: None,
         });
     }
 
@@ -565,12 +620,44 @@ mod tests {
     fn parse_new_without_evidence() {
         let cmd = parse_task_signal_command("NEW | Do something").unwrap().unwrap();
         match cmd {
-            TaskSignalCommand::New { content, evidence } => {
+            TaskSignalCommand::New { content, evidence, .. } => {
                 assert_eq!(content, "Do something");
                 assert!(evidence.is_empty());
             }
             _ => panic!("expected New"),
         }
+    }
+
+    #[test]
+    fn parse_new_with_due_date() {
+        let cmd = parse_task_signal_command("NEW | Finish report | user said today | due:2026-03-31")
+            .unwrap().unwrap();
+        assert_eq!(cmd, TaskSignalCommand::New {
+            content: "Finish report".into(),
+            evidence: "user said today".into(),
+            due_date: Some("2026-03-31".into()),
+        });
+    }
+
+    #[test]
+    fn parse_new_due_date_in_evidence() {
+        let cmd = parse_task_signal_command("NEW | Finish report | deadline 2026-04-01")
+            .unwrap().unwrap();
+        match cmd {
+            TaskSignalCommand::New { due_date, .. } => {
+                assert_eq!(due_date, Some("2026-04-01".into()));
+            }
+            _ => panic!("expected New"),
+        }
+    }
+
+    #[test]
+    fn extract_due_date_variants() {
+        assert_eq!(extract_due_date("due:2026-03-31"), Some("2026-03-31".into()));
+        assert_eq!(extract_due_date("due：2026-04-01"), Some("2026-04-01".into()));
+        assert_eq!(extract_due_date("deadline 2026-04-02"), Some("2026-04-02".into()));
+        assert_eq!(extract_due_date("no date here"), None);
+        assert_eq!(extract_due_date(""), None);
     }
 
     #[test]

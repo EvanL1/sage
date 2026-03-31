@@ -53,7 +53,7 @@ impl InputChannel for HooksChannel {
             }
         }
 
-        let mut seen = self.seen_sessions.lock().unwrap();
+        let mut seen = self.seen_sessions.lock().unwrap_or_else(|e| e.into_inner());
         for name in &current_active {
             if !seen.contains(name) {
                 events.push(Event {

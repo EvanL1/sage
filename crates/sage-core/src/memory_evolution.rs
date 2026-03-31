@@ -1,11 +1,21 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::agent::Agent;
 use crate::pipeline::parser;
 use crate::prompts;
 use crate::store::Store;
+
+// ─── Rate-limit Constants ───────────────────────────────────────────────────
+
+#[cfg(test)]
+const MERGE_MAX_COMMANDS: usize = 30;
+#[cfg(test)]
+const SYNTH_MAX_COMMANDS: usize = 20;
+#[cfg(test)]
+const CONDENSE_MAX_COMMANDS: usize = 15;
+const LINK_MAX_COMMANDS: usize = 20;
 
 // ─── Typed Evolution Commands ──────────────────────────────────────────────
 
@@ -288,10 +298,21 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
                         }
                     }
                     EvolutionCommand::Condense { id, content } => {
+                        // 验证内容合法性：非空且不超过 500 字节
+                        if content.trim().is_empty() || content.len() > 500 {
+                            warn!("Evolution: BLOCKED condense id={id} — 内容长度非法 ({}字节)", content.len());
+                            continue;
+                        }
                         let conf = memories.iter().find(|m| m.id == *id).map(|m| m.confidence).unwrap_or(0.7);
                         if store.update_memory(*id, content, conf).is_ok() { condensed += 1; }
                     }
                     EvolutionCommand::Reclassify { id, depth } => {
+                        // 验证深度值在白名单内（parser 已过滤 semantic|procedural，此处双重保险）
+                        let valid = ["episodic", "semantic", "procedural", "axiom"];
+                        if !valid.contains(&depth.as_str()) {
+                            warn!("Evolution: BLOCKED reclassify id={id} — 非法 depth: {depth}");
+                            continue;
+                        }
                         let _ = store.update_memory_depth(*id, depth);
                         reclassified += 1;
                     }
@@ -434,8 +455,14 @@ async fn merge_batch(
     let batch_ids: std::collections::HashSet<i64> = items.iter().map(|m| m.id).collect();
 
     let mut batch_merged = 0;
+    let mut cmd_count = 0;
     for line in resp.text.lines() {
+        if cmd_count >= MERGE_MAX_COMMANDS {
+            warn!("Evolution merge_batch: rate limit reached ({MERGE_MAX_COMMANDS}), skipping remaining");
+            break;
+        }
         if let Some(rest) = line.strip_prefix("MERGE [") {
+            cmd_count += 1;
             if let Some((ids_str, content)) = rest.split_once("] → ") {
                 let ids: Vec<i64> = ids_str
                     .split(',')
@@ -536,8 +563,14 @@ async fn synth_batch(
     };
 
     let mut synthesized_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut cmd_count = 0;
     for line in resp.text.lines() {
+        if cmd_count >= SYNTH_MAX_COMMANDS {
+            warn!("Evolution synth_batch: rate limit reached ({SYNTH_MAX_COMMANDS}), skipping remaining");
+            break;
+        }
         if let Some(rest) = line.strip_prefix("TRAIT [") {
+            cmd_count += 1;
             if let Some((ids_str, trait_content)) = rest.split_once("] → ") {
                 let ids: Vec<i64> = ids_str
                     .split(',')
@@ -621,8 +654,14 @@ async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
         }
 
         let batch_ids: std::collections::HashSet<i64> = items.iter().map(|m| m.id).collect();
+        let mut cmd_count = 0;
         for line in resp.text.lines() {
+            if cmd_count >= SYNTH_MAX_COMMANDS {
+                warn!("Evolution compile_to_semantic: rate limit reached ({SYNTH_MAX_COMMANDS}), skipping remaining");
+                break;
+            }
             if let Some(rest) = line.trim().strip_prefix("PATTERN [") {
+                cmd_count += 1;
                 if let Some((ids_str, pattern_content)) = rest.split_once("] → ") {
                     let source_ids: Vec<i64> = ids_str
                         .split(',')
@@ -709,8 +748,14 @@ async fn compile_to_axiom(agent: &Agent, store: &Store) -> Result<usize> {
 
     let proc_ids: std::collections::HashSet<i64> = procedural.iter().map(|m| m.id).collect();
     let mut total_axioms = 0;
+    let mut cmd_count = 0;
     for line in resp.text.lines() {
+        if cmd_count >= SYNTH_MAX_COMMANDS {
+            warn!("Evolution compile_to_axiom: rate limit reached ({SYNTH_MAX_COMMANDS}), skipping remaining");
+            break;
+        }
         if let Some(rest) = line.trim().strip_prefix("AXIOM [") {
+            cmd_count += 1;
             if let Some((ids_str, belief_content)) = rest.split_once("] → ") {
                 let source_ids: Vec<i64> = ids_str
                     .split(',')
@@ -791,8 +836,14 @@ async fn condense_batch(
     };
 
     let mut batch_condensed = 0;
+    let mut cmd_count = 0;
     for line in resp.text.lines() {
+        if cmd_count >= CONDENSE_MAX_COMMANDS {
+            warn!("Evolution condense_batch: rate limit reached ({CONDENSE_MAX_COMMANDS}), skipping remaining");
+            break;
+        }
         if let Some(rest) = line.strip_prefix("CONDENSE [") {
+            cmd_count += 1;
             if let Some((id_str, content)) = rest.split_once("] → ") {
                 if let Ok(id) = id_str.trim().parse::<i64>() {
                     let content = content.trim();
@@ -806,6 +857,7 @@ async fn condense_batch(
                 }
             }
         } else if let Some(rest) = line.strip_prefix("SPLIT [") {
+            cmd_count += 1;
             if let Some((id_str, parts)) = rest.split_once("] → ") {
                 if let Ok(id) = id_str.trim().parse::<i64>() {
                     if let Some((first, second)) = parts.split_once(" | ") {
@@ -906,10 +958,16 @@ async fn link_batch(agent: &Agent, store: &Store, items: &[&sage_types::Memory])
         "derived_from",
         "similar",
     ];
+    let mut cmd_count = 0;
     for line in resp.text.lines() {
+        if cmd_count >= LINK_MAX_COMMANDS {
+            warn!("Evolution link_batch: rate limit reached ({LINK_MAX_COMMANDS}), skipping remaining");
+            break;
+        }
         let line = line.trim();
         // 支持 "LINK [3,7] causes 0.8" 和 "LINK [3, 7] causes 0.8" 格式
         if let Some(rest) = line.strip_prefix("LINK [") {
+            cmd_count += 1;
             if let Some((ids_str, remainder)) = rest.split_once(']') {
                 let parts: Vec<&str> = remainder.trim().splitn(2, ' ').collect();
                 if parts.len() == 2 {

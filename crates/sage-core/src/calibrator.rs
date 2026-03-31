@@ -4,7 +4,7 @@
 //! 提炼自我约束规则存入 memories 表（category="calibration"）。
 
 use crate::agent::Agent;
-use crate::pipeline::{harness, PipelineContext};
+use crate::pipeline::{actions, harness, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 use anyhow::Result;
@@ -70,6 +70,13 @@ pub async fn reflect_patterns(agent: &Agent, store: &Store, _ctx: &mut PipelineC
                     .collect();
                 for rule in &rules {
                     let content = format!("[{report_type}] {}", rule.trim());
+                    // 约束层验证：校准规则内容合法性
+                    let action_line = format!("save_memory | calibration | {content} | confidence:0.75");
+                    let parts: Vec<&str> = action_line.splitn(6, '|').map(|s| s.trim()).collect();
+                    if let Some(reason) = actions::validate_action_params("save_memory", &parts) {
+                        warn!("Calibrator: BLOCKED invalid calibration rule: {reason}");
+                        continue;
+                    }
                     if let Err(e) = store.save_memory("calibration", &content, "calibrator", 0.75) {
                         warn!("保存校准规则失败: {e}");
                     }

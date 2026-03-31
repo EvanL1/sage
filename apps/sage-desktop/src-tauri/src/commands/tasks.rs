@@ -91,17 +91,17 @@ pub async fn create_task_natural(
         .unwrap_or("normal")
         .to_string();
 
-    let id = state
-        .store
-        .create_task(
-            &content,
-            "manual",
-            None,
-            Some(&priority),
-            due_date.as_deref(),
-            description.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
+    let due_part = due_date.as_deref().map(|d| format!(" | due:{d}")).unwrap_or_default();
+    let action_line = format!("create_task | {content} | priority:{priority}{due_part}");
+    let id = sage_core::pipeline::actions::execute_single_action(
+        &action_line, &["create_task"], &state.store, "tauri_tasks",
+    )
+    .ok_or("任务创建失败（ACTION 约束层拒绝）")?;
+
+    // 写入 description（ACTION 层不支持 description 字段，单独补充）
+    if let Some(ref desc) = description {
+        let _ = state.store.update_task(id, &content, Some(&priority), due_date.as_deref(), Some(desc));
+    }
 
     if let Some(snapshot) = load_snapshot(&state.store, id) {
         dispatch_plugin(
@@ -471,10 +471,11 @@ pub async fn generate_tasks(
         }
         let priority = t["priority"].as_str().unwrap_or("P1");
         let due = t["due_date"].as_str();
-        if let Ok(id) = state
-            .store
-            .create_task(content, "ai", None, Some(priority), due, None)
-        {
+        let due_part = due.map(|d| format!(" | due:{d}")).unwrap_or_default();
+        let action_line = format!("create_task | {content} | priority:{priority}{due_part}");
+        if let Some(id) = sage_core::pipeline::actions::execute_single_action(
+            &action_line, &["create_task"], &state.store, "tauri_tasks",
+        ) {
             if let Some(veri) = t.get("verification") {
                 if !veri.is_null() {
                     if let Ok(veri_str) = serde_json::to_string(veri) {

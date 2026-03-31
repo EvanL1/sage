@@ -95,10 +95,13 @@ pub async fn extract_memories(
             insight.get("content").and_then(|v| v.as_str()),
             insight.get("confidence").and_then(|v| v.as_f64()),
         ) {
-            let id = state
-                .store
-                .save_memory_with_visibility(category, content, "chat", confidence, "private")
-                .map_err(map_err)?;
+            let action_line = format!(
+                "save_memory_visible | {category} | {content} | confidence:{confidence:.1} | visibility:private"
+            );
+            let id = sage_core::pipeline::actions::execute_single_action(
+                &action_line, &["save_memory_visible"], &state.store, "tauri_memory",
+            )
+            .ok_or_else(|| format!("记忆保存失败（ACTION 约束层拒绝）: {category}"))?;
             // LLM 指定的 depth 覆盖 infer_depth
             if let Some(depth) = insight.get("depth").and_then(|v| v.as_str()) {
                 let valid = ["episodic", "semantic", "procedural", "axiom"];
@@ -321,17 +324,20 @@ pub async fn import_raw_memories(
                 obj.get("content").and_then(|v| v.as_str()),
             ) {
                 if !content.is_empty() {
-                    let id = state
-                        .store
-                        .save_memory_with_visibility(category, content, "ai_import", 0.7, "public")
-                        .map_err(map_err)?;
-                    if let Some(depth) = obj.get("depth").and_then(|v| v.as_str()) {
-                        let valid = ["episodic", "semantic", "procedural", "axiom"];
-                        if valid.contains(&depth) {
-                            let _ = state.store.update_memory_depth(id, depth);
+                    let action_line = format!(
+                        "save_memory_visible | {category} | {content} | confidence:0.7 | visibility:public"
+                    );
+                    if let Some(id) = sage_core::pipeline::actions::execute_single_action(
+                        &action_line, &["save_memory_visible"], &state.store, "tauri_memory",
+                    ) {
+                        if let Some(depth) = obj.get("depth").and_then(|v| v.as_str()) {
+                            let valid = ["episodic", "semantic", "procedural", "axiom"];
+                            if valid.contains(&depth) {
+                                let _ = state.store.update_memory_depth(id, depth);
+                            }
                         }
+                        count += 1;
                     }
-                    count += 1;
                 }
             }
         }

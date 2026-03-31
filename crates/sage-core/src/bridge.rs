@@ -236,27 +236,29 @@ async fn conversation_handler(
     let output = crate::pipeline::parser::extract_output_block(&result);
     let insights: Vec<Value> = crate::pipeline::parser::parse_json_fenced(output).unwrap_or_default();
 
-    let bridge_source = format!("browser:{source}");
+    // 每次对话提取最多 15 条，防止单次写入过多
+    const MAX_PER_CONVERSATION: usize = 15;
     let mut saved = 0usize;
-    for insight in &insights {
+    for insight in insights.iter().take(MAX_PER_CONVERSATION) {
         if let (Some(category), Some(content), Some(confidence)) = (
             insight.get("category").and_then(|v| v.as_str()),
             insight.get("content").and_then(|v| v.as_str()),
             insight.get("confidence").and_then(|v| v.as_f64()),
         ) {
+            // 去重检查保持在 ACTION 之前
             if store.has_similar_memory(content).unwrap_or(false) {
                 continue;
             }
-            if store
-                .save_memory_with_visibility(
-                    category,
-                    content,
-                    &bridge_source,
-                    confidence,
-                    "private",
-                )
-                .is_ok()
-            {
+            // 通过 ACTION 约束层写入，而非直接调用 store
+            let action_line = format!(
+                "save_memory_visible | {category} | {content} | confidence:{confidence:.1} | visibility:private"
+            );
+            if crate::pipeline::actions::execute_single_action(
+                &action_line,
+                &["save_memory_visible"],
+                &store,
+                "bridge_conversation",
+            ).is_some() {
                 saved += 1;
             }
         }

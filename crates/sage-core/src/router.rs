@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use sage_types::{Event, EventType};
 
 use crate::agent::Agent;
-use crate::pipeline::harness;
+use crate::pipeline::{actions, harness};
 use crate::applescript;
 use crate::coach;
 use crate::context_gatherer;
@@ -158,14 +158,12 @@ impl Router {
             if content.is_empty() {
                 continue;
             }
-            // [id=XX] 标记由 create_task 内部清理
+            // 通过 ACTION 约束系统写入（LLM 生成内容走统一管控层）
             let priority = t["priority"].as_str().unwrap_or("P1");
             let due = t["due_date"].as_str().or(Some(today.as_str()));
-            if self
-                .store
-                .create_task(content, "ai", None, Some(priority), due, None)
-                .is_ok()
-            {
+            let due_part = due.map(|d| format!(" | due:{d}")).unwrap_or_default();
+            let action_line = format!("create_task | {content} | priority:{priority}{due_part}");
+            if actions::execute_single_action(&action_line, &["create_task"], &self.store, "task_planner").is_some() {
                 count += 1;
             }
         }
@@ -299,15 +297,13 @@ impl Router {
                         .take(3)
                     {
                         let insight = line.trim().trim_start_matches('-').trim();
-                        if let Err(e) = self.store.save_memory_with_visibility(
-                            "report_insight",
-                            insight,
-                            type_str,
-                            0.7,
-                            "public",
-                        ) {
-                            error!("Failed to save report insight: {e}");
-                        }
+                        // 通过 ACTION 约束系统写入（LLM 提取内容走统一管控层）
+                        let action_line = format!(
+                            "save_memory_visible | report_insight | {insight} | confidence:0.7 | visibility:public"
+                        );
+                        actions::execute_single_action(
+                            &action_line, &["save_memory_visible"], &self.store, "report_scheduled",
+                        );
                     }
                     info!("Extracted insights from {} report", type_str);
                 }

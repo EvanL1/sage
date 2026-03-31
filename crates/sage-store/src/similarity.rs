@@ -29,7 +29,10 @@ pub fn text_similarity(a: &str, b: &str) -> f64 {
     // Bigram Jaccard — 用字符 bigram 模拟中文"词"，捕获关键词重叠
     let jaccard_score = bigram_jaccard(&a_chars, &b_chars);
 
-    lcs_score.max(jaccard_score)
+    // Keyword overlap — 对中文语义去重最有效（提取实体词，overlap coefficient）
+    let kw_score = keyword_overlap(a, b);
+
+    lcs_score.max(jaccard_score).max(kw_score)
 }
 
 /// 字符 bigram Jaccard 相似度
@@ -43,6 +46,45 @@ fn bigram_jaccard(a: &[char], b: &[char]) -> f64 {
     let intersection = a_set.intersection(&b_set).count();
     let union = a_set.union(&b_set).count();
     if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
+}
+
+/// 关键词重叠度：提取有意义的词元（英文单词、中文 2-gram 去停用词），计算 Jaccard
+/// 对"同一件事不同表述"的中文任务去重效果远好于字符级 bigram
+fn keyword_overlap(a: &str, b: &str) -> f64 {
+    use std::collections::HashSet;
+    fn extract_tokens(s: &str) -> HashSet<String> {
+        let mut tokens = HashSet::new();
+        let mut ascii_buf = String::new();
+        let chars: Vec<char> = s.chars().collect();
+        for &c in &chars {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                ascii_buf.push(c.to_ascii_lowercase());
+            } else {
+                if ascii_buf.len() >= 2 {
+                    tokens.insert(ascii_buf.clone());
+                }
+                ascii_buf.clear();
+            }
+        }
+        if ascii_buf.len() >= 2 { tokens.insert(ascii_buf); }
+        // 中文：连续汉字取 2-gram，跳过停用字
+        let stop = ['的', '了', '在', '是', '和', '与', '或', '将', '至', '为', '也',
+                     '有', '到', '从', '对', '被', '把', '这', '那', '个', '们', '中'];
+        let cjk: Vec<char> = chars.iter()
+            .filter(|c| c.is_alphabetic() && !c.is_ascii_alphabetic() && !stop.contains(c))
+            .copied().collect();
+        for w in cjk.windows(2) {
+            tokens.insert(format!("{}{}", w[0], w[1]));
+        }
+        tokens
+    }
+    let ta = extract_tokens(a);
+    let tb = extract_tokens(b);
+    if ta.is_empty() || tb.is_empty() { return 0.0; }
+    let inter = ta.intersection(&tb).count();
+    let smaller = ta.len().min(tb.len());
+    // 用较小集合做分母（overlap coefficient），对"短任务 vs 长任务"更敏感
+    inter as f64 / smaller as f64
 }
 
 /// 在列表中查找相似度 > threshold 的条目，返回其索引
@@ -125,5 +167,40 @@ mod tests {
         ];
         assert_eq!(find_similar(&items, "不发关怀类提醒", 0.5), Some(0));
         assert_eq!(find_similar(&items, "完全不相关的内容", 0.5), None);
+    }
+
+    #[test]
+    fn test_keyword_overlap_chinese() {
+        // 关键词提取（汇报/完成）能比纯字符 bigram 更好地捕获语义重叠
+        let a = "完成给Li的汇报PPT（约3页）";
+        let b = "将 PLUSE CEO 汇报材料准备截止提前至 04-01 汇报前完成";
+        let score = keyword_overlap(a, b);
+        // 共享 "汇报" + "完成"，overlap coefficient ≈ 0.28
+        assert!(score > 0.2, "keyword_overlap={score:.3}, expected > 0.2");
+    }
+
+    #[test]
+    fn test_keyword_overlap_english() {
+        let a = "finish the PPT report for Li";
+        let b = "prepare PLUSE CEO report materials before deadline";
+        let score = keyword_overlap(a, b);
+        // 共享 "report"，overlap coefficient ≈ 0.17
+        assert!(score > 0.1, "keyword_overlap={score:.3}, expected > 0.1");
+    }
+
+    #[test]
+    fn test_keyword_overlap_boosts_text_similarity() {
+        let a = "完成给Li的汇报PPT（约3页）";
+        let b = "将 PLUSE CEO 汇报材料准备截止提前至 04-01 汇报前完成";
+        let old_lcs = {
+            let ac: Vec<char> = a.chars().collect();
+            let bc: Vec<char> = b.chars().collect();
+            bigram_jaccard(&ac, &bc).max({
+                let lcs = lcs_len(&ac, &bc);
+                lcs as f64 / ac.len().max(bc.len()) as f64
+            })
+        };
+        let new_score = text_similarity(a, b);
+        assert!(new_score > old_lcs, "keyword_overlap should boost: {new_score:.3} vs {old_lcs:.3}");
     }
 }
