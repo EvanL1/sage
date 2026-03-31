@@ -1,13 +1,12 @@
 use anyhow::Result;
 use tracing::{info, warn};
 
-use crate::agent::Agent;
-use crate::pipeline::{actions, harness, PipelineContext};
+use crate::pipeline::{actions, invoker, ConstrainedInvoker, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 
 /// 从今日事件中提取人物认知，每天 Evening Review 后调用一次
-pub async fn extract_persons(agent: &Agent, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn extract_persons(invoker: &dyn ConstrainedInvoker, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
     // 优先读原始数据（保留人名），observer_notes 作为补充
     let emails = store.get_today_email_summaries(20).unwrap_or_default();
     let messages = store.get_today_message_summaries(30).unwrap_or_default();
@@ -51,8 +50,8 @@ pub async fn extract_persons(agent: &Agent, store: &Store, _ctx: &mut PipelineCo
         return Ok(false);
     }
 
-    agent.reset_counter();
-    let text = harness::invoke_text(agent, &prompt, None).await?;
+    invoker.reset_counter();
+    let text = invoker::invoke_text(invoker, &prompt, None).await?;
 
     if text.trim() == "NONE" {
         info!("PersonObserver: no person insights today");

@@ -3,8 +3,7 @@
 //! 当同类报告纠正数 >= 3 时，调用 LLM 分析共同模式，
 //! 提炼自我约束规则存入 memories 表（category="calibration"）。
 
-use crate::agent::Agent;
-use crate::pipeline::{actions, harness, PipelineContext};
+use crate::pipeline::{actions, invoker, ConstrainedInvoker, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 use anyhow::Result;
@@ -14,7 +13,7 @@ const PATTERN_THRESHOLD: usize = 3;
 
 /// 检查各类报告的纠正积累，达到阈值时触发 LLM 模式反思
 /// 返回 true 如果有新规则生成
-pub async fn reflect_patterns(agent: &Agent, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn reflect_patterns(invoker: &dyn ConstrainedInvoker, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
     let mut generated = false;
 
     for report_type in &["morning", "evening", "weekly"] {
@@ -56,7 +55,7 @@ pub async fn reflect_patterns(agent: &Agent, store: &Store, _ctx: &mut PipelineC
             &corrections_text.join("\n"),
         );
 
-        match harness::invoke_text(agent, &prompt, None).await {
+        match invoker::invoke_text(invoker, &prompt, None).await {
             Ok(text) => {
                 let rules: Vec<&str> = text
                     .lines()

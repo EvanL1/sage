@@ -1,8 +1,7 @@
 use anyhow::Result;
 use tracing::{info, warn};
 
-use crate::agent::Agent;
-use crate::pipeline::{harness, CoachOutput, PipelineContext};
+use crate::pipeline::{invoker, ConstrainedInvoker, CoachOutput, PipelineContext};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
@@ -13,7 +12,7 @@ use crate::store::Store;
 /// - 读取 `ctx.observer` 判断上游 Observer 是否在本次 tick 产出了 notes
 /// - 降级：ctx.observer 为 None → 从 SQLite 读（可能是旧数据）→ 仍无则用 raw observations
 /// - 写入 `ctx.coach` 供 Mirror/Questioner 下游消费
-pub async fn learn(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn learn(invoker: &dyn ConstrainedInvoker, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
     let observations = store.load_unprocessed_observations(50)?;
     if observations.is_empty() {
         info!("Coach: no unprocessed observations, skipping");
@@ -60,7 +59,7 @@ pub async fn learn(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> R
     let prompt = prompts::coach_user(&lang, &obs_text, &existing_text);
     let observe_guide = skills::load_section("sage-cognitive", "## Phase 1: OBSERVE");
     let system = format!("{observe_guide}\n\n{}", prompts::coach_system_suffix(&lang));
-    let content = harness::invoke_text(agent, &prompt, Some(&system)).await?;
+    let content = invoker::invoke_text(invoker, &prompt, Some(&system)).await?;
     // rate limit：每次运行最多保存 20 条洞察
     const MAX_INSIGHTS: usize = 20;
     let mut saved_insights = Vec::new();

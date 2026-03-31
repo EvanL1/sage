@@ -5,8 +5,11 @@
 
 pub mod actions;
 pub mod harness;
+pub mod invoker;
 pub mod parser;
 pub mod stages;
+
+pub use invoker::{ConstrainedInvoker, HarnessedAgent};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -109,7 +112,7 @@ pub enum StageOutput {
 #[async_trait]
 pub trait CognitiveStage: Send + Sync {
     fn name(&self) -> &str;
-    async fn run(&self, agent: Agent, store: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)>;
+    async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)>;
 }
 
 // ─── Pipeline Registry ──────────────────────────────────────────────────────
@@ -228,7 +231,7 @@ impl CognitivePipeline {
             // 1. 串行组：顺序传递 ctx
             for name in &serial {
                 let (result_ctx, elapsed, outcome, log_msg, status) =
-                    self.run_stage_owned(name, agent, store, ctx).await;
+                    self.run_stage_owned(name, agent, store, std::mem::take(&mut ctx)).await;
                 ctx = result_ctx;
                 if !log_msg.is_empty() { info!("{log_msg}"); }
                 ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
@@ -258,7 +261,7 @@ impl CognitivePipeline {
                         continue;
                     };
                     let stage = Arc::clone(stage_ref);
-                    let stage_agent = self.make_stage_agent(name, agent, store);
+                    let stage_invoker = self.make_stage_invoker(name, agent, store);
                     let store_clone = Arc::clone(store);
                     let name_clone = name.clone();
                     let default_timeout = if name == "evolution" { 600u64 } else { 120 };
@@ -270,7 +273,7 @@ impl CognitivePipeline {
                         let start = std::time::Instant::now();
                         let result = tokio::time::timeout(
                             timeout,
-                            stage.run(stage_agent, store_clone, PipelineContext::default()),
+                            stage.run(stage_invoker, store_clone, PipelineContext::default()),
                         ).await;
                         let elapsed = start.elapsed().as_millis() as u64;
                         (name_clone, result, elapsed)
@@ -334,7 +337,7 @@ impl CognitivePipeline {
         let Some(stage) = self.stages.get(name) else {
             return (ctx, 0, "error", String::new(), StageStatus::Error("not found".into()));
         };
-        let stage_agent = self.make_stage_agent(name, agent, store);
+        let stage_invoker = self.make_stage_invoker(name, agent, store);
         let start = std::time::Instant::now();
         let default_timeout = if name == "evolution" { 600u64 } else { 120 };
         let timeout = std::time::Duration::from_secs(
@@ -342,7 +345,7 @@ impl CognitivePipeline {
         );
         let stage_result = tokio::time::timeout(
             timeout,
-            stage.run(stage_agent, Arc::clone(store), ctx),
+            stage.run(stage_invoker, Arc::clone(store), ctx),
         ).await;
         let elapsed = start.elapsed().as_millis() as u64;
 
@@ -383,7 +386,7 @@ impl CognitivePipeline {
         }
     }
 
-    fn make_stage_agent(&self, name: &str, base: &Agent, store: &Arc<Store>) -> Agent {
+    fn make_stage_invoker(&self, name: &str, base: &Agent, store: &Arc<Store>) -> Box<dyn ConstrainedInvoker> {
         let mut agent = base.clone();
         if let Some(cfg) = self.stage_configs.get(name) {
             if let Some(mi) = cfg.max_iterations { agent.set_max_iterations(mi); }
@@ -395,7 +398,7 @@ impl CognitivePipeline {
                 }
             }
         }
-        agent
+        Box::new(HarnessedAgent::new(agent, Arc::clone(store), format!("stage:{name}")))
     }
 }
 
@@ -487,7 +490,7 @@ mod tests {
     #[async_trait]
     impl CognitiveStage for MockStage {
         fn name(&self) -> &str { &self.label }
-        async fn run(&self, _: Agent, _: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+        async fn run(&self, _: Box<dyn ConstrainedInvoker>, _: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
             self.log.lock().await.push(self.label.clone());
             Ok((StageOutput::Bool(true), ctx))
         }

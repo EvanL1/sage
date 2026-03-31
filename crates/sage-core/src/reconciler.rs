@@ -1,8 +1,7 @@
 use anyhow::Result;
 use tracing::{info, warn};
 
-use crate::agent::Agent;
-use crate::pipeline::{actions, harness};
+use crate::pipeline::{actions, invoker, ConstrainedInvoker};
 use crate::prompts;
 use crate::store::Store;
 
@@ -10,8 +9,8 @@ use crate::store::Store;
 const MAX_REVISIONS: usize = 10;
 
 /// 认知调和（增量）：新记忆写入后，检查是否与现有 decisions/strategy_insights 矛盾。
-pub async fn reconcile(agent: &Agent, store: &Store, new_content: &str) -> Result<usize> {
-    agent.reset_counter();
+pub async fn reconcile(invoker: &dyn ConstrainedInvoker, store: &Store, new_content: &str) -> Result<usize> {
+    invoker.reset_counter();
 
     let all_memories = store.load_active_memories()?;
     let decisions: Vec<_> = all_memories
@@ -40,14 +39,14 @@ pub async fn reconcile(agent: &Agent, store: &Store, new_content: &str) -> Resul
     let lang = store.prompt_lang();
     let prompt = prompts::reconciler_incremental(&lang, new_content, &items_text);
     let system = prompts::reconciler_system(&lang);
-    let text = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    let text = invoker::invoke_text(invoker, &prompt, Some(system)).await?;
     apply_revisions(store, &text, &existing)
 }
 
 /// 认知调和（全量扫描）：检查所有 decisions/strategy_insights 之间的内部矛盾、
 /// 基于错误前提的推导、已过时的结论。由 Settings UI 手动触发。
-pub async fn reconcile_full(agent: &Agent, store: &Store) -> Result<usize> {
-    agent.reset_counter();
+pub async fn reconcile_full(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<usize> {
+    invoker.reset_counter();
 
     let all_memories = store.load_active_memories()?;
 
@@ -77,7 +76,7 @@ pub async fn reconcile_full(agent: &Agent, store: &Store) -> Result<usize> {
     let lang = store.prompt_lang();
     let prompt = prompts::reconciler_full(&lang, &items_text);
     let system = prompts::reconciler_system(&lang);
-    let text = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    let text = invoker::invoke_text(invoker, &prompt, Some(system)).await?;
     apply_revisions(store, &text, &all)
 }
 

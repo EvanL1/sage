@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use sage_types::{Event, EventType};
 
 use crate::agent::Agent;
-use crate::pipeline::{actions, harness};
+use crate::pipeline::{actions, harness, HarnessedAgent};
 use crate::applescript;
 use crate::coach;
 use crate::context_gatherer;
@@ -67,53 +67,63 @@ impl Router {
     pub fn store(&self) -> &Store {
         &self.store
     }
+
+    /// 创建临时 HarnessedAgent，用于需要 ConstrainedInvoker 的调用
+    fn make_invoker(&self, caller: &str) -> HarnessedAgent {
+        HarnessedAgent::new(self.agent.clone(), Arc::clone(&self.store), caller.to_string())
+    }
     pub fn store_arc(&self) -> Arc<Store> {
         Arc::clone(&self.store)
     }
 
+    /// 创建约束型调用器（从 Router 的 agent + store）
+    fn invoker(&self, caller: &str) -> HarnessedAgent {
+        HarnessedAgent::new(self.agent.clone(), Arc::clone(&self.store), caller.to_string())
+    }
+
     /// 触发观察者：raw observations → 语义标注 → observer_note
     pub async fn run_observer(&self) -> Result<bool> {
-        observer::annotate(&self.agent, &self.store, &mut Default::default()).await
+        observer::annotate(&self.invoker("router:observer"), &self.store, &mut Default::default()).await
     }
 
     /// 触发学习教练：读 observer_notes（降级读 raw obs）→ 发现模式 → 保存 coach_insight → 归档
     pub async fn run_coach(&self) -> Result<bool> {
-        coach::learn(&self.agent, &self.store, &mut Default::default()).await
+        coach::learn(&self.invoker("router:coach"), &self.store, &mut Default::default()).await
     }
 
     /// 触发镜子：从 coach_insight 记忆反映一个行为模式给用户
     pub async fn run_mirror(&self) -> Result<bool> {
-        mirror::reflect(&self.agent, &self.store, &mut Default::default()).await
+        mirror::reflect(&self.invoker("router:mirror"), &self.store, &mut Default::default()).await
     }
 
     /// 触发提问者：生成一个苏格拉底式深度问题
     pub async fn run_questioner(&self) -> Result<bool> {
-        questioner::ask(&self.agent, &self.store, &mut Default::default()).await
+        questioner::ask(&self.invoker("router:questioner"), &self.store, &mut Default::default()).await
     }
 
     /// 触发战略家：站在月球看地球，超然的宏观结构分析（周频）
     pub async fn run_strategist(&self) -> Result<bool> {
-        strategist::strategize(&self.agent, &self.store, &mut Default::default()).await
+        strategist::strategize(&self.invoker("router:strategist"), &self.store, &mut Default::default()).await
     }
 
     /// 触发记忆进化：合并重复 → 精简冗长 → 衰减过期 → 提升高频
     pub async fn run_memory_evolution(&self) -> Result<memory_evolution::EvolutionResult> {
-        memory_evolution::evolve(&self.agent, &self.store).await
+        memory_evolution::evolve(&self.invoker("router:evolution"), &self.store).await
     }
 
     /// 触发 Mirror 周报：汇总反思信号，生成反映性报告
     pub async fn run_mirror_weekly(&self) -> Result<bool> {
-        mirror::mirror_weekly(&self.agent, &self.store, &mut Default::default()).await
+        mirror::mirror_weekly(&self.invoker("router:mirror_weekly"), &self.store, &mut Default::default()).await
     }
 
     /// 人物认知提取：从今日事件中识别人物特征
     pub async fn run_person_observer(&self) -> Result<bool> {
-        crate::person_observer::extract_persons(&self.agent, &self.store, &mut Default::default()).await
+        crate::person_observer::extract_persons(&self.invoker("router:person_observer"), &self.store, &mut Default::default()).await
     }
 
     /// 触发校准模式反思：分析纠正历史，提炼自我约束规则
     pub async fn run_calibrator(&self) -> Result<bool> {
-        crate::calibrator::reflect_patterns(&self.agent, &self.store, &mut Default::default()).await
+        crate::calibrator::reflect_patterns(&self.invoker("router:calibrator"), &self.store, &mut Default::default()).await
     }
 
     /// 晨间任务规划：从 morning brief 提取今日待办
@@ -330,7 +340,7 @@ impl Router {
         } else {
             // 认知调和：检查新决策是否推翻了旧推理
             if let Err(e) =
-                crate::reconciler::reconcile(&self.agent, &self.store, &decision_content).await
+                crate::reconciler::reconcile(&self.make_invoker("reconciler"), &self.store, &decision_content).await
             {
                 warn!("Reconciler failed (non-fatal): {e}");
             }
@@ -375,7 +385,7 @@ impl Router {
             error!("Failed to append decision: {e}");
         } else {
             if let Err(e) =
-                crate::reconciler::reconcile(&self.agent, &self.store, &decision_content).await
+                crate::reconciler::reconcile(&self.make_invoker("reconciler"), &self.store, &decision_content).await
             {
                 warn!("Reconciler failed (non-fatal): {e}");
             }

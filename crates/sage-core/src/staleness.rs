@@ -8,9 +8,7 @@
 use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
-use crate::pipeline::harness;
-
-use crate::agent::Agent;
+use crate::pipeline::{invoker, ConstrainedInvoker};
 use crate::store::Store;
 
 /// Result of a staleness check pass
@@ -23,7 +21,7 @@ pub struct StalenessResult {
 }
 
 /// Run staleness detection on pending messages
-pub async fn check_staleness(agent: &Agent, store: &Arc<Store>) -> Result<StalenessResult> {
+pub async fn check_staleness(invoker: &dyn ConstrainedInvoker, store: &Arc<Store>) -> Result<StalenessResult> {
     // 获取超过 4 小时的 pending 消息
     let pending = store.get_pending_messages_older_than(4)?;
     if pending.is_empty() {
@@ -69,7 +67,7 @@ pub async fn check_staleness(agent: &Agent, store: &Arc<Store>) -> Result<Stalen
     // 批量 LLM 分类模糊消息（每次最多 10 条）
     if !ambiguous.is_empty() {
         let batch: Vec<_> = ambiguous.into_iter().take(10).collect();
-        let classifications = classify_messages(agent, store, &batch).await?;
+        let classifications = classify_messages(invoker, store, &batch).await?;
 
         for (msg, classification) in batch.iter().zip(classifications.iter()) {
             match classification.as_str() {
@@ -136,7 +134,7 @@ fn estimate_ttl(msg: &sage_types::Message) -> f64 {
 
 /// 使用 LLM 对模糊消息进行分类
 async fn classify_messages(
-    agent: &Agent,
+    invoker: &dyn ConstrainedInvoker,
     store: &Arc<Store>,
     messages: &[&sage_types::Message],
 ) -> Result<Vec<String>> {
@@ -181,7 +179,7 @@ async fn classify_messages(
         format!("对以下每条消息进行分类。考虑：这是否仍需要回复或处理？还是已经过了足够长的时间，不再相关？\n\n{msg_text}")
     };
 
-    let output_block = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    let output_block = invoker::invoke_text(invoker, &prompt, Some(system)).await?;
     let mut result: Vec<String> = output_block
         .lines()
         .map(|l| l.trim().to_lowercase())

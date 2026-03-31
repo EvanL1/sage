@@ -6,10 +6,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use crate::agent::Agent;
 use crate::store::Store;
 
-use super::{actions, harness, CognitiveStage, PipelineContext, StageOutput};
+use super::{actions, invoker, ConstrainedInvoker, CognitiveStage, PipelineContext, StageOutput};
 
 /// 每次 evolve_pipeline_params 最多执行元命令数
 const MAX_META_COMMANDS: usize = 5;
@@ -24,18 +23,18 @@ pub struct MetaStage;
 impl CognitiveStage for MetaStage {
     fn name(&self) -> &str { "meta" }
 
-    async fn run(&self, agent: Agent, store: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+    async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
         let mut total = 0;
-        total += evolve_pipeline_params(&agent, &store).await.unwrap_or(0);
-        total += evolve_prompts(&agent, &store).await.unwrap_or(0);
-        total += evolve_ui(&agent, &store).await.unwrap_or(0);
+        total += evolve_pipeline_params(&*invoker, &store).await.unwrap_or(0);
+        total += evolve_prompts(&*invoker, &store).await.unwrap_or(0);
+        total += evolve_ui(&*invoker, &store).await.unwrap_or(0);
         Ok((StageOutput::Bool(total > 0), ctx))
     }
 }
 
 // ─── Phase 1: 参数/结构进化 ──────────────────────────────────────────────────
 
-async fn evolve_pipeline_params(agent: &Agent, store: &Arc<Store>) -> Result<usize> {
+async fn evolve_pipeline_params(invoker: &dyn ConstrainedInvoker, store: &Arc<Store>) -> Result<usize> {
     let summary = store.get_pipeline_summary(14)?;
     if summary.is_empty() { return Ok(0); }
 
@@ -62,7 +61,7 @@ async fn evolve_pipeline_params(agent: &Agent, store: &Arc<Store>) -> Result<usi
         lines.join("\n")
     );
 
-    let text = harness::invoke_text(agent, &prompt, None).await?;
+    let text = invoker::invoke_text(invoker, &prompt, None).await?;
     let mut changes = 0;
     for line in text.lines() {
         // rate limit：最多执行 MAX_META_COMMANDS 条元命令
@@ -142,14 +141,14 @@ fn is_valid_stage_name(name: &str) -> bool {
 
 // ─── Phase 2: Prompt 自我编辑 ───────────────────────────────────────────────
 
-async fn evolve_prompts(agent: &Agent, store: &Arc<Store>) -> Result<usize> {
+async fn evolve_prompts(invoker: &dyn ConstrainedInvoker, store: &Arc<Store>) -> Result<usize> {
     let task_rules = store.get_memories_by_category("calibration_task")?;
     let report_rules = store.get_memories_by_category("calibration")?;
     let mut changes = 0;
 
     if task_rules.len() >= 3 {
         changes += rewrite_prompt(
-            agent, store, "task_intelligence_user",
+            invoker, store, "task_intelligence_user",
             &task_rules.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
         ).await.unwrap_or(0);
     }
@@ -166,13 +165,13 @@ async fn evolve_prompts(agent: &Agent, store: &Arc<Store>) -> Result<usize> {
                 "weekly" => "mirror_weekly_user",
                 _ => continue,
             };
-            changes += rewrite_prompt(agent, store, prompt_name, &matching).await.unwrap_or(0);
+            changes += rewrite_prompt(invoker, store, prompt_name, &matching).await.unwrap_or(0);
         }
     }
     Ok(changes)
 }
 
-async fn rewrite_prompt(agent: &Agent, store: &Store, name: &str, rules: &[&str]) -> Result<usize> {
+async fn rewrite_prompt(invoker: &dyn ConstrainedInvoker, store: &Store, name: &str, rules: &[&str]) -> Result<usize> {
     let lang = store.prompt_lang();
     let current = crate::prompts::load_prompt(name, &lang);
     if current.is_empty() { return Ok(0); }
@@ -191,7 +190,7 @@ async fn rewrite_prompt(agent: &Agent, store: &Store, name: &str, rules: &[&str]
          - Output ONLY the improved prompt, nothing else"
     );
 
-    let new_prompt = harness::invoke_raw(agent, &prompt, None).await?;
+    let new_prompt = invoker::invoke_raw(invoker, &prompt, None).await?;
     if new_prompt.is_empty() || new_prompt.len() < current.len() / 2  {
         warn!("Meta: prompt rewrite for '{name}' rejected (too short)");
         return Ok(0);
@@ -226,7 +225,7 @@ async fn rewrite_prompt(agent: &Agent, store: &Store, name: &str, rules: &[&str]
 
 // ─── Phase 3: UI 页面进化 ───────────────────────────────────────────────────
 
-async fn evolve_ui(agent: &Agent, store: &Arc<Store>) -> Result<usize> {
+async fn evolve_ui(invoker: &dyn ConstrainedInvoker, store: &Arc<Store>) -> Result<usize> {
     let existing = store.list_custom_pages(100)?;
     let auto_pages: Vec<_> = existing.iter().filter(|p| p.1.starts_with("[auto]")).collect();
     if let Some(latest) = auto_pages.last() {
@@ -265,7 +264,7 @@ async fn evolve_ui(agent: &Agent, store: &Arc<Store>) -> Result<usize> {
         return Ok(0);
     }
 
-    let md = harness::invoke_raw(agent, &prompt, None).await?;
+    let md = invoker::invoke_raw(invoker, &prompt, None).await?;
     if md.is_empty() || !md.starts_with('#') { return Ok(0); }
 
     // 验证内容长度：非空且不超过 10000 字节

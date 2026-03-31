@@ -1,15 +1,14 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::agent::Agent;
-use crate::pipeline::{harness, PipelineContext, QuestionerOutput};
+use crate::pipeline::{invoker, ConstrainedInvoker, PipelineContext, QuestionerOutput};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
 
 /// 发问者：基于行为模式和近期决策，生成苏格拉底式深度问题
 /// 支持问题追踪：新问题存入 open_questions，到期问题重新浮现
-pub async fn ask(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn ask(invoker: &dyn ConstrainedInvoker, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
     // 1. 先检查是否有到期需要重新浮现的问题
     let due = store.get_due_questions(1)?;
     if let Some((q_id, question_text, ask_count)) = due.into_iter().next() {
@@ -21,7 +20,7 @@ pub async fn ask(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Res
         // 重新浮现：以变体形式再次提出
         let lang = store.prompt_lang();
         let prompt = prompts::questioner_resurface(&lang, ask_count.max(0) as u32, &question_text);
-        let question = harness::invoke_text(agent, &prompt, None).await?;
+        let question = invoker::invoke_text(invoker, &prompt, None).await?;
         store.record_suggestion("questioner", "daily-question", &question)?;
         store.bump_question_ask(q_id)?;
         info!("Questioner: resurfaced question #{q_id} (ask #{ask_count})");
@@ -65,7 +64,7 @@ pub async fn ask(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Res
         "{question_guide}\n\n{}",
         prompts::questioner_system_suffix(&lang)
     );
-    let question = harness::invoke_text(agent, &prompt, Some(&system)).await?;
+    let question = invoker::invoke_text(invoker, &prompt, Some(&system)).await?;
 
     // 存入 suggestions 并同时追踪到 open_questions
     let suggestion_id = store.record_suggestion("questioner", "daily-question", &question)?;

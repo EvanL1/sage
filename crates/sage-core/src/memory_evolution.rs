@@ -2,8 +2,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use tracing::{info, warn};
 
-use crate::agent::Agent;
-use crate::pipeline::parser;
+use crate::pipeline::{parser, ConstrainedInvoker};
 use crate::prompts;
 use crate::store::Store;
 
@@ -144,7 +143,7 @@ pub struct EvolutionResult {
 /// 6. condense_verbose（精简冗长记忆）
 /// 7. link_memories（记忆图谱连接）
 /// 8. promote_validated（提升高频验证记忆 confidence）
-pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
+pub async fn evolve(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<EvolutionResult> {
     // File-based debug log so we can see what happens even without stderr
     let log_path = std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".sage/logs/evolution.log"));
     let elog = |msg: &str| {
@@ -228,7 +227,7 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
 
     for (category, batch_memories) in batches {
         let sem = Arc::clone(&semaphore);
-        let batch_agent = agent.clone();
+        let batch_invoker = invoker.clone_boxed();
         let batch_lang = lang.clone();
         let batch_orient = orient_summary.clone();
         let log_path_clone = log_path.clone();
@@ -250,11 +249,11 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
             let prompt = prompts::evolution_unified(&batch_lang, batch_memories.len(), &content_list.join("\n"), &batch_orient);
             batch_elog(&format!("[{category}] {} memories — started", batch_memories.len()));
 
-            batch_agent.reset_counter();
-            match batch_agent.invoke(&prompt, None).await {
-                Ok(resp) => {
+            batch_invoker.reset_counter();
+            match batch_invoker.invoke(&prompt, None).await {
+                Ok(resp_text) => {
                     let batch_ids: HashSet<i64> = batch_memories.iter().map(|m| m.id).collect();
-                    let parsed = parse_evolution_response(&resp.text, &batch_ids);
+                    let parsed = parse_evolution_response(&resp_text, &batch_ids);
                     batch_elog(&format!("[{category}] done: {} cmds, {} rejected", parsed.commands.len(), parsed.rejected.len()));
                     (category, parsed.commands, parsed.rejected.len())
                 }
@@ -329,7 +328,7 @@ pub async fn evolve(agent: &Agent, store: &Store) -> Result<EvolutionResult> {
     if episodic_archived > 0 { elog(&format!("episodic cleanup: archived {episodic_archived} expired episodic memories")); }
 
     // ── Phase 2: Non-LLM operations (fast, no API calls) ──
-    let linked = match link_memories(agent, store).await {
+    let linked = match link_memories(invoker, store).await {
         Ok(n) => { elog(&format!("link_memories: {n}")); n }
         Err(e) => { elog(&format!("link_memories FAILED: {e}")); 0 }
     };
@@ -391,7 +390,7 @@ const MERGE_BATCH_SIZE: usize = 40;
 /// 按 category 分组（不按 depth），让跨层级的重复也能被发现
 /// 批次内按内容字母序排列，使相似内容聚集在同一批次
 #[cfg(test)]
-async fn merge_similar(agent: &Agent, store: &Store) -> Result<usize> {
+async fn merge_similar(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<usize> {
     let memories = store.load_active_memories()?;
     // 按 category 分组（不按 depth）——跨层级重复也能被发现
     let mut by_category: std::collections::HashMap<String, Vec<_>> =
@@ -413,7 +412,7 @@ async fn merge_similar(agent: &Agent, store: &Store) -> Result<usize> {
             if chunk.len() < 2 {
                 continue;
             }
-            let merged = merge_batch(agent, store, &category, chunk).await?;
+            let merged = merge_batch(invoker, store, &category, chunk).await?;
             total_merged += merged;
         }
     }
@@ -424,13 +423,13 @@ async fn merge_similar(agent: &Agent, store: &Store) -> Result<usize> {
 /// 处理单批次合并
 #[cfg(test)]
 async fn merge_batch(
-    agent: &Agent,
+    invoker: &dyn ConstrainedInvoker,
     store: &Store,
     category: &str,
     items: &[&sage_types::Memory],
 ) -> Result<usize> {
     // 每批次独立：重置 Agent 计数器，避免累积触发 max_iterations 上限
-    agent.reset_counter();
+    invoker.reset_counter();
 
     let content_list: Vec<String> = items
         .iter()
@@ -439,7 +438,7 @@ async fn merge_batch(
     let lang = store.prompt_lang();
     let prompt = prompts::evolution_merge(&lang, category, items.len(), &content_list.join("\n"));
 
-    let resp = match agent.invoke(&prompt, None).await {
+    let resp = match invoker.invoke(&prompt, None).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Memory merge LLM call failed for {category}: {e}");
@@ -447,7 +446,7 @@ async fn merge_batch(
         }
     };
 
-    if resp.text.trim() == "NONE" {
+    if resp.trim() == "NONE" {
         return Ok(0);
     }
 
@@ -456,7 +455,7 @@ async fn merge_batch(
 
     let mut batch_merged = 0;
     let mut cmd_count = 0;
-    for line in resp.text.lines() {
+    for line in resp.lines() {
         if cmd_count >= MERGE_MAX_COMMANDS {
             warn!("Evolution merge_batch: rate limit reached ({MERGE_MAX_COMMANDS}), skipping remaining");
             break;
@@ -506,7 +505,7 @@ const SYNTH_BATCH_SIZE: usize = 20;
 /// 判断模式提炼：将 behavior/thinking/emotion 观察编译为 personality 判断模式
 /// 从 declarative（「做了什么」）→ procedural（「遇到X时怎么判断」）
 #[cfg(test)]
-async fn synthesize_traits(agent: &Agent, store: &Store) -> Result<usize> {
+async fn synthesize_traits(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<usize> {
     let memories = store.load_active_memories()?;
     let trait_categories = ["behavior", "thinking", "emotion"];
 
@@ -527,7 +526,7 @@ async fn synthesize_traits(agent: &Agent, store: &Store) -> Result<usize> {
                 continue; // 批次太小不值得提炼
             }
 
-            let synthesized = synth_batch(agent, store, category, chunk).await?;
+            let synthesized = synth_batch(invoker, store, category, chunk).await?;
             total_synthesized += synthesized;
         }
     }
@@ -538,13 +537,13 @@ async fn synthesize_traits(agent: &Agent, store: &Store) -> Result<usize> {
 /// 处理单批次特质提炼
 #[cfg(test)]
 async fn synth_batch(
-    agent: &Agent,
+    invoker: &dyn ConstrainedInvoker,
     store: &Store,
     category: &str,
     items: &[&sage_types::Memory],
 ) -> Result<usize> {
     // 每批次独立：重置 Agent 计数器，避免累积触发 max_iterations 上限
-    agent.reset_counter();
+    invoker.reset_counter();
 
     let content_list: Vec<String> = items
         .iter()
@@ -554,7 +553,7 @@ async fn synth_batch(
     let lang = store.prompt_lang();
     let prompt = prompts::evolution_synth(&lang, items.len(), category, &content_list.join("\n"));
 
-    let resp = match agent.invoke(&prompt, None).await {
+    let resp = match invoker.invoke(&prompt, None).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Trait synthesis LLM call failed for {category}: {e}");
@@ -564,7 +563,7 @@ async fn synth_batch(
 
     let mut synthesized_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut cmd_count = 0;
-    for line in resp.text.lines() {
+    for line in resp.lines() {
         if cmd_count >= SYNTH_MAX_COMMANDS {
             warn!("Evolution synth_batch: rate limit reached ({SYNTH_MAX_COMMANDS}), skipping remaining");
             break;
@@ -609,7 +608,7 @@ async fn synth_batch(
 
 /// 编译 episodic → semantic：同 category 下 ≥5 条 episodic 记忆归纳为行为模式
 #[cfg(test)]
-async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
+async fn compile_to_semantic(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<usize> {
     let episodic = store.load_memories_by_depth("episodic")?;
     if episodic.is_empty() {
         return Ok(0);
@@ -627,7 +626,7 @@ async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
         if items.len() < 5 {
             continue; // 不足 5 条不触发
         }
-        agent.reset_counter();
+        invoker.reset_counter();
 
         let content_list: Vec<String> = items
             .iter()
@@ -641,7 +640,7 @@ async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
             &content_list.join("\n"),
         );
 
-        let resp = match agent.invoke(&prompt, None).await {
+        let resp = match invoker.invoke(&prompt, None).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("compile_to_semantic LLM call failed for {category}: {e}");
@@ -649,13 +648,13 @@ async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
             }
         };
 
-        if resp.text.trim() == "NONE" {
+        if resp.trim() == "NONE" {
             continue;
         }
 
         let batch_ids: std::collections::HashSet<i64> = items.iter().map(|m| m.id).collect();
         let mut cmd_count = 0;
-        for line in resp.text.lines() {
+        for line in resp.lines() {
             if cmd_count >= SYNTH_MAX_COMMANDS {
                 warn!("Evolution compile_to_semantic: rate limit reached ({SYNTH_MAX_COMMANDS}), skipping remaining");
                 break;
@@ -699,7 +698,7 @@ async fn compile_to_semantic(agent: &Agent, store: &Store) -> Result<usize> {
 /// 不依赖 Chat 召回次数（validation_count），而是检查近期 episodic 事件是否支持该判断模式。
 /// 对每条 procedural，让 LLM 判断有多少 episodic 证据支持它。≥3 条跨源证据 = 候选。
 #[cfg(test)]
-async fn compile_to_axiom(agent: &Agent, store: &Store) -> Result<usize> {
+async fn compile_to_axiom(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<usize> {
     let procedural = store.load_memories_by_depth("procedural")?;
     if procedural.is_empty() {
         return Ok(0);
@@ -717,7 +716,7 @@ async fn compile_to_axiom(agent: &Agent, store: &Store) -> Result<usize> {
         .map(|m| format!("[{}|{}] {}", m.source, m.category, m.content))
         .collect();
 
-    agent.reset_counter();
+    invoker.reset_counter();
 
     // 让 LLM 判断哪些 procedural 被 episodic 证据充分支持
     let proc_text: Vec<String> = procedural
@@ -734,7 +733,7 @@ async fn compile_to_axiom(agent: &Agent, store: &Store) -> Result<usize> {
         &evidence_text.join("\n"),
     );
 
-    let resp = match agent.invoke(&prompt, None).await {
+    let resp = match invoker.invoke(&prompt, None).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("compile_to_axiom LLM call failed: {e}");
@@ -742,14 +741,14 @@ async fn compile_to_axiom(agent: &Agent, store: &Store) -> Result<usize> {
         }
     };
 
-    if resp.text.trim() == "NONE" {
+    if resp.trim() == "NONE" {
         return Ok(0);
     }
 
     let proc_ids: std::collections::HashSet<i64> = procedural.iter().map(|m| m.id).collect();
     let mut total_axioms = 0;
     let mut cmd_count = 0;
-    for line in resp.text.lines() {
+    for line in resp.lines() {
         if cmd_count >= SYNTH_MAX_COMMANDS {
             warn!("Evolution compile_to_axiom: rate limit reached ({SYNTH_MAX_COMMANDS}), skipping remaining");
             break;
@@ -790,7 +789,7 @@ const CONDENSE_CHAR_THRESHOLD: usize = 80;
 const CONDENSE_BATCH_SIZE: usize = 15;
 
 #[cfg(test)]
-async fn condense_verbose(agent: &Agent, store: &Store) -> Result<usize> {
+async fn condense_verbose(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<usize> {
     let memories = store.load_active_memories()?;
     let verbose: Vec<_> = memories
         .iter()
@@ -804,7 +803,7 @@ async fn condense_verbose(agent: &Agent, store: &Store) -> Result<usize> {
 
     let mut total_condensed = 0;
     for chunk in verbose.chunks(CONDENSE_BATCH_SIZE) {
-        let condensed = condense_batch(agent, store, chunk).await?;
+        let condensed = condense_batch(invoker, store, chunk).await?;
         total_condensed += condensed;
     }
     Ok(total_condensed)
@@ -813,11 +812,11 @@ async fn condense_verbose(agent: &Agent, store: &Store) -> Result<usize> {
 /// 处理单批次精简
 #[cfg(test)]
 async fn condense_batch(
-    agent: &Agent,
+    invoker: &dyn ConstrainedInvoker,
     store: &Store,
     items: &[&sage_types::Memory],
 ) -> Result<usize> {
-    agent.reset_counter();
+    invoker.reset_counter();
 
     let content_list: Vec<String> = items
         .iter()
@@ -827,7 +826,7 @@ async fn condense_batch(
     let lang = store.prompt_lang();
     let prompt = prompts::evolution_condense(&lang, items.len(), &content_list.join("\n"));
 
-    let resp = match agent.invoke(&prompt, None).await {
+    let resp = match invoker.invoke(&prompt, None).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Condense LLM call failed: {e}");
@@ -837,7 +836,7 @@ async fn condense_batch(
 
     let mut batch_condensed = 0;
     let mut cmd_count = 0;
-    for line in resp.text.lines() {
+    for line in resp.lines() {
         if cmd_count >= CONDENSE_MAX_COMMANDS {
             warn!("Evolution condense_batch: rate limit reached ({CONDENSE_MAX_COMMANDS}), skipping remaining");
             break;
@@ -894,7 +893,7 @@ async fn condense_batch(
 /// 记忆图谱连接：LLM 识别跨类别的语义关系（公开接口，可独立调用）
 const LINK_BATCH_SIZE: usize = 30;
 
-pub async fn link_memories(agent: &Agent, store: &Store) -> Result<usize> {
+pub async fn link_memories(invoker: &dyn ConstrainedInvoker, store: &Store) -> Result<usize> {
     let memories = store.load_active_memories()?;
     if memories.len() < 3 {
         return Ok(0);
@@ -904,7 +903,7 @@ pub async fn link_memories(agent: &Agent, store: &Store) -> Result<usize> {
     let mut total_linked = 0;
     for chunk in memories.chunks(LINK_BATCH_SIZE) {
         let sample: Vec<_> = chunk.iter().collect();
-        total_linked += link_batch(agent, store, &sample).await?;
+        total_linked += link_batch(invoker, store, &sample).await?;
     }
 
     // 如果超过 2 批，做一轮跨批次连接（首批 + 末批混合）
@@ -912,15 +911,15 @@ pub async fn link_memories(agent: &Agent, store: &Store) -> Result<usize> {
         let half = LINK_BATCH_SIZE / 2;
         let mut cross: Vec<_> = memories.iter().take(half).collect();
         cross.extend(memories.iter().rev().take(half));
-        total_linked += link_batch(agent, store, &cross).await?;
+        total_linked += link_batch(invoker, store, &cross).await?;
     }
 
     Ok(total_linked)
 }
 
 /// 处理单批次记忆连接
-async fn link_batch(agent: &Agent, store: &Store, items: &[&sage_types::Memory]) -> Result<usize> {
-    agent.reset_counter();
+async fn link_batch(invoker: &dyn ConstrainedInvoker, store: &Store, items: &[&sage_types::Memory]) -> Result<usize> {
+    invoker.reset_counter();
 
     let content_list: Vec<String> = items
         .iter()
@@ -931,7 +930,7 @@ async fn link_batch(agent: &Agent, store: &Store, items: &[&sage_types::Memory])
     let prompt = prompts::evolution_link(&lang, items.len(), &content_list.join("\n"));
 
     info!("Link batch: sending {} memories to LLM", items.len());
-    let resp = match agent.invoke(&prompt, None).await {
+    let resp_text = match invoker.invoke(&prompt, None).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Link memories LLM call failed: {e}");
@@ -939,7 +938,7 @@ async fn link_batch(agent: &Agent, store: &Store, items: &[&sage_types::Memory])
         }
     };
 
-    let trimmed = resp.text.trim();
+    let trimmed = resp_text.trim();
     if trimmed == "NONE" {
         info!("Link batch: LLM returned NONE");
         return Ok(0);
@@ -959,7 +958,7 @@ async fn link_batch(agent: &Agent, store: &Store, items: &[&sage_types::Memory])
         "similar",
     ];
     let mut cmd_count = 0;
-    for line in resp.text.lines() {
+    for line in resp_text.lines() {
         if cmd_count >= LINK_MAX_COMMANDS {
             warn!("Evolution link_batch: rate limit reached ({LINK_MAX_COMMANDS}), skipping remaining");
             break;
@@ -1019,6 +1018,7 @@ fn promote_validated(store: &Store) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Agent;
     use crate::provider::LlmProvider;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1056,6 +1056,16 @@ mod tests {
         Agent::with_provider(Box::new(ScriptedProvider::new(responses)))
     }
 
+    /// 测试辅助：将 Agent 包装成 HarnessedAgent（ConstrainedInvoker）
+    fn make_invoker(agent: Agent, store: &Store) -> crate::pipeline::HarnessedAgent {
+        let store_arc = std::sync::Arc::new(
+            Store::open_in_memory().unwrap()
+        );
+        // 用 agent + 空 store 包装（测试中 write_action 不需要真实 store）
+        let _ = store;
+        crate::pipeline::HarnessedAgent::new(agent, store_arc, "test")
+    }
+
     // ─── merge_similar 测试 ──────────────────────────────
 
     #[tokio::test]
@@ -1071,7 +1081,7 @@ mod tests {
         // Mock LLM 返回合并指令，保留两个 ID
         let agent = make_agent(vec![&format!("MERGE [{id1},{id2}] → 偏好直接沟通")]);
 
-        let merged = merge_similar(&agent, &store).await.unwrap();
+        let merged = merge_similar(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(merged, 1, "should merge 1 duplicate");
 
         // 最新的 (id2) 应被保留，id1 应被删除
@@ -1093,7 +1103,7 @@ mod tests {
             .unwrap();
 
         let agent = make_agent(vec!["NONE"]);
-        let merged = merge_similar(&agent, &store).await.unwrap();
+        let merged = merge_similar(&make_invoker(agent, &store), &store).await.unwrap();
         // LLM 返回 NONE 所以实际不合并，但重点是 LLM 被调用了（阈值 2 生效）
         assert_eq!(merged, 0);
     }
@@ -1107,7 +1117,7 @@ mod tests {
 
         // 只有 1 条，不应调用 LLM
         let agent = make_agent(vec![]); // 空响应，如果被调用会 panic
-        let merged = merge_similar(&agent, &store).await.unwrap();
+        let merged = merge_similar(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(merged, 0);
     }
 
@@ -1122,7 +1132,7 @@ mod tests {
             .unwrap();
 
         let agent = make_agent(vec![&format!("MERGE [{id1},{id2}] → 早起工作习惯")]);
-        merge_similar(&agent, &store).await.unwrap();
+        merge_similar(&make_invoker(agent, &store), &store).await.unwrap();
 
         let active = store.load_active_memories().unwrap();
         assert_eq!(active.len(), 1);
@@ -1143,7 +1153,7 @@ mod tests {
         }
 
         let agent = make_agent(vec![]); // 不应被调用
-        let synthesized = synthesize_traits(&agent, &store).await.unwrap();
+        let synthesized = synthesize_traits(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(synthesized, 0);
     }
 
@@ -1165,7 +1175,7 @@ mod tests {
         );
         let agent = make_agent(vec![&resp]);
 
-        let synthesized = synthesize_traits(&agent, &store).await.unwrap();
+        let synthesized = synthesize_traits(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(synthesized, 6, "all 6 observations should be synthesized");
 
         let active = store.load_active_memories().unwrap();
@@ -1198,7 +1208,7 @@ mod tests {
             ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]
         );
         let agent = make_agent(vec![&resp]);
-        synthesize_traits(&agent, &store).await.unwrap();
+        synthesize_traits(&make_invoker(agent, &store), &store).await.unwrap();
 
         // personality category 在 infer_tier 中映射为 core
         // 验证：搜索到的 personality 记忆 confidence = 0.85
@@ -1225,7 +1235,7 @@ mod tests {
             ids[0], ids[1], ids[2], ids[3]
         );
         let agent = make_agent(vec![&resp]);
-        let synthesized = synthesize_traits(&agent, &store).await.unwrap();
+        let synthesized = synthesize_traits(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(synthesized, 4);
 
         let active = store.load_active_memories().unwrap();
@@ -1252,7 +1262,7 @@ mod tests {
 
         // 空响应列表，不应有任何 LLM 调用
         let agent = make_agent(vec![]);
-        let r = evolve(&agent, &store).await.unwrap();
+        let r = evolve(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(r.consolidated, 0);
         assert_eq!(r.condensed, 0);
         assert_eq!(r.decayed, 0);
@@ -1284,7 +1294,7 @@ mod tests {
 
         // 如果 reset_counter 没生效，第 11 个类别后 agent 会停止调用 LLM，
         // 但此处只验证函数正常完成（不 panic，不返回 Err）
-        let merged = merge_similar(&agent, &store).await.unwrap();
+        let merged = merge_similar(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(merged, 0, "all NONE responses → 0 merges, but all 15 batches processed");
 
         // 所有 30 条记忆均保留
@@ -1310,7 +1320,7 @@ mod tests {
         let resp = format!("DEDUP [{p1}]");
         let agent = make_agent(vec![&resp]);
 
-        let r = evolve(&agent, &store).await.unwrap();
+        let r = evolve(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(r.consolidated, 1, "should dedup 1 memory");
 
         let active = store.load_active_memories().unwrap();
@@ -1331,7 +1341,7 @@ mod tests {
         assert!(long_content.chars().count() > CONDENSE_CHAR_THRESHOLD);
 
         let agent = make_agent(vec![&format!("CONDENSE [{id}] → 冗长记忆需精简")]);
-        let condensed = condense_verbose(&agent, &store).await.unwrap();
+        let condensed = condense_verbose(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(condensed, 1);
 
         let active = store.load_active_memories().unwrap();
@@ -1350,7 +1360,7 @@ mod tests {
             .unwrap();
 
         let agent = make_agent(vec![]); // 不应被调用
-        let condensed = condense_verbose(&agent, &store).await.unwrap();
+        let condensed = condense_verbose(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(condensed, 0);
     }
 
@@ -1362,7 +1372,7 @@ mod tests {
 
         // LLM 返回 KEEP
         let agent = make_agent(vec![&format!("KEEP [{id}]")]);
-        let condensed = condense_verbose(&agent, &store).await.unwrap();
+        let condensed = condense_verbose(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(condensed, 0);
 
         // 内容不变
@@ -1388,7 +1398,7 @@ mod tests {
         let resp = format!("LINK [{id1},{id2}] supports 0.8\nLINK [{id2},{id3}] derived_from 0.6");
         let agent = make_agent(vec![&resp]);
 
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 2);
 
         let edges = store.get_all_memory_edges().unwrap();
@@ -1403,7 +1413,7 @@ mod tests {
         // 只有 2 条，不够触发
 
         let agent = make_agent(vec![]);
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 0);
     }
 
@@ -1417,7 +1427,7 @@ mod tests {
         }
 
         let agent = make_agent(vec!["NONE"]);
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 0);
         assert_eq!(store.count_memory_edges().unwrap(), 0);
     }
@@ -1433,7 +1443,7 @@ mod tests {
         let resp = format!("LINK [{id1},{id2}] random_relation 0.5");
         let agent = make_agent(vec![&resp]);
 
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 0, "invalid relation should be rejected");
     }
 
@@ -1448,7 +1458,7 @@ mod tests {
         let resp = format!("LINK [{id1},{id2}] causes 1.5");
         let agent = make_agent(vec![&resp]);
 
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 1);
 
         let edges = store.get_memory_edges(id1).unwrap();
@@ -1472,7 +1482,7 @@ mod tests {
         let resp = format!("LINK [{id1},{id2}] co_occurred 0.7");
         let agent = make_agent(vec!["NONE", &resp]); // merge=NONE, link=resp
 
-        let r = evolve(&agent, &store).await.unwrap();
+        let r = evolve(&make_invoker(agent, &store), &store).await.unwrap();
         // link 可能被跳过（取决于 batch 顺序），但不应 panic
         // linked 可以是 0 或更多，取决于 LLM 响应顺序
         let _ = r.linked;
@@ -1489,7 +1499,7 @@ mod tests {
         let resp = format!("LINK [{id1}, {id2}] supports 0.7");
         let agent = make_agent(vec![&resp]);
 
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 1, "should parse IDs with spaces after comma");
     }
 
@@ -1512,7 +1522,7 @@ mod tests {
         );
         let agent = make_agent(vec![&resp]);
 
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(
             linked, 2,
             "should parse valid LINK lines and skip noise/invalid"
@@ -1535,7 +1545,7 @@ mod tests {
         let resp1 = format!("LINK [{},{}] similar 0.6", ids[0], ids[1]);
         let agent = make_agent(vec![&resp1, "NONE"]);
 
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 1);
         assert_eq!(store.count_memory_edges().unwrap(), 1);
     }
@@ -1558,7 +1568,7 @@ mod tests {
         );
         let agent = make_agent(vec![&resp]);
 
-        let linked = link_memories(&agent, &store).await.unwrap();
+        let linked = link_memories(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(linked, 6, "all 6 valid relation types should be accepted");
     }
 
@@ -1590,7 +1600,7 @@ mod tests {
         );
         let agent = make_agent(vec![&resp]);
 
-        let compiled = compile_to_semantic(&agent, &store).await.unwrap();
+        let compiled = compile_to_semantic(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(compiled, 6, "6 episodic should be marked compiled");
 
         // 源 episodic 应标记为 compiled（不再出现在活跃 episodic 中）
@@ -1614,7 +1624,7 @@ mod tests {
         }
 
         let agent = make_agent(vec![]); // 不应被调用
-        let compiled = compile_to_semantic(&agent, &store).await.unwrap();
+        let compiled = compile_to_semantic(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(compiled, 0);
 
         // episodic 记忆应保持活跃
@@ -1655,7 +1665,7 @@ mod tests {
         let resp = format!("AXIOM [{id1},{id2}] → 行动优于等待，交付优于完美");
         let agent = make_agent(vec![&resp]);
 
-        let compiled = compile_to_axiom(&agent, &store).await.unwrap();
+        let compiled = compile_to_axiom(&make_invoker(agent, &store), &store).await.unwrap();
         assert_eq!(compiled, 1);
 
         // 应生成 1 条 axiom 记忆

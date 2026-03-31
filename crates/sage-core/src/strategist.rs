@@ -1,8 +1,7 @@
 use anyhow::Result;
 use tracing::{info, warn};
 
-use crate::agent::Agent;
-use crate::pipeline::{actions, harness, PipelineContext};
+use crate::pipeline::{actions, invoker, ConstrainedInvoker, PipelineContext};
 use crate::prompts;
 use crate::skills;
 use crate::store::Store;
@@ -11,7 +10,7 @@ use crate::store::Store;
 /// 运行频率：每周（Weekly Report 之后）
 /// 输入：已合成的 coach_insight + decision + 历史 strategy_insight
 /// 输出：strategy_insight 记忆（subconscious 可见性）
-pub async fn strategize(agent: &Agent, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn strategize(invoker: &dyn ConstrainedInvoker, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
     // 去重：7 天内已运行则跳过
     if store.has_recent_suggestion("strategist", "weekly-strategy") {
         info!("Strategist: already ran this week, skipping");
@@ -72,7 +71,7 @@ pub async fn strategize(agent: &Agent, store: &Store, _ctx: &mut PipelineContext
         prompts::strategist_system_suffix(&lang)
     );
 
-    let content = harness::invoke_text(agent, &prompt, Some(&system)).await?;
+    let content = invoker::invoke_text(invoker, &prompt, Some(&system)).await?;
     // rate limit：每次运行最多保存 20 条战略洞察
     const MAX_STRATEGIES: usize = 20;
     let mut saved = 0;

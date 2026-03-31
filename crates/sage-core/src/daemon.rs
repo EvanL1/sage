@@ -21,6 +21,7 @@ use crate::config::Config;
 use crate::discovery;
 use crate::guardian;
 use crate::heartbeat;
+use crate::pipeline::HarnessedAgent;
 use crate::profile;
 use crate::provider;
 use crate::router::Router;
@@ -322,20 +323,23 @@ impl Daemon {
     pub async fn trigger_memory_linking(&self) -> Result<usize> {
         info!("手动触发记忆连接");
         let router = self.router.lock().await;
-        crate::memory_evolution::link_memories(router.agent(), router.store()).await
+        let invoker = HarnessedAgent::new(router.agent().clone(), router.store_arc(), "link_memories");
+        crate::memory_evolution::link_memories(&invoker, router.store()).await
     }
 
     /// 认知调和（增量）：检查新内容是否推翻了旧 decisions/insights
     pub async fn run_reconcile(&self, new_content: &str) -> Result<usize> {
         let router = self.router.lock().await;
-        crate::reconciler::reconcile(router.agent(), router.store(), new_content).await
+        let invoker = HarnessedAgent::new(router.agent().clone(), router.store_arc(), "reconcile");
+        crate::reconciler::reconcile(&invoker, router.store(), new_content).await
     }
 
     /// 认知调和（全量）：扫描所有记忆，找出内部矛盾和过时结论
     pub async fn run_reconcile_full(&self) -> Result<usize> {
         info!("手动触发全量认知调和");
         let router = self.router.lock().await;
-        crate::reconciler::reconcile_full(router.agent(), router.store()).await
+        let invoker = HarnessedAgent::new(router.agent().clone(), router.store_arc(), "reconcile_full");
+        crate::reconciler::reconcile_full(&invoker, router.store()).await
     }
 
     /// 直接触发指定类型的定时报告（绕过心跳时间窗口检查）
@@ -607,7 +611,8 @@ impl Daemon {
                 Err(e) => error!("Task intelligence failed: {e}"),
             }
 
-            match crate::staleness::check_staleness(router.agent(), &router.store_arc())
+            let staleness_invoker = HarnessedAgent::new(router.agent().clone(), router.store_arc(), "staleness");
+            match crate::staleness::check_staleness(&staleness_invoker, &router.store_arc())
                 .await
             {
                 Ok(r) if r.resolved + r.expired > 0 => {

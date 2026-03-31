@@ -2,9 +2,8 @@ use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
 
-use crate::agent::Agent;
 use crate::memory_integrator::{is_ephemeral_content, IncomingMemory, MemoryIntegrator};
-use crate::pipeline::{harness, ObserverOutput, PipelineContext};
+use crate::pipeline::{invoker, ConstrainedInvoker, ObserverOutput, PipelineContext};
 use crate::prompts;
 use crate::store::Store;
 
@@ -38,7 +37,7 @@ mod tests {
         assert!((emotion_confidence("[excited] 完成了新功能") - 0.6).abs() < 0.001);
     }
 }
-pub async fn annotate(agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn annotate(invoker: &dyn ConstrainedInvoker, store: &Arc<Store>, ctx: &mut PipelineContext) -> Result<bool> {
     let observations = store.load_unprocessed_observations(50)?;
     if observations.is_empty() {
         info!("Observer: no unprocessed observations, skipping");
@@ -70,7 +69,7 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineConte
     let prompt = prompts::observer_user(&lang, &obs_text, &history_text);
     let system = prompts::observer_system(&lang);
 
-    let output_block = harness::invoke_text(agent, &prompt, Some(system)).await?;
+    let output_block = invoker::invoke_text(invoker, &prompt, Some(system)).await?;
     let entries: Vec<IncomingMemory> = output_block
         .lines()
         .map(|l| l.trim().trim_start_matches('-').trim())
@@ -96,7 +95,7 @@ pub async fn annotate(agent: &Agent, store: &Arc<Store>, ctx: &mut PipelineConte
 
     let count = entries.len();
     let integrator = MemoryIntegrator::new(Arc::clone(store));
-    let had_output = match integrator.integrate(entries, agent.provider()).await {
+    let had_output = match integrator.integrate(entries, invoker.as_provider()).await {
         Ok(r) => {
             info!(
                 "Observer: {count} notes → {} created, {} updated, {} skipped",

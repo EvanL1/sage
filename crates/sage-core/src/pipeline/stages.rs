@@ -6,11 +6,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tracing::info;
 
-use crate::agent::Agent;
 use crate::store::Store;
 
 use super::{
-    CognitiveStage, PipelineContext, StageOutput,
+    ConstrainedInvoker, CognitiveStage, PipelineContext, StageOutput,
     ObserverOutput, CoachOutput, MirrorOutput, QuestionerOutput, EvolutionOutput,
 };
 use super::actions;
@@ -23,8 +22,8 @@ macro_rules! bool_stage {
         #[async_trait]
         impl CognitiveStage for $struct_name {
             fn name(&self) -> &str { $label }
-            async fn run(&self, agent: Agent, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
-                let ok = $fn_path(&agent, &store, &mut ctx).await?;
+            async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+                let ok = $fn_path(&*invoker, &store, &mut ctx).await?;
                 Ok((StageOutput::Bool(ok), ctx))
             }
         }
@@ -45,8 +44,8 @@ pub struct EvolutionStage;
 #[async_trait]
 impl CognitiveStage for EvolutionStage {
     fn name(&self) -> &str { "evolution" }
-    async fn run(&self, agent: Agent, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
-        let result = crate::memory_evolution::evolve(&agent, &store).await?;
+    async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+        let result = crate::memory_evolution::evolve(&*invoker, &store).await?;
         ctx.evolution = Some(EvolutionOutput {
             consolidated: result.consolidated,
             condensed: result.condensed,
@@ -113,7 +112,7 @@ impl UserDefinedStage {
 impl CognitiveStage for UserDefinedStage {
     fn name(&self) -> &str { &self.stage_name }
 
-    async fn run(&self, agent: Agent, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
+    async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
         // ═══ PRE-HOOK（硬约束）═══
 
         if !self.pre_condition.is_empty() && !actions::check_pre_condition(&store, &self.pre_condition) {
@@ -138,8 +137,8 @@ impl CognitiveStage for UserDefinedStage {
             prompt.push_str(&format!("\n\n{}", actions::action_docs(&self.available_actions)));
         }
 
-        agent.reset_counter();
-        let text = super::harness::invoke_text(&agent, &prompt, None).await?;
+        invoker.reset_counter();
+        let text = super::invoker::invoke_text(&*invoker, &prompt, None).await?;
 
         if text.is_empty() || text == "NONE" {
             return Ok((StageOutput::Bool(false), ctx));

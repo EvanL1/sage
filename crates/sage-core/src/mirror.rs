@@ -1,9 +1,8 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::agent::Agent;
 use crate::applescript;
-use crate::pipeline::{harness, MirrorOutput, PipelineContext};
+use crate::pipeline::{invoker, ConstrainedInvoker, MirrorOutput, PipelineContext};
 use crate::prompts;
 use crate::reflective_detector;
 use crate::skills;
@@ -11,7 +10,7 @@ use crate::store::Store;
 
 /// 镜子角色：从 SQLite coach_insight 记忆中挑选一个行为模式，温和地反映给用户（每天最多一次）
 /// 不再读 sage.md，改用 store.search_memories("coach_insight", 5) 获取最近洞察
-pub async fn reflect(agent: &Agent, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn reflect(invoker: &dyn ConstrainedInvoker, store: &Store, ctx: &mut PipelineContext) -> Result<bool> {
     // 读取最近的教练洞察（替代原来读 sage.md）
     let insights = store.search_memories("coach_insight", 5)?;
     if insights.is_empty() {
@@ -49,7 +48,7 @@ pub async fn reflect(agent: &Agent, store: &Store, ctx: &mut PipelineContext) ->
         "{reflect_guide}\n\n{}",
         prompts::mirror_system_suffix(&lang)
     );
-    let reflection = harness::invoke_raw(agent, &prompt, Some(&system)).await?;
+    let reflection = invoker::invoke_raw(invoker, &prompt, Some(&system)).await?;
     if reflection.is_empty() {
         info!("Mirror: empty response from agent, skipping");
         return Ok(false);
@@ -101,7 +100,7 @@ pub fn detect_and_store(
 }
 
 /// 周度 Mirror 报告：汇总本周反思信号，LLM 生成反映性报告
-pub async fn mirror_weekly(agent: &Agent, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
+pub async fn mirror_weekly(invoker: &dyn ConstrainedInvoker, store: &Store, _ctx: &mut PipelineContext) -> Result<bool> {
     // 去重：本周已生成过则跳过
     if store.has_recent_suggestion("mirror", "weekly-mirror") {
         info!("Mirror weekly: already generated this week, skipping");
@@ -137,8 +136,8 @@ pub async fn mirror_weekly(agent: &Agent, store: &Store, _ctx: &mut PipelineCont
     let system = prompts::mirror_weekly_system(&lang);
     let user_prompt = prompts::mirror_weekly_user(&lang, &signals_text);
 
-    agent.reset_counter();
-    let report = harness::invoke_raw(agent, &user_prompt, Some(system)).await?;
+    invoker.reset_counter();
+    let report = invoker::invoke_raw(invoker, &user_prompt, Some(system)).await?;
     if report.is_empty() {
         return Ok(false);
     }
