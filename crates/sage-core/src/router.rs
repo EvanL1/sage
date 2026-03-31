@@ -9,7 +9,7 @@ use crate::agent::Agent;
 use crate::pipeline::{actions, invoker, HarnessedAgent};
 use crate::applescript;
 use crate::context_gatherer;
-use crate::memory_evolution;
+use crate::pipeline::EvolutionResult;
 use crate::reflective_detector;
 use crate::store::Store;
 use crate::task_intelligence;
@@ -77,9 +77,10 @@ impl Router {
         HarnessedAgent::new(self.agent.clone(), Arc::clone(&self.store), caller.to_string())
     }
 
-    /// 触发记忆进化：合并重复 → 精简冗长 → 衰减过期 → 提升高频
-    pub async fn run_memory_evolution(&self) -> Result<memory_evolution::EvolutionResult> {
-        memory_evolution::evolve(&self.invoker("router:evolution"), &self.store).await
+    /// 触发记忆进化：现由预设 stage 驱动，此方法保留 API 兼容性
+    pub async fn run_memory_evolution(&self) -> Result<EvolutionResult> {
+        // 已迁移到 evolution_merge/synth/condense/link/decay/promote 预设 stage
+        Ok(EvolutionResult { summary: "已迁移到预设 stage — 通过 Evening Review 自动运行".into(), ..Default::default() })
     }
 
     /// 晨间任务规划：从 morning brief 提取今日待办

@@ -4,6 +4,7 @@
 //! 硬约束：授权白名单 + 参数验证 + rate limit
 //! 软约束：action_docs 注入到 prompt 中
 
+use std::path::PathBuf;
 use tracing::{info, warn};
 
 use crate::store::Store;
@@ -68,6 +69,35 @@ fn action_doc_entry(action: &str) -> Option<&'static str> {
         "save_calibration_rule" => Some(
             "- `ACTION save_calibration_rule | 规则内容 | confidence:0.0-1.0`\n  保存校准规则（同时写入 calibration 记忆 + negative_rules）\n\n"
         ),
+        // ── Evolution ACTION 类型 ──────────────────────────────────
+        "dedup_memory" => Some(
+            "- `ACTION dedup_memory | memory_id | reason`\n  归档重复记忆\n\n"
+        ),
+        "compile_memories" => Some(
+            "- `ACTION compile_memories | source_ids | content | category | confidence:0.0-1.0`\n  合并多条记忆为一条（source_ids 逗号分隔）\n\n"
+        ),
+        "condense_memory" => Some(
+            "- `ACTION condense_memory | memory_id | new_content`\n  精简冗长记忆内容\n\n"
+        ),
+        "link_memories" => Some(
+            "- `ACTION link_memories | id1 | id2 | relation | weight:0.0-1.0`\n  创建记忆关系边（relation: causes/supports/contradicts/co_occurred/derived_from/similar）\n\n"
+        ),
+        "promote_memory" => Some(
+            "- `ACTION promote_memory | memory_id | new_depth`\n  提升记忆深度（episodic/semantic/procedural/axiom）\n\n"
+        ),
+        "decay_memory" => Some(
+            "- `ACTION decay_memory | memory_id | reason`\n  归档过期记忆\n\n"
+        ),
+        // ── Meta ACTION 类型 ──────────────────────────────────────
+        "set_pipeline_override" => Some(
+            "- `ACTION set_pipeline_override | stage_name | key | value | reason`\n  调整 pipeline 参数（不可禁用 evolution 核心阶段）\n\n"
+        ),
+        "rewrite_prompt" => Some(
+            "- `ACTION rewrite_prompt | prompt_name | new_content`\n  重写 prompt 文件（备份原文件为 .bak）\n\n"
+        ),
+        "save_custom_page" => Some(
+            "- `ACTION save_custom_page | title | content`\n  生成 UI 自定义页面\n\n"
+        ),
         _ => None,
     }
 }
@@ -97,6 +127,17 @@ pub fn validate_action_params(action: &str, parts: &[&str]) -> Option<String> {
             None
         }
         "save_calibration_rule" => validate_non_empty(parts, 1, "规则内容"),
+        // ── Evolution 验证 ────────────────────────────────────────
+        "dedup_memory" => validate_memory_id_reason(parts),
+        "compile_memories" => validate_compile_memories(parts),
+        "condense_memory" => validate_condense_memory(parts),
+        "link_memories" => validate_link_memories(parts),
+        "promote_memory" => validate_promote_memory(parts),
+        "decay_memory" => validate_memory_id_reason(parts),
+        // ── Meta 验证 ─────────────────────────────────────────────
+        "set_pipeline_override" => validate_pipeline_override(parts),
+        "rewrite_prompt" => validate_rewrite_prompt(parts),
+        "save_custom_page" => validate_custom_page(parts),
         _ => Some(format!("未知 action: {action}")),
     }
 }
@@ -194,6 +235,118 @@ fn validate_non_empty(parts: &[&str], idx: usize, label: &str) -> Option<String>
     None
 }
 
+fn validate_memory_id_reason(parts: &[&str]) -> Option<String> {
+    let id_str = parts.get(1).unwrap_or(&"");
+    if id_str.parse::<i64>().is_err() {
+        return Some(format!("memory_id 格式错误: {id_str}"));
+    }
+    None
+}
+
+fn validate_compile_memories(parts: &[&str]) -> Option<String> {
+    if parts.get(1).map(|s| s.is_empty()).unwrap_or(true) {
+        return Some("source_ids 为空".into());
+    }
+    if parts.get(2).map(|s| s.is_empty()).unwrap_or(true) {
+        return Some("content 为空".into());
+    }
+    validate_confidence(parts, 4)
+}
+
+fn validate_condense_memory(parts: &[&str]) -> Option<String> {
+    let id_str = parts.get(1).unwrap_or(&"");
+    if id_str.parse::<i64>().is_err() {
+        return Some(format!("memory_id 格式错误: {id_str}"));
+    }
+    validate_non_empty(parts, 2, "new_content")
+}
+
+fn validate_link_memories(parts: &[&str]) -> Option<String> {
+    for (idx, label) in [(1i64, "id1"), (2, "id2")] {
+        let s = parts.get(idx as usize).unwrap_or(&"");
+        if s.parse::<i64>().is_err() {
+            return Some(format!("{label} 格式错误: {s}"));
+        }
+    }
+    let relation = parts.get(3).unwrap_or(&"");
+    const VALID: &[&str] = &["causes", "supports", "contradicts", "co_occurred", "derived_from", "similar"];
+    if !VALID.contains(relation) {
+        return Some(format!("非法 relation: {relation}"));
+    }
+    if let Some(w) = parts.get(4).and_then(|s| s.strip_prefix("weight:")) {
+        if let Ok(v) = w.parse::<f64>() {
+            if !(0.0..=1.0).contains(&v) {
+                return Some(format!("weight 超出范围: {v}"));
+            }
+        }
+    }
+    None
+}
+
+fn validate_promote_memory(parts: &[&str]) -> Option<String> {
+    let id_str = parts.get(1).unwrap_or(&"");
+    if id_str.parse::<i64>().is_err() {
+        return Some(format!("memory_id 格式错误: {id_str}"));
+    }
+    let depth = parts.get(2).unwrap_or(&"");
+    const DEPTHS: &[&str] = &["episodic", "semantic", "procedural", "axiom"];
+    if !DEPTHS.contains(depth) {
+        return Some(format!("非法 depth: {depth}（需要 episodic/semantic/procedural/axiom）"));
+    }
+    None
+}
+
+fn validate_pipeline_override(parts: &[&str]) -> Option<String> {
+    let stage = parts.get(1).unwrap_or(&"");
+    if stage.is_empty() {
+        return Some("stage_name 为空".into());
+    }
+    if !stage.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Some(format!("stage_name 含非法字符: {stage}"));
+    }
+    if parts.get(2).map(|s| s.is_empty()).unwrap_or(true) {
+        return Some("key 为空".into());
+    }
+    if parts.get(3).map(|s| s.is_empty()).unwrap_or(true) {
+        return Some("value 为空".into());
+    }
+    // 禁止禁用 evolution 核心阶段
+    let key = parts.get(2).unwrap_or(&"");
+    let value = parts.get(3).unwrap_or(&"");
+    if *key == "enabled" && *value == "false" && *stage == "evolution" {
+        return Some("禁止禁用 evolution 核心阶段".into());
+    }
+    None
+}
+
+fn validate_rewrite_prompt(parts: &[&str]) -> Option<String> {
+    if parts.get(1).map(|s| s.is_empty()).unwrap_or(true) {
+        return Some("prompt_name 为空".into());
+    }
+    let content = parts.get(2).unwrap_or(&"");
+    if content.is_empty() {
+        return Some("new_content 为空".into());
+    }
+    if content.len() >= 10000 {
+        return Some(format!("new_content 超出长度限制（{}≥10000）", content.len()));
+    }
+    None
+}
+
+fn validate_custom_page(parts: &[&str]) -> Option<String> {
+    if parts.get(1).map(|s| s.is_empty()).unwrap_or(true) {
+        return Some("title 为空".into());
+    }
+    let content = parts.get(2).unwrap_or(&"");
+    if content.is_empty() {
+        return Some("content 为空".into());
+    }
+    if content.len() >= 10000 {
+        return Some(format!("content 超出长度限制（{}≥10000）", content.len()));
+    }
+    None
+}
+
 // ─── ACTION 执行分发 ──────────────────────────────────────────────────
 
 /// 从 LLM 输出中解析、验证并执行 ACTION 命令（带 rate limit）
@@ -252,6 +405,17 @@ fn dispatch_action(action: &str, parts: &[&str], store: &Store, stage: &str) -> 
         "save_memory_integrated" => handle_save_memory_integrated(parts, store, stage),
         "save_report" => handle_save_report(parts, store, stage),
         "save_calibration_rule" => handle_save_calibration_rule(parts, store, stage),
+        // ── Evolution handlers ────────────────────────────────────
+        "dedup_memory" => handle_dedup_memory(parts, store, stage),
+        "compile_memories" => handle_compile_memories(parts, store, stage),
+        "condense_memory" => handle_condense_memory(parts, store, stage),
+        "link_memories" => handle_link_memories(parts, store, stage),
+        "promote_memory" => handle_promote_memory(parts, store, stage),
+        "decay_memory" => handle_decay_memory(parts, store, stage),
+        // ── Meta handlers ─────────────────────────────────────────
+        "set_pipeline_override" => handle_pipeline_override(parts, store, stage),
+        "rewrite_prompt" => handle_rewrite_prompt(parts, store, stage),
+        "save_custom_page" => handle_custom_page(parts, store, stage),
         _ => None,
     }
 }
@@ -415,6 +579,126 @@ fn handle_save_calibration_rule(parts: &[&str], store: &Store, stage: &str) -> O
     }
 }
 
+// ─── Evolution handlers ──────────────────────────────────────────────
+
+fn handle_dedup_memory(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    let reason = parts.get(2).unwrap_or(&"重复记忆");
+    match store.archive_memory(id, reason) {
+        Ok(()) => { info!("Stage {stage}: ✓ dedup_memory #{id}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: dedup_memory failed: {e}"); None }
+    }
+}
+
+fn handle_compile_memories(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let source_ids_str = parts[1];
+    let content = parts[2];
+    let category = parts.get(3).unwrap_or(&"insight");
+    let confidence = parse_confidence(parts, 4);
+    // 创建合并后的新记忆
+    let new_id = match store.save_memory(category, content, &format!("stage:{stage}"), confidence) {
+        Ok(id) => id,
+        Err(e) => { warn!("Stage {stage}: compile_memories save failed: {e}"); return None; }
+    };
+    // 归档各来源记忆
+    for id_str in source_ids_str.split(',') {
+        let id_str = id_str.trim();
+        if let Ok(sid) = id_str.parse::<i64>() {
+            if let Err(e) = store.archive_memory(sid, "compiled") {
+                warn!("Stage {stage}: compile_memories archive #{sid} failed: {e}");
+            }
+        }
+    }
+    info!("Stage {stage}: ✓ compile_memories → #{new_id}");
+    Some(new_id)
+}
+
+fn handle_condense_memory(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    let new_content = parts[2];
+    match store.update_memory_content(id, new_content) {
+        Ok(()) => { info!("Stage {stage}: ✓ condense_memory #{id}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: condense_memory failed: {e}"); None }
+    }
+}
+
+fn handle_link_memories(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id1: i64 = parts[1].parse().ok()?;
+    let id2: i64 = parts[2].parse().ok()?;
+    let relation = parts[3];
+    let weight = parts.get(4)
+        .and_then(|s| s.strip_prefix("weight:"))
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    match store.save_memory_edge(id1, id2, relation, weight) {
+        Ok(id) => { info!("Stage {stage}: ✓ link_memories {id1}→{id2} [{relation}]"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: link_memories failed: {e}"); None }
+    }
+}
+
+fn handle_promote_memory(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    let depth = parts[2];
+    match store.update_memory_depth(id, depth) {
+        Ok(()) => { info!("Stage {stage}: ✓ promote_memory #{id} → {depth}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: promote_memory failed: {e}"); None }
+    }
+}
+
+fn handle_decay_memory(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    let reason = parts.get(2).unwrap_or(&"过期衰减");
+    match store.archive_memory(id, reason) {
+        Ok(()) => { info!("Stage {stage}: ✓ decay_memory #{id}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: decay_memory failed: {e}"); None }
+    }
+}
+
+// ─── Meta handlers ────────────────────────────────────────────────────
+
+fn handle_pipeline_override(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let stage_name = parts[1];
+    let key = parts[2];
+    let value = parts[3];
+    let reason = parts.get(4).unwrap_or(&"");
+    match store.set_pipeline_override(stage_name, key, value, reason) {
+        Ok(()) => { info!("Stage {stage}: ✓ set_pipeline_override {stage_name}.{key}={value}"); Some(0) }
+        Err(e) => { warn!("Stage {stage}: set_pipeline_override failed: {e}"); None }
+    }
+}
+
+fn handle_rewrite_prompt(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let name = parts[1];
+    let content = parts[2];
+    let lang = store.prompt_lang();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
+    let dir = PathBuf::from(&home).join(".sage").join("prompts").join(&lang);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!("Stage {stage}: rewrite_prompt create_dir failed: {e}");
+        return None;
+    }
+    let path = dir.join(format!("{name}.md"));
+    // 备份原文件
+    if path.exists() {
+        let bak = dir.join(format!("{name}.md.bak"));
+        let _ = std::fs::copy(&path, &bak);
+    }
+    match std::fs::write(&path, content) {
+        Ok(()) => { info!("Stage {stage}: ✓ rewrite_prompt {lang}/{name}.md"); Some(0) }
+        Err(e) => { warn!("Stage {stage}: rewrite_prompt write failed: {e}"); None }
+    }
+}
+
+fn handle_custom_page(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let title = parts[1];
+    let content = parts[2];
+    match store.save_custom_page(title, content) {
+        Ok(id) => { info!("Stage {stage}: ✓ save_custom_page [{title}] #{id}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: save_custom_page failed: {e}"); None }
+    }
+}
+
 fn parse_confidence(parts: &[&str], idx: usize) -> f64 {
     parts.get(idx)
         .and_then(|c| c.strip_prefix("confidence:"))
@@ -514,6 +798,35 @@ pub fn load_filtered_context(store: &Store, allowed: &[String]) -> String {
             "weekly_signals" => {
                 for s in store.get_recent_suggestions(20).unwrap_or_default().iter().take(20) {
                     ctx.push_str(&format!("- [信号] {}\n", s.response));
+                }
+            }
+            // 相似记忆聚类（供 evolution_merge）
+            "similar_memories" => {
+                let mems = store.load_memories_by_depth("episodic").unwrap_or_default();
+                for m in mems.iter().take(50) {
+                    ctx.push_str(&format!("- [记忆:id={}] {}\n", m.id, m.content));
+                }
+            }
+            // 冗长记忆（供 evolution_condense）
+            "verbose_memories" => {
+                let mems = store.load_memories().unwrap_or_default();
+                for m in mems.iter().filter(|m| m.content.len() > 50).take(50) {
+                    ctx.push_str(&format!("- [记忆:id={},len={}] {}\n", m.id, m.content.len(), m.content));
+                }
+            }
+            // 管线执行统计（供 meta_params）
+            "pipeline_stats" => {
+                for (name, ok, empty, error) in store.get_pipeline_summary(14).unwrap_or_default() {
+                    ctx.push_str(&format!("- [stage:{name}] ok={ok} empty={empty} error={error}\n"));
+                }
+            }
+            // 校准规则（供 meta_prompts）
+            "calibration_rules" => {
+                let cats = ["calibration", "calibration_task"];
+                for cat in cats {
+                    for m in store.get_memories_by_category(cat).unwrap_or_default() {
+                        ctx.push_str(&format!("- [规则] {}\n", m.content));
+                    }
                 }
             }
             _ => {}

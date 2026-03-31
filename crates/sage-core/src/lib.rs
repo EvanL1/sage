@@ -7,7 +7,6 @@ pub mod daemon;
 pub mod feedback;
 pub mod guardian;
 pub mod heartbeat;
-pub mod memory_evolution;
 pub mod memory_integrator;
 pub mod oauth2;
 pub mod onboarding;

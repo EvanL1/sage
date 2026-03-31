@@ -776,6 +776,13 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 47;")?;
         }
 
+        // ── v48: 重新种子预设（新增 evolution_* + meta_* 9 个预设）──
+        if version < 48 {
+            // INSERT OR IGNORE 保证幂等（已有预设不覆盖）
+            crate::pipeline::seed_preset_stages(&conn)?;
+            conn.execute_batch("PRAGMA user_version = 48;")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

@@ -10,28 +10,9 @@ use crate::store::Store;
 
 use super::{
     ConstrainedInvoker, CognitiveStage, PipelineContext, StageOutput,
-    ObserverOutput, CoachOutput, MirrorOutput, QuestionerOutput, EvolutionOutput,
+    ObserverOutput, CoachOutput, MirrorOutput, QuestionerOutput,
 };
 use super::actions;
-
-/// Memory Evolution 单独实现（返回 EvolutionResult + 写入 ctx）
-pub struct EvolutionStage;
-#[async_trait]
-impl CognitiveStage for EvolutionStage {
-    fn name(&self) -> &str { "evolution" }
-    async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
-        let result = crate::memory_evolution::evolve(&*invoker, &store).await?;
-        ctx.evolution = Some(EvolutionOutput {
-            consolidated: result.consolidated,
-            condensed: result.condensed,
-            linked: result.linked,
-            decayed: result.decayed,
-            promoted: result.promoted,
-            purged: result.purged,
-        });
-        Ok((StageOutput::Evolution(result), ctx))
-    }
-}
 
 // ─── UserDefinedStage（预设 + 自定义共用引擎）────────────────────────────
 

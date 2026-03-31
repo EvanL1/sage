@@ -291,11 +291,11 @@ impl Daemon {
         self.tick().await
     }
 
-    /// 手动触发记忆进化（去重 + 特质合成 + 精简 + 衰减 + 晋升）
+    /// 手动触发记忆进化（已迁移到预设 stage，保留 API 兼容性）
     pub async fn trigger_memory_evolution(
         &self,
-    ) -> Result<crate::memory_evolution::EvolutionResult> {
-        info!("手动触发记忆进化");
+    ) -> Result<crate::pipeline::EvolutionResult> {
+        info!("手动触发记忆进化（已迁移到预设 stage）");
         self.router.lock().await.run_memory_evolution().await
     }
 
@@ -311,12 +311,10 @@ impl Daemon {
         Ok(false)
     }
 
-    /// 单独触发记忆图谱连接（不走完整 evolution pipeline）
+    /// 单独触发记忆图谱连接（已迁移到预设 stage，保留兼容性）
     pub async fn trigger_memory_linking(&self) -> Result<usize> {
-        info!("手动触发记忆连接");
-        let router = self.router.lock().await;
-        let invoker = HarnessedAgent::new(router.agent().clone(), router.store_arc(), "link_memories");
-        crate::memory_evolution::link_memories(&invoker, router.store()).await
+        info!("记忆连接：已迁移到 evolution_link 预设 stage");
+        Ok(0)
     }
 
     /// 认知调和（增量）：检查新内容是否推翻了旧 decisions/insights

@@ -19,13 +19,10 @@ use async_trait::async_trait;
 use tracing::{error, info, warn};
 
 use crate::agent::Agent;
-use crate::memory_evolution::EvolutionResult;
 use crate::store::Store;
 
 // Re-export 常用类型
-pub use stages::{
-    EvolutionStage, UserDefinedStage, PresetCtxKey,
-};
+pub use stages::{UserDefinedStage, PresetCtxKey};
 
 // ─── Pipeline Context（类型化 Stage I/O 契约）─────────────────────────────────
 
@@ -102,6 +99,18 @@ pub struct EvolutionOutput {
 
 // ─── Trait + Output ──────────────────────────────────────────────────────────
 
+/// 记忆进化结果（供 Tauri 命令和 pipeline classify 使用）
+#[derive(Debug, Clone, Default)]
+pub struct EvolutionResult {
+    pub consolidated: usize,
+    pub condensed: usize,
+    pub linked: usize,
+    pub decayed: usize,
+    pub promoted: usize,
+    pub purged: usize,
+    pub summary: String,
+}
+
 pub enum StageOutput {
     Bool(bool),
     Evolution(EvolutionResult),
@@ -161,9 +170,7 @@ impl CognitivePipeline {
         }
 
         let all_nodes = config.evening_order();
-        let core_stages = config.evening.iter().take(2).cloned()
-            .chain(std::iter::once("evolution".into()))
-            .collect();
+        let core_stages = config.evening.iter().take(2).cloned().collect();
 
         Self {
             stages: HashMap::new(),
@@ -222,7 +229,12 @@ impl CognitivePipeline {
             if wave.is_empty() { break; }
 
             // 分类：ctx 写入者串行，其余真并行
-            let ctx_writers: HashSet<&str> = ["observer", "coach", "mirror", "questioner", "evolution"].into();
+            let ctx_writers: HashSet<&str> = [
+                "observer", "coach", "mirror", "questioner",
+                "evolution_merge", "evolution_synth", "evolution_condense",
+                "evolution_link", "evolution_decay", "evolution_promote",
+                "meta_params", "meta_prompts", "meta_ui",
+            ].into();
             let (serial, parallel): (Vec<_>, Vec<_>) = wave.into_iter()
                 .partition(|name| ctx_writers.contains(name.as_str()));
 
@@ -262,7 +274,7 @@ impl CognitivePipeline {
                     let stage_invoker = self.make_stage_invoker(name, agent, store);
                     let store_clone = Arc::clone(store);
                     let name_clone = name.clone();
-                    let default_timeout = if name == "evolution" { 600u64 } else { 120 };
+                    let default_timeout = if name.starts_with("evolution_") { 300u64 } else { 120 };
                     let timeout = std::time::Duration::from_secs(
                         self.stage_configs.get(name).and_then(|c| c.timeout_secs).unwrap_or(default_timeout)
                     );
@@ -337,7 +349,7 @@ impl CognitivePipeline {
         };
         let stage_invoker = self.make_stage_invoker(name, agent, store);
         let start = std::time::Instant::now();
-        let default_timeout = if name == "evolution" { 600u64 } else { 120 };
+        let default_timeout = if name.starts_with("evolution_") { 300u64 } else { 120 };
         let timeout = std::time::Duration::from_secs(
             self.stage_configs.get(name).and_then(|c| c.timeout_secs).unwrap_or(default_timeout)
         );
@@ -361,9 +373,12 @@ impl CognitivePipeline {
     }
 
     pub async fn run_weekly(&self, agent: &Agent, store: &Arc<Store>) -> PipelineContext {
-        // 周频阶段由预设 stage 实现，从注册的 stages 中过滤非 evolution/meta 的 stage
+        // 周频阶段由预设 stage 实现，使用 config 中配置的 weekly stage 列表
         let weekly: Vec<String> = self.stages.keys()
-            .filter(|k| k.as_str() != "evolution" && k.as_str() != "meta")
+            .filter(|k| {
+                let s = k.as_str();
+                s == "mirror_weekly" || s.starts_with("weekly_")
+            })
             .cloned().collect();
         if weekly.is_empty() { return PipelineContext::default(); }
         self.run("weekly", &weekly, agent, store).await
@@ -411,10 +426,7 @@ fn is_stage_disabled(store: &Store, name: &str) -> bool {
 pub fn build_pipeline(config: &crate::config::PipelineConfig, store: &Store) -> CognitivePipeline {
     let mut p = CognitivePipeline::new(config);
 
-    // Evolution 和 Meta 是唯二内置 stage，其余全由预设/自定义 stage 实现
-    p.register(Arc::new(EvolutionStage));
-    p.register(Arc::new(MetaStage));
-
+    // 所有 stage 全由预设/自定义 stage 实现，无内置 stage
     let custom_stages = store.list_custom_stages().unwrap_or_default();
     // 自定义/预设 stage
     for cs in &custom_stages {
@@ -447,19 +459,18 @@ pub fn build_pipeline(config: &crate::config::PipelineConfig, store: &Store) -> 
     p
 }
 
-// ─── Meta Stage ──────────────────────────────────────────────────────────────
-
-mod meta;
-pub use meta::MetaStage;
-
 // ─── 默认管线顺序 ───────────────────────────────────────────────────────────
 
 pub fn default_evening_stages() -> Vec<String> {
-    vec!["evolution", "meta"].into_iter().map(String::from).collect()
+    vec![
+        "evolution_merge", "evolution_synth", "evolution_condense",
+        "evolution_link", "evolution_decay", "evolution_promote",
+        "meta_params", "meta_prompts", "meta_ui",
+    ].into_iter().map(String::from).collect()
 }
 
 pub fn default_weekly_stages() -> Vec<String> {
-    vec![]
+    vec!["mirror_weekly"].into_iter().map(String::from).collect()
 }
 
 #[cfg(test)]
@@ -560,13 +571,18 @@ mod tests {
     }
 
     #[test]
-    fn default_evening_has_two_stages() {
-        assert_eq!(default_evening_stages().len(), 2);
-        assert_eq!(default_evening_stages().last().unwrap(), "meta");
+    fn default_evening_has_nine_stages() {
+        assert_eq!(default_evening_stages().len(), 9);
+        assert_eq!(default_evening_stages().last().unwrap(), "meta_ui");
+        assert_eq!(default_evening_stages().first().unwrap(), "evolution_merge");
     }
 
     #[test]
-    fn default_weekly_is_empty() { assert_eq!(default_weekly_stages().len(), 0); }
+    fn default_weekly_has_mirror_weekly() {
+        let stages = default_weekly_stages();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0], "mirror_weekly");
+    }
 
     #[test]
     fn action_validation_rejects_unknown() {
