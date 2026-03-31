@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 use sage_types::{Event, EventType};
 
 use crate::agent::Agent;
-use crate::pipeline::{actions, harness, HarnessedAgent};
+use crate::pipeline::{actions, invoker, HarnessedAgent};
 use crate::applescript;
 use crate::coach;
 use crate::context_gatherer;
@@ -157,8 +157,8 @@ impl Router {
         let lang = self.store.prompt_lang();
         let system = crate::prompts::cmd_task_extraction_system(&lang, &today);
 
-        self.agent.reset_counter();
-        let tasks: Vec<serde_json::Value> = harness::invoke_json(&self.agent, &context, Some(&system))
+        let inv = self.make_invoker("task_planner");
+        let tasks: Vec<serde_json::Value> = invoker::invoke_json(&inv, &context, Some(&system))
             .await
             .unwrap_or_default();
 
@@ -274,8 +274,8 @@ impl Router {
             return Ok(());
         }
 
-        self.agent.reset_counter();
-        let report_text = harness::invoke_raw(&self.agent, &prompt, Some(&system)).await?;
+        let inv = self.make_invoker("report_scheduled");
+        let report_text = invoker::invoke_raw(&inv, &prompt, Some(&system)).await?;
 
         if let Err(e) = self
             .store
@@ -298,7 +298,7 @@ impl Router {
 
             // 报告 → 记忆反哺：从报告中提取关键洞察存入 memories 表
             let (extract_prompt, extract_system) = build_insight_extraction_prompts(&lang, &report_text);
-            let insights_text = harness::invoke_text(&self.agent, &extract_prompt, Some(extract_system)).await;
+            let insights_text = invoker::invoke_text(&inv, &extract_prompt, Some(extract_system)).await;
             match insights_text {
                 Ok(text) => {
                     for line in text
@@ -364,8 +364,8 @@ impl Router {
             return Ok(());
         }
 
-        self.agent.reset_counter();
-        let urgent_text = harness::invoke_raw(&self.agent, &prompt, Some(&system)).await?;
+        let inv = self.make_invoker("handle_immediate");
+        let urgent_text = invoker::invoke_raw(&inv, &prompt, Some(&system)).await?;
 
         if let Err(e) = self
             .store
