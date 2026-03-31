@@ -1654,12 +1654,24 @@ fn test_decay_cold_edges_decreases_weight() {
     let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
     let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
     store.save_memory_edge(a, b, "supports", 0.8).unwrap();
+    // 将 created_at 回退 60 天，模拟长期不活跃
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memory_edges SET created_at = datetime('now', '-60 days') WHERE from_id = ?1",
+            rusqlite::params![a],
+        ).unwrap();
+    }
 
-    store.decay_cold_edges(0, 0.5, 0.1).unwrap();
+    // α=0.03, 60 天不活跃 → e^(-0.03*60) ≈ 0.165 → 0.8 * 0.165 ≈ 0.132
+    store.decay_cold_edges(0, 0.03, 0.1).unwrap();
 
     let edges = store.get_memory_edges(a).unwrap();
     assert_eq!(edges.len(), 1);
-    assert!((edges[0].weight - 0.4).abs() < 0.01, "0.8 * 0.5 = 0.4");
+    // 0.8 * e^(-0.03 * 60) ≈ 0.132
+    let expected = 0.8 * (-0.03_f64 * 60.0).exp();
+    assert!((edges[0].weight - expected).abs() < 0.02,
+        "expected ~{expected:.3}, got {}", edges[0].weight);
 }
 
 #[test]
@@ -1668,13 +1680,21 @@ fn test_decay_cold_edges_deletes_below_threshold() {
     let a = store.save_memory("behavior", "A", "chat", 0.7).unwrap();
     let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
     store.save_memory_edge(a, b, "similar", 0.15).unwrap();
+    // 将 created_at 回退 90 天 → e^(-0.03*90) ≈ 0.067 → 0.15 * 0.067 ≈ 0.01 < 0.1
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memory_edges SET created_at = datetime('now', '-90 days') WHERE from_id = ?1",
+            rusqlite::params![a],
+        ).unwrap();
+    }
 
-    store.decay_cold_edges(0, 0.5, 0.1).unwrap();
+    store.decay_cold_edges(0, 0.03, 0.1).unwrap();
 
     assert_eq!(
         store.count_memory_edges().unwrap(),
         0,
-        "should delete edge below threshold"
+        "should delete edge below threshold after exponential decay"
     );
 }
 
@@ -1685,7 +1705,8 @@ fn test_decay_skips_recently_activated() {
     let b = store.save_memory("behavior", "B", "chat", 0.7).unwrap();
     store.strengthen_edges(&[a, b]).unwrap();
 
-    store.decay_cold_edges(30, 0.5, 0.1).unwrap();
+    // cold_days=30 → 刚 strengthen 的边 last_activated_at=now，不满足冷边条件
+    store.decay_cold_edges(30, 0.03, 0.1).unwrap();
 
     let edges = store.get_memory_edges(a).unwrap();
     assert!(
@@ -2889,14 +2910,31 @@ fn test_decay_semantic_uses_90_day_threshold() {
     store.update_memory_depth(sid, "semantic").unwrap();
     let aid = store.save_memory("values", "核心信念：诚实", "evolution", 0.95).unwrap();
     store.update_memory_depth(aid, "axiom").unwrap();
+    // 将 created_at 回退 100 天，让指数衰减有可观的效果
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memories SET created_at = datetime('now', '-100 days') WHERE id IN (?1, ?2)",
+            rusqlite::params![sid, aid],
+        ).unwrap();
+    }
 
-    // 0 天阈值：semantic 应衰减，axiom 不受影响
+    // 0 天阈值：semantic(α=0.02) 应衰减，axiom 不受影响
     let decayed = store.decay_memories_by_depth_with_thresholds(0, 0, 0).unwrap();
     assert!(decayed >= 1, "semantic 记忆应被衰减（0 天阈值）");
 
-    let semantic = store.load_memories_by_depth("semantic").unwrap();
-    let m = semantic.iter().find(|m| m.id == sid).unwrap();
-    assert!((m.confidence - 0.63).abs() < 0.02, "semantic confidence 应约为 0.7 × 0.9 = 0.63");
+    // α=0.02, 100 天 → e^(-2) ≈ 0.135 → 0.7 * 0.135 ≈ 0.095 < 0.3 → 归档
+    // 归档后 load_memories_by_depth 不返回（status='archived'），用 raw SQL 验证
+    {
+        let conn = store.conn.lock().unwrap();
+        let (conf, status): (f64, String) = conn.query_row(
+            "SELECT confidence, status FROM memories WHERE id = ?1",
+            rusqlite::params![sid],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert!(conf <= 0.3, "semantic confidence 应衰减至 0.3: {conf}");
+        assert_eq!(status, "archived", "应被归档");
+    }
 
     let axioms = store.load_memories_by_depth("axiom").unwrap();
     let a = axioms.iter().find(|m| m.id == aid).unwrap();

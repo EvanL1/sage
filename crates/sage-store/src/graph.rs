@@ -75,11 +75,12 @@ impl Store {
         Ok(strengthened)
     }
 
-    /// 衰减长期未激活的边：weight *= decay_factor，低于阈值则删除
+    /// 指数衰减长期未激活的边：weight × e^(-α × inactive_days)，低于阈值则删除
+    /// α 控制衰减速率（默认 0.03 → 半衰期 ~23 天），比线性 ×0.9 更符合遗忘曲线
     pub fn decay_cold_edges(
         &self,
         cold_days: u32,
-        decay_factor: f64,
+        alpha: f64,
         min_weight: f64,
     ) -> Result<usize> {
         let conn = self
@@ -88,16 +89,36 @@ impl Store {
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let threshold = format!("-{cold_days} days");
 
-        conn.execute(
-            "UPDATE memory_edges SET weight = weight * ?1
-             WHERE last_activated_at IS NULL OR last_activated_at < datetime('now', ?2)",
-            rusqlite::params![decay_factor, threshold],
+        // 查询所有冷边及其不活跃天数，在 Rust 端计算 e^(-α×days)
+        let mut stmt = conn.prepare(
+            "SELECT id, weight,
+                    julianday('now') - julianday(COALESCE(last_activated_at, created_at)) AS inactive_days
+             FROM memory_edges
+             WHERE last_activated_at IS NULL OR last_activated_at < datetime('now', ?1)",
         )?;
+        let cold_edges: Vec<(i64, f64, f64)> = stmt
+            .query_map(rusqlite::params![threshold], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
 
-        let deleted = conn.execute(
-            "DELETE FROM memory_edges WHERE weight < ?1",
-            rusqlite::params![min_weight],
-        )?;
+        let mut deleted = 0usize;
+        for (id, weight, inactive_days) in &cold_edges {
+            let new_weight = weight * (-alpha * inactive_days).exp();
+            if new_weight >= min_weight {
+                conn.execute(
+                    "UPDATE memory_edges SET weight = ?1 WHERE id = ?2",
+                    rusqlite::params![new_weight, id],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM memory_edges WHERE id = ?1",
+                    rusqlite::params![id],
+                )?;
+                deleted += 1;
+            }
+        }
 
         Ok(deleted)
     }

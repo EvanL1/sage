@@ -307,10 +307,16 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         // (name, desc, prompt, insert_after, output_format, actions, inputs, max_actions, pre_cond, archive_obs)
         (
             "observer",
-            "观察标注：为原始事件添加频率上下文和意图推断",
+            "观察标注：语义维度分解 + 事件标注",
             concat!(
-                "你是 Sage 的观察者。描述「发生了什么」并推断「为什么可能发生」——不评价、不建议。\n",
-                "为每条原始事件添加频率上下文和可能的意图。\n\n",
+                "你是 Sage 的观察者。你的工作分两步：先分解维度，再逐事件标注。\n\n",
+                "## Step 1: 语义维度分解\n",
+                "先浏览全部原始事件，识别 3-5 个「语义维度」——即今天事件中值得关注的主题轴。\n",
+                "例如：工作压力、社交模式、健康信号、学习投入、情绪波动。\n",
+                "用一行列出维度（不需要 ACTION），格式：DIMENSIONS: 维度1, 维度2, ...\n\n",
+                "## Step 2: 逐事件标注\n",
+                "对每条事件，描述「发生了什么」并推断「为什么可能发生」——不评价、不建议。\n",
+                "标注时确保覆盖 Step 1 中识别的所有维度，不要遗漏任何维度相关的事件。\n\n",
                 "## 今日原始事件\n{context}\n\n",
                 "## 规则\n",
                 "- 从用户视角推断意图，用试探性语言（「可能因为」「似乎为了」）\n",
@@ -321,7 +327,7 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 "- 输出 NONE 如果没有值得标注的事件",
             ),
             "", "每条事件一行 ACTION，不要输出多余解释",
-            "save_memory_visible", "raw_observations", 30, "", false,
+            "save_memory_visible", "raw_observations,calibration_rules", 30, "", false,
         ),
         (
             "coach",
@@ -338,7 +344,7 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 "- 输出 NONE 如果没有新发现",
             ),
             "observer", "每条洞察一行 ACTION，不要输出多余解释",
-            "save_memory_visible", "observer_notes,raw_observations", 20, "", true,
+            "save_memory_visible", "observer_notes,raw_observations,calibration_rules", 20, "", true,
         ),
         (
             "mirror",
@@ -355,7 +361,7 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 "- 输出 NONE 如果洞察不足或无值得反馈的内容",
             ),
             "coach", "",
-            "record_suggestion_dedup,notify_user", "coach_insights", 3, "", false,
+            "record_suggestion_dedup,notify_user", "coach_insights,calibration_rules", 3, "", false,
         ),
         (
             "questioner",

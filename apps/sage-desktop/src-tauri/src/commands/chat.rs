@@ -294,8 +294,8 @@ pub async fn chat(
         }
     }
 
-    // 11e. 冷边衰减
-    let _ = state.store.decay_cold_edges(30, 0.9, 0.1);
+    // 11e. 冷边指数衰减（α=0.03 → 半衰期 ~23 天）
+    let _ = state.store.decay_cold_edges(30, 0.03, 0.1);
 
     // 12. 保存 Sage 回复
     state

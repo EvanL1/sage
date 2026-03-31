@@ -783,6 +783,47 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 48;")?;
         }
 
+        // ── v49: calibration_rules 注入 + observer planner 前置 ──
+        if version < 49 {
+            // 1. 对已存在的预设追加 calibration_rules（仅当尚未包含时）
+            for stage in ["observer", "coach", "mirror"] {
+                conn.execute(
+                    "UPDATE custom_stages
+                     SET allowed_inputs = allowed_inputs || ',calibration_rules'
+                     WHERE name = ?1 AND is_preset = 1
+                       AND allowed_inputs NOT LIKE '%calibration_rules%'",
+                    rusqlite::params![stage],
+                )?;
+            }
+
+            // 2. 更新 observer prompt：嵌入语义维度分解步骤
+            let new_observer_prompt = concat!(
+                "你是 Sage 的观察者。你的工作分两步：先分解维度，再逐事件标注。\n\n",
+                "## Step 1: 语义维度分解\n",
+                "先浏览全部原始事件，识别 3-5 个「语义维度」——即今天事件中值得关注的主题轴。\n",
+                "例如：工作压力、社交模式、健康信号、学习投入、情绪波动。\n",
+                "用一行列出维度（不需要 ACTION），格式：DIMENSIONS: 维度1, 维度2, ...\n\n",
+                "## Step 2: 逐事件标注\n",
+                "对每条事件，描述「发生了什么」并推断「为什么可能发生」——不评价、不建议。\n",
+                "标注时确保覆盖 Step 1 中识别的所有维度，不要遗漏任何维度相关的事件。\n\n",
+                "## 今日原始事件\n{context}\n\n",
+                "## 规则\n",
+                "- 从用户视角推断意图，用试探性语言（「可能因为」「似乎为了」）\n",
+                "- 无法推断时说「意图不明」\n",
+                "- 高频/异常时段活动标注 [high-arousal]\n",
+                "- 每条事件输出一个 ACTION save_memory_visible\n",
+                "- confidence: 有情绪信号=0.8, 普通=0.6\n",
+                "- 输出 NONE 如果没有值得标注的事件",
+            );
+            conn.execute(
+                "UPDATE custom_stages SET prompt = ?1
+                 WHERE name = 'observer' AND is_preset = 1",
+                rusqlite::params![new_observer_prompt],
+            )?;
+
+            conn.execute_batch("PRAGMA user_version = 49;")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

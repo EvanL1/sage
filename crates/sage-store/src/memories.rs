@@ -39,10 +39,11 @@ fn days_since(updated_at: &str) -> f64 {
     0.0
 }
 
-/// 对数衰减时效因子：近期差异大，远期差异小，永不趋零
+/// 指数衰减时效因子：e^(-α×days)，α=0.03 → 半衰期 ~23 天
+/// 比对数衰减更平滑，day 0 到 day 30 之间有合理区分度
 fn recency_factor(updated_at: &str) -> f64 {
     let days = days_since(updated_at);
-    1.0 / (1.0 + (days / 30.0).max(0.001).ln().max(0.0))
+    (-0.03 * days).exp()
 }
 
 /// 综合加权得分：base_score × depth_boost × confidence × recency_factor × (1 + 0.1 × validation_count)
@@ -907,10 +908,10 @@ impl Store {
         Ok(0)
     }
 
-    /// 分层衰减：按 depth 使用不同的未访问阈值，axiom 永不自动衰减
-    /// - episodic:   episodic_days 天未访问 → confidence × 0.9，低于 0.3 时标记 archived
-    /// - semantic:   semantic_days 天未访问 → 同上
-    /// - procedural: procedural_days 天未访问 → 同上
+    /// 分层指数衰减：按 depth 使用不同的 α，axiom 永不自动衰减
+    /// - episodic:   α=0.05（半衰期 ~14 天），低于 0.3 时归档
+    /// - semantic:   α=0.02（半衰期 ~35 天），低于 0.3 时归档
+    /// - procedural: α=0.01（半衰期 ~69 天），低于 0.3 时归档
     /// - axiom:      永不自动衰减
     /// 生产默认值：(30, 90, 180)；测试可传入 (0, 0, 0) 让所有无访问记录的记忆立即衰减
     pub fn decay_memories_by_depth_with_thresholds(
@@ -926,26 +927,45 @@ impl Store {
         let now = chrono::Local::now().to_rfc3339();
         let mut total = 0;
 
-        let tiers: &[(&str, i64)] = &[
-            ("episodic", episodic_days),
-            ("semantic", semantic_days),
-            ("procedural", procedural_days),
+        // 每层用不同的 α：episodic 衰减快，procedural 衰减慢
+        let alpha_map: &[(&str, i64, f64)] = &[
+            ("episodic", episodic_days, 0.05),    // 半衰期 ~14 天
+            ("semantic", semantic_days, 0.02),     // 半衰期 ~35 天
+            ("procedural", procedural_days, 0.01), // 半衰期 ~69 天
             // axiom 不在列表中，永不衰减
         ];
-        for (depth, days) in tiers {
-            // confidence × 0.9；若结果 < 0.3 则同时标记 archived
-            let n = conn.execute(
-                "UPDATE memories
-                 SET confidence = CASE WHEN confidence * 0.9 < 0.3 THEN 0.3 ELSE confidence * 0.9 END,
-                     status = CASE WHEN confidence * 0.9 < 0.3 THEN 'archived' ELSE status END,
-                     updated_at = ?1
-                 WHERE status = 'active'
-                   AND depth = ?2
-                   AND (last_accessed_at IS NULL OR last_accessed_at < datetime('now', ?3))",
-                rusqlite::params![now, depth, format!("-{days} days")],
-            )
-            .context("分层衰减记忆失败")?;
-            total += n;
+        for (depth, days, alpha) in alpha_map {
+            let threshold = format!("-{days} days");
+            // 查询符合条件的记忆，在 Rust 端计算指数衰减
+            let mut stmt = conn.prepare(
+                "SELECT id, confidence,
+                        julianday('now') - julianday(COALESCE(last_accessed_at, created_at)) AS inactive_days
+                 FROM memories
+                 WHERE status = 'active' AND depth = ?1
+                   AND (last_accessed_at IS NULL OR last_accessed_at < datetime('now', ?2))",
+            ).context("准备分层衰减查询失败")?;
+            let targets: Vec<(i64, f64, f64)> = stmt
+                .query_map(rusqlite::params![depth, threshold], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            for (id, confidence, inactive_days) in &targets {
+                let new_conf = confidence * (-alpha * inactive_days).exp();
+                if new_conf < 0.3 {
+                    conn.execute(
+                        "UPDATE memories SET confidence = 0.3, status = 'archived', updated_at = ?1 WHERE id = ?2",
+                        rusqlite::params![now, id],
+                    ).context("归档衰减记忆失败")?;
+                } else {
+                    conn.execute(
+                        "UPDATE memories SET confidence = ?1, updated_at = ?2 WHERE id = ?3",
+                        rusqlite::params![new_conf, now, id],
+                    ).context("更新衰减记忆失败")?;
+                }
+                total += 1;
+            }
         }
         Ok(total)
     }
