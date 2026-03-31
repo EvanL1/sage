@@ -304,17 +304,19 @@ impl Daemon {
             ("evolution_decay", "衰减过期"),
             ("evolution_promote", "晋升验证"),
         ];
-        let router = self.router.lock().await;
+        // 短暂 lock 拿到 agent clone + store，立即释放（避免和 daemon tick 死锁）
+        let (agent, store) = {
+            let router = self.router.lock().await;
+            (router.agent().clone(), router.store_arc())
+        };
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let agent = router.agent();
-        let store = router.store_arc();
         let total = stage_labels.len();
         let mut summaries = Vec::new();
         for (i, (name, label)) in stage_labels.iter().enumerate() {
             let _ = self.store.kv_set("evolution_progress",
                 &format!("{}/{} — [{}] {}", i + 1, total, name, label));
             let ctx = pipeline.run(
-                &format!("manual_{name}"), &[name.to_string()], agent, &store,
+                &format!("manual_{name}"), &[name.to_string()], &agent, &store,
             ).await;
             summaries.push(format!("{label}: {}", ctx.summary()));
         }
@@ -326,30 +328,35 @@ impl Daemon {
 
     /// 手动触发人物观察（通过 pipeline 执行 person_observer preset）
     pub async fn trigger_person_observer(&self) -> Result<bool> {
-        let router = self.router.lock().await;
+        let (agent, store) = {
+            let r = self.router.lock().await;
+            (r.agent().clone(), r.store_arc())
+        };
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let stages = vec!["person_observer".to_string()];
-        let ctx = pipeline.run("manual_person_observer", &stages, router.agent(), &router.store_arc()).await;
+        let ctx = pipeline.run("manual_person_observer", &["person_observer".into()], &agent, &store).await;
         Ok(!ctx.summary().contains("empty"))
     }
 
     /// 手动触发战略分析（通过 pipeline 执行 strategist preset）
     pub async fn trigger_strategist(&self) -> Result<bool> {
-        let router = self.router.lock().await;
+        let (agent, store) = {
+            let r = self.router.lock().await;
+            (r.agent().clone(), r.store_arc())
+        };
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let stages = vec!["strategist".to_string()];
-        let ctx = pipeline.run("manual_strategist", &stages, router.agent(), &router.store_arc()).await;
+        let ctx = pipeline.run("manual_strategist", &["strategist".into()], &agent, &store).await;
         Ok(!ctx.summary().contains("empty"))
     }
 
     /// 手动触发记忆连接（通过 pipeline 执行 evolution_link preset）
     pub async fn trigger_memory_linking(&self) -> Result<usize> {
-        let router = self.router.lock().await;
+        let (agent, store) = {
+            let r = self.router.lock().await;
+            (r.agent().clone(), r.store_arc())
+        };
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let stages = vec!["evolution_link".to_string()];
-        let ctx = pipeline.run("manual_linking", &stages, router.agent(), &router.store_arc()).await;
-        // 从 stage results 提取 action count
-        Ok(ctx.stage_results.iter().map(|r| r.duration_ms as usize).sum::<usize>().min(1))
+        let ctx = pipeline.run("manual_linking", &["evolution_link".into()], &agent, &store).await;
+        Ok(ctx.stage_results.len())
     }
 
     /// 认知调和（增量）：检查新内容是否推翻了旧 decisions/insights
