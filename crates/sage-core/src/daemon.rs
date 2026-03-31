@@ -296,6 +296,8 @@ impl Daemon {
         &self,
     ) -> Result<crate::pipeline::EvolutionResult> {
         info!("手动触发记忆进化");
+        // 清空旧进度标记（防止前端卡在 disabled 状态）
+        let _ = self.store.kv_set("evolution_progress", "running...");
         let router = self.router.lock().await;
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
         let stages: Vec<String> = [
@@ -303,6 +305,8 @@ impl Daemon {
             "evolution_link", "evolution_decay", "evolution_promote",
         ].iter().map(|s| s.to_string()).collect();
         let ctx = pipeline.run("manual_evolution", &stages, router.agent(), &router.store_arc()).await;
+        // 清空进度标记
+        let _ = self.store.kv_delete("evolution_progress");
         info!("手动记忆进化完成: {}", ctx.summary());
         Ok(crate::pipeline::EvolutionResult {
             summary: ctx.summary(),
