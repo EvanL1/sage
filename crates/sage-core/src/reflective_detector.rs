@@ -283,6 +283,36 @@ fn detect_divergence(text: &str) -> Vec<DetectedSignal> {
     }]
 }
 
+// ─── Store 持久化 ───────────────────────────────────────────────────────
+
+/// 扫描文本中的反思信号并存入 SQLite（从 mirror.rs 迁移的纯规则函数）
+pub fn detect_and_store(
+    text: &str,
+    source: &str,
+    context: Option<&str>,
+    store: &crate::store::Store,
+) -> anyhow::Result<usize> {
+    let signals = scan(text, source);
+    if signals.is_empty() {
+        return Ok(0);
+    }
+    let mut count = 0;
+    for sig in &signals {
+        store.save_reflective_signal(
+            source,
+            &sig.signal_type,
+            &sig.raw_text,
+            context,
+            sig.intensity,
+            sig.armor_pattern.as_deref(),
+            sig.intensity,
+        )?;
+        count += 1;
+    }
+    tracing::info!("Mirror: detected {count} reflective signals from {source}");
+    Ok(count)
+}
+
 // ─── 工具 / Helpers ─────────────────────────────────────────────────────
 
 /// 提取关键词附近的文本片段

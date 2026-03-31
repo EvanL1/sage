@@ -383,11 +383,11 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 "## 纠正记录\n{context}\n\n",
                 "## 规则\n",
                 "- 输出 1-2 条具体的自约束规则，每条 ≤50 字\n",
-                "- 用 ACTION save_memory 保存，category 为 calibration，confidence: 0.75\n",
+                "- 用 ACTION save_calibration_rule | 规则内容 | confidence:0.75\n",
                 "- 输出 NONE 如果纠正记录不足以提炼规则",
             ),
             "questioner", "每条规则一行 ACTION",
-            "save_memory", "corrections", 10, "", false,
+            "save_calibration_rule", "corrections", 10, "", false,
         ),
         (
             "strategist",
@@ -422,6 +422,28 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             ),
             "coach", "",
             "save_person_memory", "emails,messages,observer_notes,coach_insights", 30, "", false,
+        ),
+        (
+            "mirror_weekly",
+            "周度认知镜像：汇总本周反思信号，生成反映性周报",
+            concat!(
+                "你是 Sage 的周度认知镜像。回顾本周的行为信号和反思记录，\n",
+                "写一份温和、有洞察力的周度回顾（3-5 段落）。\n",
+                "风格：像一个理解你的朋友在周末和你聊这一周发生的事。\n\n",
+                "## 本周信号\n{context}\n\n",
+                "## 规则\n",
+                "- 先用 ACTION save_report 保存完整周报\n",
+                "- 再用 ACTION record_suggestion_dedup 记录建议（source=mirror, key=weekly-mirror）\n",
+                "- 最后用 ACTION notify_user 通知用户查看\n",
+                "- 如果信号不足，输出 NONE",
+            ),
+            "", // insert_after（周度管线自行排序）
+            "先输出 ACTION save_report，再输出 ACTION record_suggestion_dedup，最后 ACTION notify_user",
+            "save_report,record_suggestion_dedup,notify_user",
+            "weekly_signals,coach_insights,memories",
+            3,
+            "SELECT COUNT(*) = 0 FROM suggestions WHERE source = 'mirror' AND dedup_key = 'weekly-mirror' AND created_at > datetime('now', '-6 days')",
+            false,
         ),
     ];
 

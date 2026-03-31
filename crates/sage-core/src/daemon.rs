@@ -296,27 +296,19 @@ impl Daemon {
         &self,
     ) -> Result<crate::memory_evolution::EvolutionResult> {
         info!("手动触发记忆进化");
-        let router = self.router.lock().await;
-        let result = router.run_memory_evolution().await;
-        // Evolution 之后跑人物认知提取（附加功能，不影响 Evolution 结果）
-        match router.run_person_observer().await {
-            Ok(true) => info!("PersonObserver: person insights extracted"),
-            Ok(false) => {}
-            Err(e) => error!("PersonObserver failed: {e}"),
-        }
-        result
+        self.router.lock().await.run_memory_evolution().await
     }
 
-    /// 手动触发人物认知提取
+    /// 手动触发人物认知提取（现由预设 stage 驱动，此方法保留兼容性）
     pub async fn trigger_person_observer(&self) -> Result<bool> {
-        info!("手动触发人物认知提取");
-        self.router.lock().await.run_person_observer().await
+        info!("PersonObserver: 已迁移到预设 stage，手动触发已弃用");
+        Ok(false)
     }
 
-    /// 手动触发战略家分析
+    /// 手动触发战略家分析（现由预设 stage 驱动，此方法保留兼容性）
     pub async fn trigger_strategist(&self) -> Result<bool> {
-        info!("手动触发战略家分析");
-        self.router.lock().await.run_strategist().await
+        info!("Strategist: 已迁移到预设 stage，手动触发已弃用");
+        Ok(false)
     }
 
     /// 单独触发记忆图谱连接（不走完整 evolution pipeline）
@@ -592,12 +584,11 @@ impl Daemon {
             Err(e) => error!("Guardian failed: {e}"),
         }
 
-        // 周期性任务：单次 increment，统一判断
-        let (run_task_intel, run_person_observer) = {
+        // 周期性任务：每 3 tick 执行
+        let run_task_intel = {
             let mut count = self.tick_count.lock().unwrap_or_else(|e| e.into_inner());
             *count = count.wrapping_add(1);
-            let c = *count;
-            (c % 3 == 0, c % 6 == 0)
+            *count % 3 == 0
         };
 
         // Task Intelligence + Staleness Check：每 3 tick
@@ -623,16 +614,6 @@ impl Daemon {
                 }
                 Ok(_) => {}
                 Err(e) => error!("Staleness check failed: {e}"),
-            }
-        }
-
-        // PersonObserver：每 6 tick（~3h）从今日事件中提取人物认知
-        if run_person_observer && !had_evening_review {
-            let router = self.router.lock().await;
-            match router.run_person_observer().await {
-                Ok(true) => info!("PersonObserver (periodic): person insights extracted"),
-                Ok(false) => {}
-                Err(e) => error!("PersonObserver (periodic) failed: {e}"),
             }
         }
 

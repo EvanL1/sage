@@ -24,9 +24,7 @@ use crate::store::Store;
 
 // Re-export 常用类型
 pub use stages::{
-    ObserverStage, CoachStage, MirrorStage, QuestionerStage,
-    PersonObserverStage, CalibratorStage, StrategistStage,
-    MirrorWeeklyStage, EvolutionStage, UserDefinedStage, PresetCtxKey,
+    EvolutionStage, UserDefinedStage, PresetCtxKey,
 };
 
 // ─── Pipeline Context（类型化 Stage I/O 契约）─────────────────────────────────
@@ -363,8 +361,9 @@ impl CognitivePipeline {
     }
 
     pub async fn run_weekly(&self, agent: &Agent, store: &Arc<Store>) -> PipelineContext {
+        // 周频阶段由预设 stage 实现，从注册的 stages 中过滤非 evolution/meta 的 stage
         let weekly: Vec<String> = self.stages.keys()
-            .filter(|k| k.as_str() == "strategist" || k.as_str() == "mirror_weekly")
+            .filter(|k| k.as_str() != "evolution" && k.as_str() != "meta")
             .cloned().collect();
         if weekly.is_empty() { return PipelineContext::default(); }
         self.run("weekly", &weekly, agent, store).await
@@ -412,24 +411,11 @@ fn is_stage_disabled(store: &Store, name: &str) -> bool {
 pub fn build_pipeline(config: &crate::config::PipelineConfig, store: &Store) -> CognitivePipeline {
     let mut p = CognitivePipeline::new(config);
 
-    let custom_stages = store.list_custom_stages().unwrap_or_default();
-    let preset_names: Vec<String> = custom_stages.iter()
-        .filter(|cs| cs.is_preset && cs.enabled)
-        .map(|cs| cs.name.clone())
-        .collect();
-
-    // 内置 stage：如果有同名预设则跳过
-    if !preset_names.contains(&"observer".into()) { p.register(Arc::new(ObserverStage)); }
-    if !preset_names.contains(&"coach".into()) { p.register(Arc::new(CoachStage)); }
-    if !preset_names.contains(&"mirror".into()) { p.register(Arc::new(MirrorStage)); }
-    if !preset_names.contains(&"questioner".into()) { p.register(Arc::new(QuestionerStage)); }
+    // Evolution 和 Meta 是唯二内置 stage，其余全由预设/自定义 stage 实现
     p.register(Arc::new(EvolutionStage));
-    if !preset_names.contains(&"person_observer".into()) { p.register(Arc::new(PersonObserverStage)); }
-    if !preset_names.contains(&"calibrator".into()) { p.register(Arc::new(CalibratorStage)); }
-    if !preset_names.contains(&"strategist".into()) { p.register(Arc::new(StrategistStage)); }
-    p.register(Arc::new(MirrorWeeklyStage));
     p.register(Arc::new(MetaStage));
 
+    let custom_stages = store.list_custom_stages().unwrap_or_default();
     // 自定义/预设 stage
     for cs in &custom_stages {
         if !cs.enabled { continue; }
@@ -469,13 +455,11 @@ pub use meta::MetaStage;
 // ─── 默认管线顺序 ───────────────────────────────────────────────────────────
 
 pub fn default_evening_stages() -> Vec<String> {
-    vec!["observer", "coach", "mirror", "questioner",
-         "evolution", "person_observer", "calibrator", "meta"]
-        .into_iter().map(String::from).collect()
+    vec!["evolution", "meta"].into_iter().map(String::from).collect()
 }
 
 pub fn default_weekly_stages() -> Vec<String> {
-    vec!["strategist", "mirror_weekly"].into_iter().map(String::from).collect()
+    vec![]
 }
 
 #[cfg(test)]
@@ -576,13 +560,13 @@ mod tests {
     }
 
     #[test]
-    fn default_evening_has_eight_stages() {
-        assert_eq!(default_evening_stages().len(), 8);
+    fn default_evening_has_two_stages() {
+        assert_eq!(default_evening_stages().len(), 2);
         assert_eq!(default_evening_stages().last().unwrap(), "meta");
     }
 
     #[test]
-    fn default_weekly_has_two_stages() { assert_eq!(default_weekly_stages().len(), 2); }
+    fn default_weekly_is_empty() { assert_eq!(default_weekly_stages().len(), 0); }
 
     #[test]
     fn action_validation_rejects_unknown() {

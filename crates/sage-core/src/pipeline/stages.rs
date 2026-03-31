@@ -14,31 +14,6 @@ use super::{
 };
 use super::actions;
 
-// ─── 内置 Stage Wrappers（宏生成 bool 类型） ──────────────────────────────────
-
-macro_rules! bool_stage {
-    ($struct_name:ident, $label:literal, $fn_path:expr) => {
-        pub struct $struct_name;
-        #[async_trait]
-        impl CognitiveStage for $struct_name {
-            fn name(&self) -> &str { $label }
-            async fn run(&self, invoker: Box<dyn ConstrainedInvoker>, store: Arc<Store>, mut ctx: PipelineContext) -> Result<(StageOutput, PipelineContext)> {
-                let ok = $fn_path(&*invoker, &store, &mut ctx).await?;
-                Ok((StageOutput::Bool(ok), ctx))
-            }
-        }
-    };
-}
-
-bool_stage!(ObserverStage, "observer", crate::observer::annotate);
-bool_stage!(CoachStage, "coach", crate::coach::learn);
-bool_stage!(MirrorStage, "mirror", crate::mirror::reflect);
-bool_stage!(QuestionerStage, "questioner", crate::questioner::ask);
-bool_stage!(PersonObserverStage, "person_observer", crate::person_observer::extract_persons);
-bool_stage!(CalibratorStage, "calibrator", crate::calibrator::reflect_patterns);
-bool_stage!(StrategistStage, "strategist", crate::strategist::strategize);
-bool_stage!(MirrorWeeklyStage, "mirror_weekly", crate::mirror::mirror_weekly);
-
 /// Memory Evolution 单独实现（返回 EvolutionResult + 写入 ctx）
 pub struct EvolutionStage;
 #[async_trait]

@@ -59,6 +59,15 @@ fn action_doc_entry(action: &str) -> Option<&'static str> {
         "save_person_memory" => Some(
             "- `ACTION save_person_memory | 人名 | category | 观察内容 | confidence:0.0-1.0 | visibility:public/subconscious/private`\n  保存关于特定人物的记忆\n\n"
         ),
+        "save_memory_integrated" => Some(
+            "- `ACTION save_memory_integrated | category | 记忆内容 | confidence:0.0-1.0 | visibility:public/subconscious/private`\n  保存记忆（经过 MemoryIntegrator 去重仲裁）\n\n"
+        ),
+        "save_report" => Some(
+            "- `ACTION save_report | report_type | 报告内容`\n  保存一份报告（morning/evening/weekly/week_start/mirror_weekly）\n\n"
+        ),
+        "save_calibration_rule" => Some(
+            "- `ACTION save_calibration_rule | 规则内容 | confidence:0.0-1.0`\n  保存校准规则（同时写入 calibration 记忆 + negative_rules）\n\n"
+        ),
         _ => None,
     }
 }
@@ -77,6 +86,17 @@ pub fn validate_action_params(action: &str, parts: &[&str]) -> Option<String> {
         "save_open_question" => validate_non_empty(parts, 1, "问题内容"),
         "bump_question" => validate_bump_question(parts),
         "save_person_memory" => validate_person_memory(parts),
+        "save_memory_integrated" => validate_save_memory_visible(parts),
+        "save_report" => {
+            if parts.get(1).map(|s| s.is_empty()).unwrap_or(true) {
+                return Some("report_type 为空".into());
+            }
+            if parts.get(2).map(|s| s.is_empty()).unwrap_or(true) {
+                return Some("报告内容为空".into());
+            }
+            None
+        }
+        "save_calibration_rule" => validate_non_empty(parts, 1, "规则内容"),
         _ => Some(format!("未知 action: {action}")),
     }
 }
@@ -229,6 +249,9 @@ fn dispatch_action(action: &str, parts: &[&str], store: &Store, stage: &str) -> 
         "save_open_question" => handle_save_open_question(parts, store, stage),
         "bump_question" => handle_bump_question(parts, store, stage),
         "save_person_memory" => handle_save_person_memory(parts, store, stage),
+        "save_memory_integrated" => handle_save_memory_integrated(parts, store, stage),
+        "save_report" => handle_save_report(parts, store, stage),
+        "save_calibration_rule" => handle_save_calibration_rule(parts, store, stage),
         _ => None,
     }
 }
@@ -352,6 +375,46 @@ fn handle_save_person_memory(parts: &[&str], store: &Store, stage: &str) -> Opti
     }
 }
 
+fn handle_save_memory_integrated(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let category = parts.get(1).unwrap_or(&"insight");
+    let content = parts[2];
+    let confidence = parse_confidence(parts, 3);
+    let visibility = parts.get(4).and_then(|s| s.strip_prefix("visibility:")).unwrap_or("public");
+    // TODO: 未来升级为真正的 MemoryIntegrator 去重仲裁（需要 async + LlmProvider）
+    // 当前 fallback：直接调用 save_memory_with_visibility，Store 层的 text_similarity > 0.6 提供基础去重
+    match store.save_memory_with_visibility(
+        category, content, &format!("stage:{stage}"), confidence, visibility,
+    ) {
+        Ok(id) => { info!("Stage {stage}: ✓ saved integrated memory [{category}]"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: save_memory_integrated failed: {e}"); None }
+    }
+}
+
+fn handle_save_report(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let report_type = parts[1];
+    let content = parts[2];
+    match store.save_report(report_type, content) {
+        Ok(id) => { info!("Stage {stage}: ✓ saved report [{report_type}]"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: save_report failed: {e}"); None }
+    }
+}
+
+fn handle_save_calibration_rule(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let content = parts[1];
+    let confidence = parse_confidence(parts, 2);
+    match store.save_memory("calibration", content, &format!("stage:{stage}"), confidence) {
+        Ok(id) => {
+            // 同步写入 negative_rules
+            if let Err(e) = store.append_negative_rule(content) {
+                warn!("Stage {stage}: append_negative_rule failed: {e}");
+            }
+            info!("Stage {stage}: ✓ saved calibration rule");
+            Some(id)
+        }
+        Err(e) => { warn!("Stage {stage}: save_calibration_rule failed: {e}"); None }
+    }
+}
+
 fn parse_confidence(parts: &[&str], idx: usize) -> f64 {
     parts.get(idx)
         .and_then(|c| c.strip_prefix("confidence:"))
@@ -439,6 +502,18 @@ pub fn load_filtered_context(store: &Store, allowed: &[String]) -> String {
                     for c in store.get_corrections_for_pattern(rtype).unwrap_or_default() {
                         ctx.push_str(&format!("- [纠正/{rtype}] {} → {}\n", c.wrong_claim, c.correct_fact));
                     }
+                }
+            }
+            // 近期历史观察（已处理），供需要回看过去行为的 stage 使用
+            "recent_observations" => {
+                for (cat, obs) in store.load_recent_observations(200).unwrap_or_default().iter().take(100) {
+                    ctx.push_str(&format!("- [历史:{cat}] {obs}\n"));
+                }
+            }
+            // 本周信号：最近 7 天的 suggestions（供周度镜像汇总）
+            "weekly_signals" => {
+                for s in store.get_recent_suggestions(20).unwrap_or_default().iter().take(20) {
+                    ctx.push_str(&format!("- [信号] {}\n", s.response));
                 }
             }
             _ => {}

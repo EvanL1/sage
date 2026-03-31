@@ -8,14 +8,10 @@ use sage_types::{Event, EventType};
 use crate::agent::Agent;
 use crate::pipeline::{actions, invoker, HarnessedAgent};
 use crate::applescript;
-use crate::coach;
 use crate::context_gatherer;
 use crate::memory_evolution;
-use crate::mirror;
-use crate::observer;
-use crate::questioner;
+use crate::reflective_detector;
 use crate::store::Store;
-use crate::strategist;
 use crate::task_intelligence;
 
 enum Priority {
@@ -81,49 +77,9 @@ impl Router {
         HarnessedAgent::new(self.agent.clone(), Arc::clone(&self.store), caller.to_string())
     }
 
-    /// 触发观察者：raw observations → 语义标注 → observer_note
-    pub async fn run_observer(&self) -> Result<bool> {
-        observer::annotate(&self.invoker("router:observer"), &self.store, &mut Default::default()).await
-    }
-
-    /// 触发学习教练：读 observer_notes（降级读 raw obs）→ 发现模式 → 保存 coach_insight → 归档
-    pub async fn run_coach(&self) -> Result<bool> {
-        coach::learn(&self.invoker("router:coach"), &self.store, &mut Default::default()).await
-    }
-
-    /// 触发镜子：从 coach_insight 记忆反映一个行为模式给用户
-    pub async fn run_mirror(&self) -> Result<bool> {
-        mirror::reflect(&self.invoker("router:mirror"), &self.store, &mut Default::default()).await
-    }
-
-    /// 触发提问者：生成一个苏格拉底式深度问题
-    pub async fn run_questioner(&self) -> Result<bool> {
-        questioner::ask(&self.invoker("router:questioner"), &self.store, &mut Default::default()).await
-    }
-
-    /// 触发战略家：站在月球看地球，超然的宏观结构分析（周频）
-    pub async fn run_strategist(&self) -> Result<bool> {
-        strategist::strategize(&self.invoker("router:strategist"), &self.store, &mut Default::default()).await
-    }
-
     /// 触发记忆进化：合并重复 → 精简冗长 → 衰减过期 → 提升高频
     pub async fn run_memory_evolution(&self) -> Result<memory_evolution::EvolutionResult> {
         memory_evolution::evolve(&self.invoker("router:evolution"), &self.store).await
-    }
-
-    /// 触发 Mirror 周报：汇总反思信号，生成反映性报告
-    pub async fn run_mirror_weekly(&self) -> Result<bool> {
-        mirror::mirror_weekly(&self.invoker("router:mirror_weekly"), &self.store, &mut Default::default()).await
-    }
-
-    /// 人物认知提取：从今日事件中识别人物特征
-    pub async fn run_person_observer(&self) -> Result<bool> {
-        crate::person_observer::extract_persons(&self.invoker("router:person_observer"), &self.store, &mut Default::default()).await
-    }
-
-    /// 触发校准模式反思：分析纠正历史，提炼自我约束规则
-    pub async fn run_calibrator(&self) -> Result<bool> {
-        crate::calibrator::reflect_patterns(&self.invoker("router:calibrator"), &self.store, &mut Default::default()).await
     }
 
     /// 晨间任务规划：从 morning brief 提取今日待办
@@ -434,7 +390,7 @@ impl Router {
 
         // Mirror Layer：扫描反思信号（规则引擎，零 LLM 开销）
         let scan_text = format!("{}\n{}", event.title, event.body);
-        if let Ok(n) = mirror::detect_and_store(&scan_text, &event.source, None, &self.store) {
+        if let Ok(n) = reflective_detector::detect_and_store(&scan_text, &event.source, None, &self.store) {
             if n > 0 {
                 info!("Mirror: {n} reflective signals detected from {}", event.source);
             }

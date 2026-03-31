@@ -769,6 +769,13 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 46;")?;
         }
 
+        // ── v47: 重新种子预设（新增 mirror_weekly + calibrator 改用 save_calibration_rule）──
+        if version < 47 {
+            // INSERT OR IGNORE 保证幂等（已有预设不覆盖）
+            crate::pipeline::seed_preset_stages(&conn)?;
+            conn.execute_batch("PRAGMA user_version = 47;")?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (
