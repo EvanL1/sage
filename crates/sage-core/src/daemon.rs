@@ -291,27 +291,37 @@ impl Daemon {
         self.tick().await
     }
 
-    /// 手动触发记忆进化（通过 pipeline 执行 6 个 evolution preset stage）
+    /// 手动触发记忆进化（通过 pipeline 逐 stage 执行，实时汇报进度）
     pub async fn trigger_memory_evolution(
         &self,
     ) -> Result<crate::pipeline::EvolutionResult> {
         info!("手动触发记忆进化");
-        // 清空旧进度标记（防止前端卡在 disabled 状态）
-        let _ = self.store.kv_set("evolution_progress", "running...");
+        let stage_labels = [
+            ("evolution_merge", "去重合并"),
+            ("evolution_synth", "特质提炼"),
+            ("evolution_condense", "精简冗长"),
+            ("evolution_link", "记忆关联"),
+            ("evolution_decay", "衰减过期"),
+            ("evolution_promote", "晋升验证"),
+        ];
         let router = self.router.lock().await;
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let stages: Vec<String> = [
-            "evolution_merge", "evolution_synth", "evolution_condense",
-            "evolution_link", "evolution_decay", "evolution_promote",
-        ].iter().map(|s| s.to_string()).collect();
-        let ctx = pipeline.run("manual_evolution", &stages, router.agent(), &router.store_arc()).await;
-        // 清空进度标记
+        let agent = router.agent();
+        let store = router.store_arc();
+        let total = stage_labels.len();
+        let mut summaries = Vec::new();
+        for (i, (name, label)) in stage_labels.iter().enumerate() {
+            let _ = self.store.kv_set("evolution_progress",
+                &format!("{}/{} — [{}] {}", i + 1, total, name, label));
+            let ctx = pipeline.run(
+                &format!("manual_{name}"), &[name.to_string()], agent, &store,
+            ).await;
+            summaries.push(format!("{label}: {}", ctx.summary()));
+        }
         let _ = self.store.kv_delete("evolution_progress");
-        info!("手动记忆进化完成: {}", ctx.summary());
-        Ok(crate::pipeline::EvolutionResult {
-            summary: ctx.summary(),
-            ..Default::default()
-        })
+        let summary = summaries.join(" | ");
+        info!("手动记忆进化完成: {summary}");
+        Ok(crate::pipeline::EvolutionResult { summary, ..Default::default() })
     }
 
     /// 手动触发人物观察（通过 pipeline 执行 person_observer preset）
