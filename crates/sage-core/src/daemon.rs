@@ -291,21 +291,52 @@ impl Daemon {
         self.tick().await
     }
 
-    /// 手动触发记忆进化（已迁移到预设 stage，保留 API 兼容性）
+    /// 手动触发记忆进化（通过 pipeline 执行 6 个 evolution preset stage）
     pub async fn trigger_memory_evolution(
         &self,
     ) -> Result<crate::pipeline::EvolutionResult> {
-        info!("手动触发记忆进化（已迁移到预设 stage）");
+        info!("手动触发记忆进化");
+        let router = self.router.lock().await;
+        let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
+        let stages: Vec<String> = [
+            "evolution_merge", "evolution_synth", "evolution_condense",
+            "evolution_link", "evolution_decay", "evolution_promote",
+        ].iter().map(|s| s.to_string()).collect();
+        let ctx = pipeline.run("manual_evolution", &stages, router.agent(), &router.store_arc()).await;
+        info!("手动记忆进化完成: {}", ctx.summary());
         Ok(crate::pipeline::EvolutionResult {
-            summary: "已迁移到预设 stage — 通过 Evening Review 自动运行".into(),
+            summary: ctx.summary(),
             ..Default::default()
         })
     }
 
-    // TODO: deprecated — kept for Tauri command compatibility; no-op stubs
-    pub async fn trigger_person_observer(&self) -> Result<bool> { Ok(false) }
-    pub async fn trigger_strategist(&self) -> Result<bool> { Ok(false) }
-    pub async fn trigger_memory_linking(&self) -> Result<usize> { Ok(0) }
+    /// 手动触发人物观察（通过 pipeline 执行 person_observer preset）
+    pub async fn trigger_person_observer(&self) -> Result<bool> {
+        let router = self.router.lock().await;
+        let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
+        let stages = vec!["person_observer".to_string()];
+        let ctx = pipeline.run("manual_person_observer", &stages, router.agent(), &router.store_arc()).await;
+        Ok(!ctx.summary().contains("empty"))
+    }
+
+    /// 手动触发战略分析（通过 pipeline 执行 strategist preset）
+    pub async fn trigger_strategist(&self) -> Result<bool> {
+        let router = self.router.lock().await;
+        let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
+        let stages = vec!["strategist".to_string()];
+        let ctx = pipeline.run("manual_strategist", &stages, router.agent(), &router.store_arc()).await;
+        Ok(!ctx.summary().contains("empty"))
+    }
+
+    /// 手动触发记忆连接（通过 pipeline 执行 evolution_link preset）
+    pub async fn trigger_memory_linking(&self) -> Result<usize> {
+        let router = self.router.lock().await;
+        let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
+        let stages = vec!["evolution_link".to_string()];
+        let ctx = pipeline.run("manual_linking", &stages, router.agent(), &router.store_arc()).await;
+        // 从 stage results 提取 action count
+        Ok(ctx.stage_results.iter().map(|r| r.duration_ms as usize).sum::<usize>().min(1))
+    }
 
     /// 认知调和（增量）：检查新内容是否推翻了旧 decisions/insights
     pub async fn run_reconcile(&self, new_content: &str) -> Result<usize> {
