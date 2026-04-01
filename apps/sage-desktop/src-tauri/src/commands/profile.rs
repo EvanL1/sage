@@ -7,7 +7,7 @@ use sage_types::{
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::{default_agent_config, map_err, trigger_memory_sync};
+use super::{get_provider, map_err, trigger_memory_sync};
 use crate::AppState;
 
 /// 基于 UserProfile 生成个性化的"第一印象"，存为 insight 记忆，并返回文本
@@ -15,12 +15,7 @@ pub async fn generate_first_impression(
     state: &AppState,
     profile: &sage_types::UserProfile,
 ) -> Option<String> {
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().ok()?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store).ok()?;
 
     let name = if profile.identity.name.is_empty() {
         "新用户"

@@ -1,19 +1,8 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::{default_agent_config, map_err};
+use super::{extract_markdown_title, get_provider, map_err};
 use crate::AppState;
-
-/// 从 markdown 文本首行提取页面标题（去掉 `# ` 前缀）
-fn extract_title(markdown: &str) -> String {
-    for line in markdown.lines() {
-        let trimmed = line.trim();
-        if let Some(title) = trimmed.strip_prefix("# ") {
-            return title.trim().to_string();
-        }
-    }
-    "Untitled Page".to_string()
-}
 
 /// 通过 LLM 生成页面内容并保存到数据库
 #[tauri::command]
@@ -22,20 +11,7 @@ pub async fn generate_page(
     prompt: String,
 ) -> Result<Value, String> {
     let lang = state.store.prompt_lang();
-
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or_else(|| {
-            if lang == "en" {
-                "No AI service available. Please configure an API key in Settings.".to_string()
-            } else {
-                "没有可用的 AI 服务。请在设置中配置 API Key。".to_string()
-            }
-        })?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
     let system_prompt = sage_core::prompts::page_gen_system(&lang).to_string();
 
     let markdown = provider
@@ -47,7 +23,7 @@ pub async fn generate_page(
     if markdown.trim().is_empty() || markdown.len() > 50000 {
         return Err("生成的页面内容无效".into());
     }
-    let title = extract_title(&markdown);
+    let title = extract_markdown_title(&markdown);
     let id = state
         .store
         .save_custom_page(&title, &markdown)

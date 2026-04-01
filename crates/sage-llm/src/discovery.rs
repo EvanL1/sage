@@ -73,7 +73,7 @@ pub fn discover_providers(store: &Store) -> Vec<ProviderInfo> {
 }
 
 fn detect_cli_status(id: &str, binary: &str) -> ProviderStatus {
-    let Some(binary_path) = resolve_cli_binary(binary) else {
+    let Some(binary_path) = crate::resolve_cli_path(binary) else {
         return ProviderStatus::NotFound;
     };
 
@@ -89,6 +89,19 @@ fn detect_cli_status(id: &str, binary: &str) -> ProviderStatus {
     } else {
         ProviderStatus::NeedsLogin
     }
+}
+
+/// 一步式 provider 解析：发现 → 选优 → 构建，供 bridge/daemon 共用。
+/// 返回 (provider_box, provider_id)；找不到时返回 None。
+pub fn resolve_provider(
+    store: &Store,
+    agent_config: &crate::AgentConfig,
+) -> Option<(Box<dyn crate::provider::LlmProvider>, String)> {
+    let discovered = discover_providers(store);
+    let saved = store.load_provider_configs().unwrap_or_default();
+    let (info, config) = select_best_provider(&discovered, &saved)?;
+    let provider = crate::provider::create_provider_from_config(&info, &config, agent_config);
+    Some((provider, info.id.clone()))
 }
 
 /// 选择最佳可用 provider，返回 (info, config) 对
@@ -118,36 +131,6 @@ pub fn select_best_provider(
         }
     }
     None
-}
-
-fn resolve_cli_binary(binary: &str) -> Option<PathBuf> {
-    let candidates = [
-        format!("/opt/homebrew/bin/{binary}"),
-        format!("/usr/local/bin/{binary}"),
-        format!("/usr/bin/{binary}"),
-    ];
-    for candidate in candidates {
-        let path = PathBuf::from(candidate);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    // fallback: try which (works in terminal context)
-    std::process::Command::new("which")
-        .arg(binary)
-        .current_dir("/tmp")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            let resolved = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if resolved.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(resolved))
-            }
-        })
 }
 
 fn run_cli_probe(binary_path: &Path, args: &[&str]) -> Option<std::process::Output> {

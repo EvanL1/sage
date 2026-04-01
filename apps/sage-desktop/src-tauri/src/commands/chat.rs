@@ -1,7 +1,10 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::{auto_answer_open_questions, default_agent_config, extract_and_save_memories, map_err};
+use super::{
+    auto_answer_open_questions, extract_and_save_memories,
+    extract_markdown_title, get_provider, map_err,
+};
 use crate::AppState;
 
 #[tauri::command]
@@ -24,21 +27,14 @@ pub async fn chat(
     // 2. 页面生成请求检测 — 在主 prompt 构建之前短路
     if sage_core::skills::is_page_gen_request(&message) {
         let lang = state.store.prompt_lang();
-        let discovered = sage_core::discovery::discover_providers(&state.store);
-        let configs = state.store.load_provider_configs().map_err(map_err)?;
-        if let Some((info, config)) =
-            sage_core::discovery::select_best_provider(&discovered, &configs)
-        {
-            let agent_config = super::default_agent_config();
-            let provider =
-                sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+        if let Ok(provider) = get_provider(&state.store) {
             let system_prompt = sage_core::prompts::page_gen_system(&lang).to_string();
             if let Ok(markdown) = provider.invoke(&message, Some(&system_prompt)).await {
                 // 约束层：验证页面内容
                 if markdown.trim().is_empty() || markdown.len() > 50000 {
                     return Err("页面内容无效".into());
                 }
-                let title = extract_page_title(&markdown);
+                let title = extract_markdown_title(&markdown);
                 if let Ok(page_id) = state.store.save_custom_page(&title, &markdown) {
                     let reply = if lang == "en" {
                         format!("I've generated the page **{title}** for you.")
@@ -63,6 +59,7 @@ pub async fn chat(
             }
         }
     }
+
 
     // 3. 保存用户消息
     state
@@ -169,17 +166,7 @@ pub async fn chat(
         .map_err(map_err)?;
 
     // 6. 发现并选择 provider
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or(if lang == "en" {
-            "No AI service available. Please configure an API key in Settings."
-        } else {
-            "没有可用的 AI 服务。请在设置中配置 API Key。"
-        })?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     // 7. 确定对话层级
     let session_count = state.store.count_distinct_sessions().unwrap_or(1);
@@ -412,16 +399,6 @@ fn build_browser_text(state: &AppState, lang: &str) -> String {
     }
 }
 
-/// 从 markdown 文本首行提取页面标题（去掉 `# ` 前缀）
-fn extract_page_title(markdown: &str) -> String {
-    for line in markdown.lines() {
-        if let Some(title) = line.trim().strip_prefix("# ") {
-            return title.trim().to_string();
-        }
-    }
-    "Untitled Page".to_string()
-}
-
 /// 取消正在进行的 Chat LLM 调用
 #[tauri::command]
 pub async fn cancel_chat(state: State<'_, AppState>) -> Result<(), String> {
@@ -478,19 +455,7 @@ pub async fn get_chat_history(
 /// Digital Twin 外部对话 — 只使用 public 记忆，只读模式
 #[tauri::command]
 pub async fn chat_external(state: State<'_, AppState>, message: String) -> Result<String, String> {
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let lang = state.store.prompt_lang();
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or_else(|| if lang == "en" {
-            "LLM provider not configured. Please add an API key in Settings.".to_string()
-        } else {
-            "未配置 LLM provider，请先在 Settings 中配置 API key".to_string()
-        })?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
-
+    let provider = get_provider(&state.store)?;
     let persona = sage_core::persona::Persona::new(std::sync::Arc::clone(&state.store));
     persona
         .chat(&message, provider.as_ref())

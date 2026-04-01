@@ -7,11 +7,7 @@ use super::Store;
 impl Store {
     /// 检查 12 小时内是否有相同 (event_source, prompt) 的建议
     pub fn has_recent_suggestion(&self, event_source: &str, prompt: &str) -> bool {
-        let conn = self.conn.lock().ok();
-        let Some(conn) = conn else {
-            tracing::warn!("Store mutex poisoned");
-            return false;
-        };
+        let Some(conn) = self.conn_or_warn() else { return false; };
         let threshold = (chrono::Local::now() - chrono::Duration::hours(12)).to_rfc3339();
         conn.query_row(
             "SELECT 1 FROM suggestions WHERE event_source = ?1 AND prompt = ?2 AND created_at > ?3 LIMIT 1",
@@ -23,11 +19,7 @@ impl Store {
     /// 按事件标题去重（12 小时内，prompt 包含标题关键词）
     /// 搜索 prompt 而非 response，因为 prompt 总是包含英文标题，但 response 可能是中文
     pub fn has_recent_suggestion_by_title(&self, event_source: &str, title: &str) -> bool {
-        let conn = self.conn.lock().ok();
-        let Some(conn) = conn else {
-            tracing::warn!("Store mutex poisoned");
-            return false;
-        };
+        let Some(conn) = self.conn_or_warn() else { return false; };
         let threshold = (chrono::Local::now() - chrono::Duration::hours(12)).to_rfc3339();
         // 用标题前 20 字符做模糊匹配（避免时间戳等变化导致的不匹配）
         let key: String = title.chars().take(20).collect();
@@ -48,13 +40,9 @@ impl Store {
         prompt: &str,
         response: &str,
     ) -> Result<i64> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
 
         let now = chrono::Local::now().to_rfc3339();
-        let today = &now[..10]; // "2026-03-25"
 
         // heartbeat 类型：同天同源只保留一条，重复生成时更新内容
         // 用 LIKE 匹配 prompt 中的标题关键词（prompt 包含动态时间，不能精确匹配）
@@ -63,7 +51,7 @@ impl Store {
             let stable_key = extract_stable_key(prompt);
             let existing_id: Option<i64> = conn.query_row(
                 "SELECT id FROM suggestions WHERE event_source = 'heartbeat' AND prompt LIKE ?1 ESCAPE '\\' AND created_at >= ?2 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![format!("%{stable_key}%"), format!("{today}T00:00:00")],
+                rusqlite::params![format!("%{stable_key}%"), crate::today_start()],
                 |row| row.get(0),
             ).ok();
             if let Some(id) = existing_id {
@@ -95,10 +83,7 @@ impl Store {
 
     /// 按时间倒序获取最近的建议
     pub fn get_recent_suggestions(&self, limit: usize) -> Result<Vec<Suggestion>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT s.id, s.event_source, s.prompt, s.response, s.created_at,
                     (SELECT f.action FROM feedback f WHERE f.suggestion_id = s.id ORDER BY f.id DESC LIMIT 1)
@@ -146,10 +131,7 @@ impl Store {
 
     /// 获取最近一条 questioner 生成的每日问题（event_source='questioner', prompt='daily-question'）
     pub fn get_daily_question(&self) -> Result<Option<Suggestion>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT s.id, s.event_source, s.prompt, s.response, s.created_at,
                     (SELECT f.action FROM feedback f WHERE f.suggestion_id = s.id ORDER BY f.id DESC LIMIT 1)
@@ -191,10 +173,7 @@ impl Store {
 
     /// 删除指定 suggestion 及其关联 feedback
     pub fn delete_suggestion(&self, suggestion_id: i64) -> Result<()> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM feedback WHERE suggestion_id = ?1",
@@ -212,10 +191,7 @@ impl Store {
 
     /// 更新 suggestion 的 response 内容
     pub fn update_suggestion_response(&self, suggestion_id: i64, response: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let affected = conn
             .execute(
                 "UPDATE suggestions SET response = ?1 WHERE id = ?2",
@@ -230,10 +206,7 @@ impl Store {
 
     /// 记录反馈
     pub fn record_feedback(&self, suggestion_id: i64, action: &FeedbackAction) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let action_json = serde_json::to_string(action).context("序列化 FeedbackAction 失败")?;
         let now = chrono::Local::now().to_rfc3339();
         conn.execute(
@@ -246,10 +219,7 @@ impl Store {
 
     /// 统计特定 action 类型的反馈数量（按 event_source 关联）
     pub fn count_feedback_by_type(&self, action_type: &str) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let pattern = format!("%{action_type}%");
         let count: i64 = conn
             .query_row(
@@ -267,10 +237,7 @@ impl Store {
         event_source: &str,
         action_type: &str,
     ) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let pattern = format!("%{action_type}%");
         let count: i64 = conn
             .query_row(
@@ -289,10 +256,7 @@ impl Store {
         &self,
         limit: usize,
     ) -> Result<Vec<(String, String, Option<String>)>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT s.event_source, s.response, f.action

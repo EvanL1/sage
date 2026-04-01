@@ -37,19 +37,9 @@ fn parse_model_with_effort(model: &str) -> (&str, Option<&str>) {
 
 /// 将短名称（如 "claude"）解析为完整路径（.app bundle 的 PATH 通常不含 /opt/homebrew/bin）
 fn resolve_binary(name: &str) -> String {
-    if name.contains('/') {
-        return name.to_string();
-    }
-    let candidates = [
-        format!("/opt/homebrew/bin/{name}"),
-        format!("/usr/local/bin/{name}"),
-    ];
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            return path.clone();
-        }
-    }
-    name.to_string()
+    crate::resolve_cli_path(name)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// 为 CLI Command 注入 proxy 环境变量（仅当环境中不存在时）
@@ -357,11 +347,11 @@ struct GeminiProvider {
 impl GeminiProvider {
     fn new(config: &AgentConfig) -> Self {
         Self {
-            binary: if config.gemini_binary.is_empty() {
-                "/opt/homebrew/bin/gemini".into()
+            binary: resolve_binary(if config.gemini_binary.is_empty() {
+                "gemini"
             } else {
-                config.gemini_binary.clone()
-            },
+                &config.gemini_binary
+            }),
             model: config.default_model.clone(),
         }
     }
@@ -495,9 +485,14 @@ impl AnthropicHttpProvider {
 
     fn build_client() -> reqwest::Client {
         let mut builder = reqwest::Client::builder();
-        // 如果环境中没有 proxy 变量，使用默认值（中国网络需要）
+        // 如果环境中没有 proxy 变量，使用 PROXY_ENVS 中的默认地址（中国网络需要）
         if std::env::var("https_proxy").is_err() && std::env::var("HTTPS_PROXY").is_err() {
-            if let Ok(proxy) = reqwest::Proxy::all("http://127.0.0.1:7890") {
+            let default_proxy = PROXY_ENVS
+                .iter()
+                .find(|(k, _)| *k == "https_proxy")
+                .map(|(_, v)| *v)
+                .unwrap_or("http://127.0.0.1:7890");
+            if let Ok(proxy) = reqwest::Proxy::all(default_proxy) {
                 builder = builder.proxy(proxy);
             }
         }

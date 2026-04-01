@@ -35,7 +35,7 @@ struct FeedDeepRead {
 
 // ─── Shared helpers ──────────────────────────────────────
 
-fn build_feed_client() -> Client {
+pub fn build_feed_client() -> Client {
     let mut builder = Client::builder()
         .user_agent("Sage/1.0 (Personal AI Advisor)")
         .timeout(std::time::Duration::from_secs(15));

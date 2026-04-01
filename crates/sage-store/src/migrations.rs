@@ -1,6 +1,34 @@
 use anyhow::{Context, Result};
+use rusqlite::Connection;
 
 use super::Store;
+
+/// 将指定表的某列中不符合 ISO 8601 格式的时间戳统一归一化，返回修复条数
+fn normalize_column_timestamps(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<usize> {
+    let sql = format!(
+        "SELECT id, {column} FROM {table} WHERE {column} NOT LIKE '____-__-__%'"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+    let mut fixed = 0usize;
+    for (id, raw_ts) in &rows {
+        let normalized = sage_types::normalize_timestamp(raw_ts);
+        if normalized != *raw_ts {
+            let update_sql = format!("UPDATE {table} SET {column} = ?1 WHERE id = ?2");
+            conn.execute(&update_sql, rusqlite::params![normalized, id])?;
+            fixed += 1;
+        }
+    }
+    Ok(fixed)
+}
 
 impl Store {
     /// 用 user_version pragma 做增量迁移
@@ -635,49 +663,10 @@ impl Store {
 
         // ── v40: 标准化所有时间戳为 ISO 8601 ──
         if version < 40 {
-            let mut total_fixed = 0usize;
-
-            // messages.timestamp
-            let mut stmt = conn.prepare(
-                "SELECT id, timestamp FROM messages WHERE timestamp NOT LIKE '____-__-__%'"
-            )?;
-            let rows: Vec<(i64, String)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect();
-            drop(stmt);
-            for (id, raw_ts) in &rows {
-                let normalized = sage_types::normalize_timestamp(raw_ts);
-                if &normalized != raw_ts {
-                    conn.execute(
-                        "UPDATE messages SET timestamp = ?1 WHERE id = ?2",
-                        rusqlite::params![normalized, id],
-                    )?;
-                    total_fixed += 1;
-                }
-            }
-
-            // emails.date
-            let mut stmt = conn.prepare(
-                "SELECT id, date FROM emails WHERE date NOT LIKE '____-__-__%'"
-            )?;
-            let rows: Vec<(i64, String)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect();
-            drop(stmt);
-            for (id, raw_ts) in &rows {
-                let normalized = sage_types::normalize_timestamp(raw_ts);
-                if &normalized != raw_ts {
-                    conn.execute(
-                        "UPDATE emails SET date = ?1 WHERE id = ?2",
-                        rusqlite::params![normalized, id],
-                    )?;
-                    total_fixed += 1;
-                }
-            }
-
+            let msg_fixed = normalize_column_timestamps(&conn, "messages", "timestamp")?;
+            let email_fixed = normalize_column_timestamps(&conn, "emails", "date")?;
             conn.execute_batch("PRAGMA user_version = 40;")?;
+            let total_fixed = msg_fixed + email_fixed;
             if total_fixed > 0 {
                 tracing::info!("Migration v40: normalized {total_fixed} timestamps (messages + emails)");
             }
@@ -685,25 +674,7 @@ impl Store {
 
         // ── v41: 补充修复 emails.date（v40 可能漏掉）──
         if version < 41 {
-            let mut stmt = conn.prepare(
-                "SELECT id, date FROM emails WHERE date NOT LIKE '____-__-__%'"
-            )?;
-            let rows: Vec<(i64, String)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect();
-            drop(stmt);
-            let mut fixed = 0usize;
-            for (id, raw_ts) in &rows {
-                let normalized = sage_types::normalize_timestamp(raw_ts);
-                if &normalized != raw_ts {
-                    conn.execute(
-                        "UPDATE emails SET date = ?1 WHERE id = ?2",
-                        rusqlite::params![normalized, id],
-                    )?;
-                    fixed += 1;
-                }
-            }
+            let fixed = normalize_column_timestamps(&conn, "emails", "date")?;
             conn.execute_batch("PRAGMA user_version = 41;")?;
             if fixed > 0 {
                 tracing::info!("Migration v41: normalized {fixed} email timestamps");

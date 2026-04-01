@@ -23,7 +23,6 @@ use crate::guardian;
 use crate::heartbeat;
 use crate::pipeline::HarnessedAgent;
 use crate::profile;
-use crate::provider;
 use crate::router::Router;
 use crate::store::Store;
 
@@ -45,6 +44,24 @@ pub struct Daemon {
     tick_count: Mutex<u32>,
 }
 
+/// 发现并选出最优 provider，返回 (Agent, Option<provider_id>)。
+/// 找不到时回退到 config CLI。
+fn make_agent_from_discovery(
+    store: &Store,
+    agent_config: &crate::config::AgentConfig,
+) -> (Agent, Option<String>) {
+    match discovery::resolve_provider(store, agent_config) {
+        Some((llm, id)) => {
+            info!("Daemon using discovered provider: {id}");
+            (Agent::with_provider(llm), Some(id))
+        }
+        None => {
+            info!("No discovered provider, falling back to config CLI");
+            (Agent::new(agent_config.clone()), None)
+        }
+    }
+}
+
 impl Daemon {
     pub fn new(config: Config) -> Result<Self> {
         let data_dir = Config::expand_path("~/.sage/data");
@@ -57,22 +74,7 @@ impl Daemon {
     /// 使用外部提供的 Store 实例构建 Daemon（Desktop 内嵌时共享同一 Store）
     pub fn with_store(config: Config, store: Arc<Store>) -> Result<Self> {
         // 动态 provider 发现：优先使用已配置的 provider，回退到 config 中的 CLI
-        let (agent, initial_provider_id) = {
-            let providers = discovery::discover_providers(&store);
-            let saved = store.load_provider_configs().unwrap_or_default();
-            match discovery::select_best_provider(&providers, &saved) {
-                Some((ref info, ref prov_config)) => {
-                    let llm =
-                        provider::create_provider_from_config(info, prov_config, &config.agent);
-                    info!("Daemon using discovered provider: {}", info.display_name);
-                    (Agent::with_provider(llm), Some(info.id.clone()))
-                }
-                None => {
-                    info!("No discovered provider, falling back to config CLI");
-                    (Agent::new(config.agent.clone()), None)
-                }
-            }
-        };
+        let (agent, initial_provider_id) = make_agent_from_discovery(&store, &config.agent);
 
         let mut router = Router::new(agent, store.clone());
         router.set_calendar_source(config.channels.calendar.source.clone());
@@ -113,18 +115,7 @@ impl Daemon {
         let heartbeat_interval = Duration::from_secs(config.daemon.heartbeat_interval_secs);
 
         // 构建 Feed 通道（全部默认 disabled，不影响现有用户）
-        let feed_agent = Arc::new({
-            let providers = discovery::discover_providers(&store);
-            let saved = store.load_provider_configs().unwrap_or_default();
-            match discovery::select_best_provider(&providers, &saved) {
-                Some((ref info, ref prov_config)) => {
-                    let llm =
-                        provider::create_provider_from_config(info, prov_config, &config.agent);
-                    Agent::with_provider(llm)
-                }
-                None => Agent::new(config.agent.clone()),
-            }
-        });
+        let feed_agent = Arc::new(make_agent_from_discovery(&store, &config.agent).0);
         let mut feed_channels: Vec<Box<dyn InputChannel>> = Vec::new();
         let feed_cfg = &config.channels.feed;
         let interests = feed_cfg.user_interests.join(", ");
@@ -328,35 +319,34 @@ impl Daemon {
 
     /// 手动触发人物观察（通过 pipeline 执行 person_observer preset）
     pub async fn trigger_person_observer(&self) -> Result<bool> {
-        let (agent, store) = {
-            let r = self.router.lock().await;
-            (r.agent().clone(), r.store_arc())
-        };
-        let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let ctx = pipeline.run("manual_person_observer", &["person_observer".into()], &agent, &store).await;
+        let ctx = self.run_pipeline_preset("manual_person_observer", "person_observer").await;
         Ok(!ctx.summary().contains("empty"))
     }
 
     /// 手动触发战略分析（通过 pipeline 执行 strategist preset）
     pub async fn trigger_strategist(&self) -> Result<bool> {
-        let (agent, store) = {
-            let r = self.router.lock().await;
-            (r.agent().clone(), r.store_arc())
-        };
-        let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let ctx = pipeline.run("manual_strategist", &["strategist".into()], &agent, &store).await;
+        let ctx = self.run_pipeline_preset("manual_strategist", "strategist").await;
         Ok(!ctx.summary().contains("empty"))
     }
 
     /// 手动触发记忆连接（通过 pipeline 执行 evolution_link preset）
     pub async fn trigger_memory_linking(&self) -> Result<usize> {
+        let ctx = self.run_pipeline_preset("manual_linking", "evolution_link").await;
+        Ok(ctx.stage_results.len())
+    }
+
+    /// 锁 router 拿到 agent/store clone，构建 pipeline，运行单个 preset，返回 context。
+    async fn run_pipeline_preset(
+        &self,
+        run_id: &str,
+        preset: &str,
+    ) -> crate::pipeline::PipelineContext {
         let (agent, store) = {
             let r = self.router.lock().await;
             (r.agent().clone(), r.store_arc())
         };
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
-        let ctx = pipeline.run("manual_linking", &["evolution_link".into()], &agent, &store).await;
-        Ok(ctx.stage_results.len())
+        pipeline.run(run_id, &[preset.to_string()], &agent, &store).await
     }
 
     /// 认知调和（增量）：检查新内容是否推翻了旧 decisions/insights
@@ -752,11 +742,9 @@ impl Daemon {
 
     /// 检测 provider 变更并热更新 Agent
     async fn maybe_reload_provider(&self) {
-        let providers = discovery::discover_providers(&self.store);
-        let saved = self.store.load_provider_configs().unwrap_or_default();
-        let best = discovery::select_best_provider(&providers, &saved);
+        let resolved = discovery::resolve_provider(&self.store, &self.config.agent);
+        let new_id = resolved.as_ref().map(|(_, id)| id.clone());
 
-        let new_id = best.as_ref().map(|(info, _)| info.id.clone());
         let current_id = self
             .current_provider_id
             .lock()
@@ -767,14 +755,9 @@ impl Daemon {
             return;
         }
 
-        let agent = match best {
-            Some((ref info, ref prov_config)) => {
-                let llm =
-                    provider::create_provider_from_config(info, prov_config, &self.config.agent);
-                info!(
-                    "Provider hot-reload: {:?} → {}",
-                    current_id, info.display_name
-                );
+        let agent = match resolved {
+            Some((llm, ref id)) => {
+                info!("Provider hot-reload: {:?} → {}", current_id, id);
                 Agent::with_provider(llm)
             }
             None => {

@@ -23,11 +23,9 @@ use sage_types::{BridgeBehaviorEvent, BridgeImportRequest};
 
 /// 复用 provider 发现逻辑，避免硬编码 AgentConfig
 fn make_bridge_provider(store: &Arc<Store>) -> anyhow::Result<Box<dyn crate::provider::LlmProvider>> {
-    let discovered = crate::discovery::discover_providers(store);
-    let configs = store.load_provider_configs().unwrap_or_default();
-    let (info, config) = crate::discovery::select_best_provider(&discovered, &configs)
-        .ok_or_else(|| anyhow::anyhow!("no provider available"))?;
-    Ok(crate::provider::create_provider_from_config(&info, &config, &crate::config::AgentConfig::default()))
+    crate::discovery::resolve_provider(store, &crate::AgentConfig::default())
+        .map(|(p, _)| p)
+        .ok_or_else(|| anyhow::anyhow!("no provider available"))
 }
 
 pub const DEFAULT_PORT: u16 = 18522;
@@ -209,7 +207,7 @@ async fn conversation_handler(
         existing
             .iter()
             .take(30)
-            .map(|m| format!("[{}] {}", m.category, m.content))
+            .map(|m| format!("[{}] {} (confidence: {:.1})", m.category, m.content, m.confidence))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -367,16 +365,16 @@ async fn claude_hooks_handler(
     Json(json!({}))
 }
 
+fn default_messages_limit() -> usize {
+    50
+}
+
 #[derive(serde::Deserialize)]
 struct MessagesQuery {
     channel: Option<String>,
     source: Option<String>,
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_messages_limit")]
     limit: usize,
-}
-
-fn default_limit() -> usize {
-    50
 }
 
 async fn messages_handler(

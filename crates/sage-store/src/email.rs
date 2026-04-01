@@ -3,15 +3,24 @@ use sage_types::{EmailMessage, MessageSource};
 
 use super::Store;
 
+/// 将数据库行转换为 MessageSource（列顺序：id, label, source_type, config, enabled, created_at）
+fn row_to_source(row: &rusqlite::Row) -> rusqlite::Result<MessageSource> {
+    Ok(MessageSource {
+        id: row.get(0)?,
+        label: row.get(1)?,
+        source_type: row.get(2)?,
+        config: row.get(3)?,
+        enabled: row.get::<_, i32>(4)? != 0,
+        created_at: row.get(5)?,
+    })
+}
+
 impl Store {
     // ─── Message Sources CRUD ──────────────────────────────
 
     /// 保存消息源（INSERT 或按 id UPDATE）
     pub fn save_message_source(&self, source: &MessageSource) -> Result<i64> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         if source.id > 0 {
             conn.execute(
                 "UPDATE message_sources SET label=?1, source_type=?2, config=?3, enabled=?4
@@ -38,79 +47,40 @@ impl Store {
 
     /// 获取所有消息源
     pub fn get_message_sources(&self) -> Result<Vec<MessageSource>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, label, source_type, config, enabled, created_at
              FROM message_sources ORDER BY created_at",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(MessageSource {
-                id: row.get(0)?,
-                label: row.get(1)?,
-                source_type: row.get(2)?,
-                config: row.get(3)?,
-                enabled: row.get::<_, i32>(4)? != 0,
-                created_at: row.get(5)?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_source)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// 获取指定类型的消息源
     pub fn get_message_sources_by_type(&self, source_type: &str) -> Result<Vec<MessageSource>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, label, source_type, config, enabled, created_at
              FROM message_sources WHERE source_type = ?1 AND enabled = 1",
         )?;
-        let rows = stmt.query_map(rusqlite::params![source_type], |row| {
-            Ok(MessageSource {
-                id: row.get(0)?,
-                label: row.get(1)?,
-                source_type: row.get(2)?,
-                config: row.get(3)?,
-                enabled: row.get::<_, i32>(4)? != 0,
-                created_at: row.get(5)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![source_type], row_to_source)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// 获取单个消息源
     pub fn get_message_source(&self, id: i64) -> Result<Option<MessageSource>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, label, source_type, config, enabled, created_at
              FROM message_sources WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(rusqlite::params![id], |row| {
-            Ok(MessageSource {
-                id: row.get(0)?,
-                label: row.get(1)?,
-                source_type: row.get(2)?,
-                config: row.get(3)?,
-                enabled: row.get::<_, i32>(4)? != 0,
-                created_at: row.get(5)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(rusqlite::params![id], row_to_source)?;
         Ok(rows.next().transpose()?)
     }
 
     /// 删除消息源（FK ON DELETE CASCADE 自动清理关联 emails）
     pub fn delete_message_source(&self, id: i64) -> Result<()> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction().context("开启事务失败")?;
         tx.execute("DELETE FROM emails WHERE source_id = ?1", rusqlite::params![id])
             .context("删除关联 emails 失败")?;
@@ -123,10 +93,7 @@ impl Store {
 
     /// 缓存邮件（INSERT OR IGNORE 防重复）
     pub fn save_email(&self, msg: &EmailMessage) -> Result<i64> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT OR IGNORE INTO emails
              (source_id, uid, folder, from_addr, to_addr, subject, body_text, body_html, is_read, date)
@@ -150,10 +117,7 @@ impl Store {
 
     /// 批量保存邮件（单次锁 + RAII 事务）
     pub fn save_emails(&self, msgs: &[EmailMessage]) -> Result<usize> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction().context("开启事务失败")?;
         let mut saved = 0usize;
         for msg in msgs {
@@ -180,10 +144,7 @@ impl Store {
         folder: &str,
         limit: usize,
     ) -> Result<Vec<EmailMessage>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_id, uid, folder, from_addr, to_addr, subject,
                     body_text, body_html, is_read, date, fetched_at
@@ -199,10 +160,7 @@ impl Store {
 
     /// 获取单封邮件
     pub fn get_email(&self, id: i64) -> Result<Option<EmailMessage>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_id, uid, folder, from_addr, to_addr, subject,
                     body_text, body_html, is_read, date, fetched_at
@@ -214,10 +172,7 @@ impl Store {
 
     /// 根据 source_id + uid + folder 查找邮件
     pub fn get_email_by_uid(&self, source_id: i64, uid: &str, folder: &str) -> Result<Option<EmailMessage>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, source_id, uid, folder, from_addr, to_addr, subject,
                     body_text, body_html, is_read, date, fetched_at
@@ -232,10 +187,7 @@ impl Store {
 
     /// 软删除邮件（标记 dismissed，不真删，防止重复拉取）
     pub fn dismiss_email(&self, id: i64) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE emails SET dismissed = 1 WHERE id = ?1",
             rusqlite::params![id],
@@ -246,10 +198,7 @@ impl Store {
 
     /// 标记邮件已读
     pub fn mark_email_read(&self, id: i64) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE emails SET is_read = 1 WHERE id = ?1",
             rusqlite::params![id],
@@ -260,10 +209,7 @@ impl Store {
 
     /// 搜索邮件
     pub fn search_emails(&self, query: &str, limit: usize) -> Result<Vec<EmailMessage>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let escaped = query.replace('%', "\\%").replace('_', "\\_");
         let pattern = format!("%{escaped}%");
         let mut stmt = conn.prepare(
@@ -282,10 +228,7 @@ impl Store {
 
     /// 未读邮件数
     pub fn count_unread_emails(&self, source_id: i64) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM emails WHERE source_id = ?1 AND is_read = 0 AND dismissed = 0",
             rusqlite::params![source_id],
@@ -296,7 +239,7 @@ impl Store {
 
     /// 获取今日邮件摘要（from + subject），用于人物提取
     pub fn get_today_email_summaries(&self, limit: usize) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let mut stmt = conn.prepare(
             "SELECT from_addr, subject FROM emails

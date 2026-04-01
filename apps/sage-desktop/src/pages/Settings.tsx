@@ -50,6 +50,46 @@ const WEEKDAY_LABELS: Record<string, string> = {
 
 import { PROVIDER_MODELS } from "../providerModels";
 
+function ProviderStatusBadge({
+  status,
+  readyLabel,
+  needsLoginLabel,
+  needsSetupLabel,
+  notInstalledLabel,
+}: {
+  status: ProviderInfo["status"];
+  readyLabel: string;
+  needsLoginLabel?: string;
+  needsSetupLabel?: string;
+  notInstalledLabel?: string;
+}) {
+  if (status === "Ready") {
+    return (
+      <span style={{ fontSize: 12, color: "var(--success-text)", background: "var(--success-light)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />
+        {readyLabel}
+      </span>
+    );
+  }
+  if (status === "NeedsLogin") {
+    return (
+      <span style={{ fontSize: 12, color: "var(--warning-text)", background: "var(--warning-light)", padding: "2px 8px", borderRadius: 999 }}>
+        {needsLoginLabel ?? "Needs Login"}
+      </span>
+    );
+  }
+  if (status === "NeedsApiKey") {
+    return (
+      <span style={{ fontSize: 12, color: "var(--warning-text)", background: "var(--warning-light)", padding: "2px 8px", borderRadius: 999 }}>
+        {needsSetupLabel ?? "Needs Setup"}
+      </span>
+    );
+  }
+  return (
+    <span style={{ fontSize: 12, color: "var(--text-tertiary)", background: "var(--border-subtle)", padding: "2px 8px", borderRadius: 999 }}>{notInstalledLabel ?? "Not Installed"}</span>
+  );
+}
+
 function Settings() {
   const { t, setLang: setAppLang } = useLang();
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -311,20 +351,13 @@ function Settings() {
                             <span style={{ fontSize: 11, color: "var(--text-tertiary)", marginLeft: 6 }}>{p.kind === "Cli" ? "CLI" : "API"}</span>
                           </span>
                         </div>
-                        {p.status === "Ready" ? (
-                          <span style={{ fontSize: 12, color: "var(--success-text)", background: "var(--success-light)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />
-                            {i === 0 ? t("settings.active") : t("settings.available")}
-                          </span>
-                        ) : p.status === "NeedsLogin" ? (
-                          <span style={{ fontSize: 12, color: "var(--warning-text)", background: "var(--warning-light)", padding: "2px 8px", borderRadius: 999 }}>
-                            {t("settings.needsLogin")}
-                          </span>
-                        ) : p.status === "NeedsApiKey" ? (
-                          <span style={{ fontSize: 12, color: "var(--warning-text)", background: "var(--warning-light)", padding: "2px 8px", borderRadius: 999 }}>{t("settings.needsSetup")}</span>
-                        ) : (
-                          <span style={{ fontSize: 12, color: "var(--text-tertiary)", background: "var(--border-subtle)", padding: "2px 8px", borderRadius: 999 }}>{t("settings.notInstalled")}</span>
-                        )}
+                        <ProviderStatusBadge
+                          status={p.status}
+                          readyLabel={i === 0 ? t("settings.active") : t("settings.available")}
+                          needsLoginLabel={t("settings.needsLogin")}
+                          needsSetupLabel={t("settings.needsSetup")}
+                          notInstalledLabel={t("settings.notInstalled")}
+                        />
                       </div>
                       {p.status === "NeedsLogin" && (
                         <div style={{ marginTop: 6, marginLeft: 28, fontSize: 12, color: "var(--warning-text)" }}>
@@ -414,13 +447,11 @@ function Settings() {
                         <div key={p.id} className="form-group" style={{ borderBottom: "1px solid var(--border-subtle)", paddingBottom: 12 }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                             <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{p.display_name}</span>
-                            {p.status === "Ready" ? (
-                              <span style={{ fontSize: 12, color: "var(--success-text)", background: "var(--success-light)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />{t("settings.configured")}
-                              </span>
-                            ) : (
-                              <span style={{ fontSize: 12, color: "var(--warning-text)", background: "var(--warning-light)", padding: "2px 8px", borderRadius: 999 }}>{t("settings.needsSetup")}</span>
-                            )}
+                            <ProviderStatusBadge
+                              status={p.status}
+                              readyLabel={t("settings.configured")}
+                              needsSetupLabel={t("settings.needsSetup")}
+                            />
                           </div>
                           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                             <input className="form-input" type="password" value={key} onChange={(e) => handleApiKeyChange(p.id, e.target.value)} placeholder={t("settings.enterApiKey")} style={{ flex: 1 }} />

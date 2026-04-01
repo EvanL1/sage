@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::{default_agent_config, map_err};
+use super::{get_provider, map_err};
 use crate::AppState;
 
 /// 获取消息列表 — 按 channel/source 过滤
@@ -53,17 +53,7 @@ pub async fn summarize_messages(
     label: String,
 ) -> Result<String, String> {
     let lang = state.store.prompt_lang();
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or_else(|| if lang == "en" {
-            "LLM provider not configured".to_string()
-        } else {
-            "未配置 LLM provider".to_string()
-        })?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     let prompt = sage_core::prompts::cmd_analyze_message_flow_user(&lang, &label, &context);
     let system = sage_core::prompts::cmd_analyze_message_flow_system(&lang);
@@ -147,15 +137,7 @@ pub async fn summarize_channel(
     let chat_type = messages.first().map(|m| m.message_type.as_str()).unwrap_or("unknown");
 
     let lang = state.store.prompt_lang();
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or_else(|| if lang == "en" {
-            "LLM provider not configured".to_string()
-        } else {
-            "未配置 LLM provider".to_string()
-        })?;
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &default_agent_config());
+    let provider = get_provider(&state.store)?;
 
     let prompt = sage_core::prompts::cmd_summarize_channel_prompt(&lang, &channel, chat_type, &messages_text);
     let resp = provider.invoke(&prompt, None).await.map_err(map_err)?;
@@ -189,13 +171,7 @@ pub async fn summarize_channel(
 #[tauri::command]
 pub async fn get_situation_summary(state: State<'_, AppState>) -> Result<String, String> {
     let lang = state.store.prompt_lang();
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or_else(|| "LLM provider not configured".to_string())?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     // Gather: recent 48h messages + open tasks
     let recent_msgs = state.store.get_messages_by_source("email", 30).map_err(map_err)?;
@@ -457,18 +433,10 @@ async fn refine_negative_rule(
     }
 
     // 尝试用 LLM 精炼
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = match state.store.load_provider_configs() {
-        Ok(c) => c,
+    let provider = match get_provider(&state.store) {
+        Ok(p) => p,
         Err(_) => return user_complaint.to_string(),
     };
-    let (info, config) = match sage_core::discovery::select_best_provider(&discovered, &configs) {
-        Some(pair) => pair,
-        None => return user_complaint.to_string(),
-    };
-    let agent_config = default_agent_config();
-    let provider =
-        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
 
     let lang = state.store.prompt_lang();
     let prompt = match lang.as_str() {

@@ -1,5 +1,6 @@
 pub mod plugin;
 pub mod bridge;
+pub(crate) mod text_utils;
 pub mod channels;
 pub mod config;
 pub mod context_gatherer;

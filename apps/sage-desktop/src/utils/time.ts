@@ -1,6 +1,17 @@
-export function formatTime(ts: string): string {
+export function formatTime(ts: string, yesterdayLabel?: string): string {
   try {
-    return new Date(ts).toLocaleTimeString("zh-CN", {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    if (yesterdayLabel !== undefined) {
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const diffDays = Math.floor(diffMs / 86400000);
+      if (diffDays === 0) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      if (diffDays === 1) return yesterdayLabel;
+      if (diffDays < 7) return d.toLocaleDateString([], { weekday: "short" });
+      return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    }
+    return d.toLocaleTimeString("zh-CN", {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,

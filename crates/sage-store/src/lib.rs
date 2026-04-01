@@ -78,12 +78,31 @@ pub struct ReflectiveSignalRow {
     pub created_at: String,
 }
 
+/// 返回今天零点的 ISO 8601 字符串，用于"今天起始时间"过滤
+pub(crate) fn today_start() -> String {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    format!("{today}T00:00:00")
+}
+
 /// SQLite 存储层，线程安全
 pub struct Store {
     pub(crate) conn: Mutex<Connection>,
 }
 
 impl Store {
+    /// 获取数据库锁，失败时返回标准错误
+    fn conn(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>> {
+        self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))
+    }
+
+    /// 获取数据库锁，失败时打印警告并返回 None（用于返回 bool 的方法）
+    fn conn_or_warn(&self) -> Option<std::sync::MutexGuard<'_, rusqlite::Connection>> {
+        match self.conn.lock() {
+            Ok(g) => Some(g),
+            Err(e) => { tracing::warn!("Store mutex poisoned: {e}"); None }
+        }
+    }
+
     /// 打开/创建 SQLite 数据库，自动运行 schema 迁移
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path).context("打开 SQLite 数据库失败")?;

@@ -2,19 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import { useLang } from "../LangContext";
-
-interface Memory {
-  id: number;
-  category: string;
-  content: string;
-  source: string;
-  confidence: number;
-  created_at: string;
-  updated_at: string;
-  depth?: string;
-  valid_until?: string;
-  validation_count?: number;
-}
+import type { Memory } from "../types";
 
 interface TagInfo {
   tag: string;
@@ -363,6 +351,11 @@ function AboutYou() {
   const [filteredIds, setFilteredIds] = useState<Set<number> | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
+  const showMsg = useCallback((msg: string, ms = 3000) => {
+    setExportMsg(msg);
+    setTimeout(() => setExportMsg(""), ms);
+  }, []);
+
   const fetchTags = useCallback(async () => {
     try {
       const tags = await invoke<TagInfo[]>("get_all_tags");
@@ -415,12 +408,10 @@ function AboutYou() {
       setUserInput("");
       const refreshed = await invoke<Memory[]>("get_memories");
       setMemories(refreshed);
-      setExportMsg(t("about.saved"));
-      setTimeout(() => setExportMsg(""), 2000);
+      showMsg(t("about.saved"), 2000);
     } catch (err) {
       console.error("Failed to save user memory:", err);
-      setExportMsg(t("about.saveFailed"));
-      setTimeout(() => setExportMsg(""), 2000);
+      showMsg(t("about.saveFailed"), 2000);
     } finally {
       setSaving(false);
     }
@@ -431,8 +422,7 @@ function AboutYou() {
     setExportMsg("");
     try {
       await invoke<string>("export_memories");
-      setExportMsg(t("about.copiedToClipboard"));
-      setTimeout(() => setExportMsg(""), 3000);
+      showMsg(t("about.copiedToClipboard"));
     } catch (err) {
       console.error("Export failed:", err);
       setExportMsg(t("about.exportFailed"));
@@ -463,13 +453,11 @@ function AboutYou() {
       if (count > 0) {
         const refreshed = await invoke<Memory[]>("get_memories");
         setMemories(refreshed);
-        setExportMsg(t("about.importedCount").replace("{n}", String(count)));
-        setTimeout(() => setExportMsg(""), 3000);
+        showMsg(t("about.importedCount").replace("{n}", String(count)));
       }
     } catch (err) {
       console.error("Import failed:", err);
-      setExportMsg(t("about.importFailed"));
-      setTimeout(() => setExportMsg(""), 3000);
+      showMsg(t("about.importFailed"));
     }
   };
 
@@ -483,15 +471,13 @@ function AboutYou() {
       if (count > 0) {
         const refreshed = await invoke<Memory[]>("get_memories");
         setMemories(refreshed);
-        setExportMsg(t("about.importedFromAi").replace("{n}", String(count)));
+        showMsg(t("about.importedFromAi").replace("{n}", String(count)));
       } else {
-        setExportMsg(t("about.noMemoriesExtracted"));
+        showMsg(t("about.noMemoriesExtracted"));
       }
-      setTimeout(() => setExportMsg(""), 3000);
     } catch (err) {
       console.error("AI import failed:", err);
-      setExportMsg(t("about.importAiFailed") + String(err));
-      setTimeout(() => setExportMsg(""), 3000);
+      showMsg(t("about.importAiFailed") + String(err));
     } finally {
       setImporting(false);
     }
@@ -560,11 +546,9 @@ function AboutYou() {
             onClick={async () => {
               try {
                 const result = await invoke<string>("sync_memory");
-                setExportMsg(result);
-                setTimeout(() => setExportMsg(""), 3000);
+                showMsg(result);
               } catch (err) {
-                setExportMsg(t("about.syncFailed") + String(err));
-                setTimeout(() => setExportMsg(""), 3000);
+                showMsg(t("about.syncFailed") + String(err));
               }
             }}
           >

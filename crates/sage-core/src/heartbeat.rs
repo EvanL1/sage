@@ -99,15 +99,11 @@ mod tests {
                 base_dir: "/tmp".into(),
             },
             agent: AgentConfig {
-                provider: "claude".into(),
-                claude_binary: "claude".into(),
-                codex_binary: String::new(),
-                gemini_binary: String::new(),
                 default_model: "claude-sonnet-4-6".into(),
                 project_dir: "/tmp".into(),
                 max_budget_usd: 1.0,
                 permission_mode: "default".into(),
-                max_iterations: 10,
+                ..Default::default()
             },
             plugins: Vec::new(),
             pipeline: crate::config::PipelineConfig::default(),

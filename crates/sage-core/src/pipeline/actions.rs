@@ -254,11 +254,8 @@ fn validate_compile_memories(parts: &[&str]) -> Option<String> {
 }
 
 fn validate_condense_memory(parts: &[&str]) -> Option<String> {
-    let id_str = parts.get(1).unwrap_or(&"");
-    if id_str.parse::<i64>().is_err() {
-        return Some(format!("memory_id 格式错误: {id_str}"));
-    }
-    validate_non_empty(parts, 2, "new_content")
+    // 复用 memory_id 校验，再追加 new_content 非空检查
+    validate_memory_id_reason(parts).or_else(|| validate_non_empty(parts, 2, "new_content"))
 }
 
 fn validate_link_memories(parts: &[&str]) -> Option<String> {
@@ -319,32 +316,27 @@ fn validate_pipeline_override(parts: &[&str]) -> Option<String> {
     None
 }
 
-fn validate_rewrite_prompt(parts: &[&str]) -> Option<String> {
+/// 校验 parts[1] 非空（name_label）且 parts[2] 非空且 <10000 字节（content_label）
+fn validate_name_content(parts: &[&str], name_label: &str, content_label: &str) -> Option<String> {
     if parts.get(1).map(|s| s.is_empty()).unwrap_or(true) {
-        return Some("prompt_name 为空".into());
+        return Some(format!("{name_label}为空"));
     }
     let content = parts.get(2).unwrap_or(&"");
     if content.is_empty() {
-        return Some("new_content 为空".into());
+        return Some(format!("{content_label}为空"));
     }
     if content.len() >= 10000 {
-        return Some(format!("new_content 超出长度限制（{}≥10000）", content.len()));
+        return Some(format!("{content_label}超出长度限制（{}≥10000）", content.len()));
     }
     None
 }
 
+fn validate_rewrite_prompt(parts: &[&str]) -> Option<String> {
+    validate_name_content(parts, "prompt_name ", "new_content ")
+}
+
 fn validate_custom_page(parts: &[&str]) -> Option<String> {
-    if parts.get(1).map(|s| s.is_empty()).unwrap_or(true) {
-        return Some("title 为空".into());
-    }
-    let content = parts.get(2).unwrap_or(&"");
-    if content.is_empty() {
-        return Some("content 为空".into());
-    }
-    if content.len() >= 10000 {
-        return Some(format!("content 超出长度限制（{}≥10000）", content.len()));
-    }
-    None
+    validate_name_content(parts, "title ", "content ")
 }
 
 // ─── ACTION 执行分发 ──────────────────────────────────────────────────
@@ -455,31 +447,28 @@ fn handle_save_memory_visible(parts: &[&str], store: &Store, stage: &str) -> Opt
     }
 }
 
-fn handle_send_notification(parts: &[&str], stage: &str) -> Option<i64> {
-    let title = parts[1];
-    let body = parts.get(2).unwrap_or(&"");
+/// 通用 osascript 通知：发送系统通知并记录日志
+fn send_osascript_notification(title: &str, body: &str, stage: &str, log_msg: &str) -> Option<i64> {
     let script = format!(
         "display notification \"{}\" with title \"{}\"",
         body.replace('"', "\\\""), title.replace('"', "\\\""),
     );
     let _ = std::process::Command::new("osascript").arg("-e").arg(&script).output();
-    info!("Stage {stage}: ✓ sent notification");
+    info!("Stage {stage}: {log_msg}");
     Some(0)
+}
+
+fn handle_send_notification(parts: &[&str], stage: &str) -> Option<i64> {
+    let title = parts[1];
+    let body = parts.get(2).unwrap_or(&"");
+    send_osascript_notification(title, body, stage, "✓ sent notification")
 }
 
 fn handle_notify_user(parts: &[&str], stage: &str) -> Option<i64> {
     let title = parts[1];
     let body = parts.get(2).unwrap_or(&"");
-    // 使用 applescript::notify 的同步 fallback（和 send_notification 一样的 osascript）
-    // 实际的 async 调用在 UserDefinedStage::run 中通过 post_notifications 处理
-    // 这里先收集通知请求，返回 sentinel
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        body.replace('"', "\\\""), title.replace('"', "\\\""),
-    );
-    let _ = std::process::Command::new("osascript").arg("-e").arg(&script).output();
-    info!("Stage {stage}: ✓ notified user: {title}");
-    Some(0)
+    // 使用 osascript 同步发送通知（和 send_notification 共享同一实现）
+    send_osascript_notification(title, body, stage, &format!("✓ notified user: {title}"))
 }
 
 fn handle_save_observation(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {

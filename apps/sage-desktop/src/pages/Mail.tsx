@@ -1,24 +1,26 @@
+import type React from "react";
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import DOMPurify from "dompurify";
 import type { MessageSource, EmailMessage } from "../types";
+import { formatTime } from "../utils/time";
 
 const FOLDERS = ["INBOX", "Sent", "Drafts", "Spam", "Trash"];
 
+const dismissBtnStyle: React.CSSProperties = {
+  position: "absolute", top: 4, right: 8, background: "none",
+  border: "none", fontSize: 14, cursor: "pointer",
+  color: "var(--text-tertiary)", padding: 0, lineHeight: 1,
+};
+
+const panelHeaderLabelStyle: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, color: "var(--accent)",
+  marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px",
+};
+
 function formatDate(dateStr: string): string {
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    const now = new Date();
-    const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
-    if (diffDays === 0) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (diffDays === 1) return "Yesterday";
-    if (diffDays < 7) return d.toLocaleDateString([], { weekday: "short" });
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
-  } catch {
-    return dateStr;
-  }
+  return formatTime(dateStr, "Yesterday");
 }
 
 function EmailListItem({ email, selected, onClick }: { email: EmailMessage; selected: boolean; onClick: () => void }) {
@@ -166,13 +168,10 @@ function EmailDetail({ email, onMarkRead, onDismiss }: { email: EmailMessage; on
           border: "1px solid var(--accent)", fontSize: 12, lineHeight: 1.6,
           color: "var(--text)", position: "relative", flexShrink: 0,
         }}>
-          <button
-            onClick={() => setSummary(null)}
-            style={{ position: "absolute", top: 4, right: 8, background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "var(--text-tertiary)", padding: 0, lineHeight: 1 }}
-          >
+          <button onClick={() => setSummary(null)} style={dismissBtnStyle}>
             x
           </button>
-          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+          <div style={panelHeaderLabelStyle}>
             AI Summary
           </div>
           <div style={{ whiteSpace: "pre-wrap", paddingRight: 16 }}>{summary}</div>

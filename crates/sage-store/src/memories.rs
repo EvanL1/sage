@@ -213,46 +213,7 @@ impl Store {
         source: &str,
         confidence: f64,
     ) -> Result<i64> {
-        let content = crate::time_normalizer::normalize_time_refs(content);
-        let content = content.as_str();
-
-        // 同 category 内相似度去重：短记忆（≤15字）跳过，长记忆 LCS >60% 视为重复
-        if content.chars().count() > 15 {
-        if let Some(id) = self.find_similar_in_category(category, content)? {
-            let conn = self
-                .conn
-                .lock()
-                .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-            let now = chrono::Local::now().to_rfc3339();
-            // 保留更长/更新的版本
-            conn.execute(
-                "UPDATE memories SET content = CASE WHEN length(?1) >= length(content) THEN ?1 ELSE content END, \
-                 confidence = MAX(confidence, ?2), updated_at = ?3 WHERE id = ?4",
-                rusqlite::params![content, confidence, now, id],
-            )?;
-            return Ok(id);
-        }
-        }
-
-        let tier = Self::infer_tier(category);
-        let depth = Self::infer_depth(category, source, content);
-        let expires_at = Self::default_ttl_days(category).map(|days| {
-            (chrono::Local::now() + chrono::Duration::days(days))
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        });
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-        let now = chrono::Local::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, depth, valid_until, validation_count, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, NULL, 0, ?8, ?8)",
-            rusqlite::params![category, content, source, confidence, tier, expires_at, depth, now],
-        )
-        .context("保存 memory 失败")?;
-        Ok(conn.last_insert_rowid())
+        self.save_memory_inner(category, content, source, confidence, "public", None)
     }
 
     /// 在同 category 中找精确匹配的已有记忆
@@ -271,46 +232,45 @@ impl Store {
         Ok(id)
     }
 
-    /// 在同 category 中找高度相似的已有记忆（LCS >60%）
-    fn find_similar_in_category(&self, category: &str, content: &str) -> Result<Option<i64>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, content FROM memories WHERE category = ?1 AND status = 'active'",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![category], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (id, existing) = row?;
-            if crate::similarity::text_similarity(content, &existing) > 0.6 {
-                return Ok(Some(id));
-            }
-        }
-        Ok(None)
-    }
-
-    /// 在同 category + about_person 中找高度相似的已有记忆（LCS >60%）
-    fn find_similar_for_person(
+    /// 在同 category（可选 about_person）中找高度相似的已有记忆（LCS >60%）
+    fn find_similar(
         &self,
         category: &str,
         content: &str,
-        about_person: &str,
+        about_person: Option<&str>,
     ) -> Result<Option<i64>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, content FROM memories WHERE category = ?1 AND about_person = ?2 AND status = 'active'",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![category, about_person], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (id, existing) = row?;
+        // 动态 SQL：有 about_person 时增加 person 过滤
+        let (sql, person_filter) = match about_person {
+            Some(p) => (
+                "SELECT id, content FROM memories WHERE category = ?1 AND about_person = ?2 AND status = 'active'".to_string(),
+                Some(p.to_string()),
+            ),
+            None => (
+                "SELECT id, content FROM memories WHERE category = ?1 AND status = 'active'".to_string(),
+                None,
+            ),
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows: Vec<(i64, String)> = match person_filter {
+            Some(ref p) => stmt
+                .query_map(rusqlite::params![category, p], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect(),
+            None => stmt
+                .query_map(rusqlite::params![category], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect(),
+        };
+        drop(stmt);
+        for (id, existing) in rows {
             if crate::similarity::text_similarity(content, &existing) > 0.6 {
                 return Ok(Some(id));
             }
@@ -318,19 +278,45 @@ impl Store {
         Ok(None)
     }
 
-    /// 保存带可见性的记忆
-    pub fn save_memory_with_visibility(
+    /// 对已存在的相似记忆执行 UPDATE（保留更长/更新的版本，取最高置信度）
+    fn dedup_update(
+        conn: &rusqlite::Connection,
+        id: i64,
+        content: &str,
+        confidence: f64,
+    ) -> Result<()> {
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET content = CASE WHEN length(?1) >= length(content) THEN ?1 ELSE content END, \
+             confidence = MAX(confidence, ?2), updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![content, confidence, now, id],
+        )?;
+        Ok(())
+    }
+
+    /// 计算 expires_at（working tier 有 TTL，其余为 None）
+    fn compute_expires_at(category: &str) -> Option<String> {
+        Self::default_ttl_days(category).map(|days| {
+            (chrono::Local::now() + chrono::Duration::days(days))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+    }
+
+    /// 核心保存逻辑：归一化 → 相似去重 → INSERT（about_person 为 None 时不写入该列）
+    fn save_memory_inner(
         &self,
         category: &str,
         content: &str,
         source: &str,
         confidence: f64,
         visibility: &str,
+        about_person: Option<&str>,
     ) -> Result<i64> {
         let content = crate::time_normalizer::normalize_time_refs(content);
         let content = content.as_str();
 
-        // 同 category 内去重：短内容精确匹配，长内容相似度匹配
+        // 短内容（≤15字）精确匹配去重；长内容相似度匹配去重
         if content.chars().count() <= 15 {
             if let Some(id) = self.find_exact_in_category(category, content)? {
                 let conn = self
@@ -344,42 +330,51 @@ impl Store {
                 )?;
                 return Ok(id);
             }
-        }
-        if content.chars().count() > 15 {
-            if let Some(id) = self.find_similar_in_category(category, content)? {
-                let conn = self
-                    .conn
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-                let now = chrono::Local::now().to_rfc3339();
-                conn.execute(
-                    "UPDATE memories SET content = CASE WHEN length(?1) >= length(content) THEN ?1 ELSE content END, \
-                     confidence = MAX(confidence, ?2), updated_at = ?3 WHERE id = ?4",
-                    rusqlite::params![content, confidence, now, id],
-                )?;
-                return Ok(id);
-            }
+        } else if let Some(id) = self.find_similar(category, content, about_person)? {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+            Self::dedup_update(&conn, id, content, confidence)?;
+            return Ok(id);
         }
 
         let tier = Self::infer_tier(category);
         let depth = Self::infer_depth(category, source, content);
-        let expires_at = Self::default_ttl_days(category).map(|days| {
-            (chrono::Local::now() + chrono::Duration::days(days))
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        });
+        let expires_at = Self::compute_expires_at(category);
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let now = chrono::Local::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, depth, valid_until, validation_count, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, NULL, 0, ?9, ?9)",
-            rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, depth, now],
-        )
-        .context("保存 memory（带 visibility）失败")?;
+        if let Some(person) = about_person {
+            conn.execute(
+                "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, about_person, depth, valid_until, validation_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?9, NULL, 0, ?10, ?10)",
+                rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, person, depth, now],
+            )
+            .context("保存 memory（关于某人）失败")?;
+        } else {
+            conn.execute(
+                "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, depth, valid_until, validation_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, NULL, 0, ?9, ?9)",
+                rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, depth, now],
+            )
+            .context("保存 memory 失败")?;
+        }
         Ok(conn.last_insert_rowid())
+    }
+
+    /// 保存带可见性的记忆
+    pub fn save_memory_with_visibility(
+        &self,
+        category: &str,
+        content: &str,
+        source: &str,
+        confidence: f64,
+        visibility: &str,
+    ) -> Result<i64> {
+        self.save_memory_inner(category, content, source, confidence, visibility, None)
     }
 
     /// 保存关于某人的记忆
@@ -392,45 +387,7 @@ impl Store {
         visibility: &str,
         about_person: &str,
     ) -> Result<i64> {
-        let content = crate::time_normalizer::normalize_time_refs(content);
-        let content = content.as_str();
-
-        // 同 category + about_person 内相似度去重
-        if content.chars().count() > 15 {
-            if let Some(id) = self.find_similar_for_person(category, content, about_person)? {
-                let conn = self
-                    .conn
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-                let now = chrono::Local::now().to_rfc3339();
-                conn.execute(
-                    "UPDATE memories SET content = CASE WHEN length(?1) >= length(content) THEN ?1 ELSE content END, \
-                     confidence = MAX(confidence, ?2), updated_at = ?3 WHERE id = ?4",
-                    rusqlite::params![content, confidence, now, id],
-                )?;
-                return Ok(id);
-            }
-        }
-
-        let tier = Self::infer_tier(category);
-        let depth = Self::infer_depth(category, source, content);
-        let expires_at = Self::default_ttl_days(category).map(|days| {
-            (chrono::Local::now() + chrono::Duration::days(days))
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        });
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
-        let now = chrono::Local::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, about_person, depth, valid_until, validation_count, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?9, NULL, 0, ?10, ?10)",
-            rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, about_person, depth, now],
-        )
-        .context("保存 memory（关于某人）失败")?;
-        Ok(conn.last_insert_rowid())
+        self.save_memory_inner(category, content, source, confidence, visibility, Some(about_person))
     }
 
     /// 清理过期 working 记忆：标记为 expired

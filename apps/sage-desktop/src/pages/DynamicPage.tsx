@@ -4,14 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useLang } from "../LangContext";
 import { parsePage, serializeNodes, type PageNode } from "../dynpage/parser";
 import { renderNodes } from "../dynpage/ComponentRenderer";
-
-interface CustomPage {
-  id: number;
-  title: string;
-  markdown: string;
-  created_at: string;
-  updated_at: string;
-}
+import type { CustomPage } from "../types";
 
 export default function DynamicPage() {
   const { id } = useParams<{ id: string }>();
@@ -33,7 +26,7 @@ export default function DynamicPage() {
     invoke<CustomPage>("get_custom_page", { id: parseInt(id, 10) })
       .then(p => {
         setPage(p);
-        setBlocks(parsePage(p.markdown));
+        setBlocks(parsePage(p.markdown ?? ""));
         setLoading(false);
       })
       .catch(err => { setError(String(err)); setLoading(false); });

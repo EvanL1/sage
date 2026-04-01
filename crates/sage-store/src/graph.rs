@@ -4,6 +4,20 @@ use sage_types::{KnowledgeEdge, MemoryEdge};
 
 use super::Store;
 
+/// 将数据库行转换为 KnowledgeEdge（列顺序：id, from_type, from_id, to_type, to_id, relation, weight, created_at）
+fn row_to_knowledge_edge(row: &rusqlite::Row) -> rusqlite::Result<KnowledgeEdge> {
+    Ok(KnowledgeEdge {
+        id: row.get(0)?,
+        from_type: row.get(1)?,
+        from_id: row.get(2)?,
+        to_type: row.get(3)?,
+        to_id: row.get(4)?,
+        relation: row.get(5)?,
+        weight: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
 impl Store {
     /// 添加记忆之间的边（连接），存在则更新权重
     pub fn save_memory_edge(
@@ -403,18 +417,7 @@ impl Store {
              ORDER BY weight DESC",
             )
             .context("准备 get_knowledge_edges 查询失败")?;
-        let rows = stmt.query_map(rusqlite::params![node_type, node_id], |row| {
-            Ok(KnowledgeEdge {
-                id: row.get(0)?,
-                from_type: row.get(1)?,
-                from_id: row.get(2)?,
-                to_type: row.get(3)?,
-                to_id: row.get(4)?,
-                relation: row.get(5)?,
-                weight: row.get(6)?,
-                created_at: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![node_type, node_id], row_to_knowledge_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -437,18 +440,7 @@ impl Store {
              ORDER BY weight DESC LIMIT ?3",
             )
             .context("准备 get_knowledge_edges_between_types 查询失败")?;
-        let rows = stmt.query_map(rusqlite::params![from_type, to_type, limit as i64], |row| {
-            Ok(KnowledgeEdge {
-                id: row.get(0)?,
-                from_type: row.get(1)?,
-                from_id: row.get(2)?,
-                to_type: row.get(3)?,
-                to_id: row.get(4)?,
-                relation: row.get(5)?,
-                weight: row.get(6)?,
-                created_at: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![from_type, to_type, limit as i64], row_to_knowledge_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -465,18 +457,7 @@ impl Store {
              ORDER BY weight DESC",
             )
             .context("准备 get_all_knowledge_edges 查询失败")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(KnowledgeEdge {
-                id: row.get(0)?,
-                from_type: row.get(1)?,
-                from_id: row.get(2)?,
-                to_type: row.get(3)?,
-                to_id: row.get(4)?,
-                relation: row.get(5)?,
-                weight: row.get(6)?,
-                created_at: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_knowledge_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 

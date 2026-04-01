@@ -1,18 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLang } from "../LangContext";
-
-interface PersonMemory {
-  id: number;
-  category: string;
-  content: string;
-  source: string;
-  confidence: number;
-  created_at: string;
-  updated_at: string;
-  depth?: string;
-  about_person?: string;
-}
+import { PersonMemory } from "../types";
 
 function People() {
   const { t } = useLang();

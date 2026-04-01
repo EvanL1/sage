@@ -37,6 +37,21 @@ fn sec<'a>(lang: &str, zh: &'a str, en: &'a str) -> &'a str {
     }
 }
 
+/// 将 items 格式化为 `- item` 列表并附加到 sections（列表为空时跳过）
+fn push_bullet_section(sections: &mut Vec<String>, header: &str, items: &[impl AsRef<str>]) {
+    if items.is_empty() {
+        return;
+    }
+    let lines: Vec<String> = items.iter().map(|s| format!("- {}", s.as_ref())).collect();
+    sections.push(format!("{header}\n{}", lines.join("\n")));
+}
+
+/// 注入校准修正记录 + 校准规则（每种报告固定在末尾注入这两块）
+fn inject_context_calibration(store: &Store, report_type: &str, sections: &mut Vec<String>, lang: &str) {
+    inject_corrections(store, report_type, sections, lang);
+    inject_calibration_rules(store, report_type, sections, lang);
+}
+
 /// Morning Brief：邮件摘要 + 工作 session + Claude 记忆 + 决策 + 晚间回顾
 async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> String {
 
@@ -129,18 +144,13 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
     let sessions = store
         .get_session_summaries_since(&since_1d)
         .unwrap_or_default();
-    if !sessions.is_empty() {
-        let lines: Vec<String> = sessions
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let sess_header = sec(
-            lang,
-            "## 近期工作 Sessions（从中提取今日待办）",
-            "## Recent Work Sessions (extract today's to-dos from these)",
-        );
-        sections.push(format!("{sess_header}\n{}", lines.join("\n")));
-    }
+    let sess_contents: Vec<&str> = sessions.iter().map(|m| m.content.as_str()).collect();
+    let sess_header = sec(
+        lang,
+        "## 近期工作 Sessions（从中提取今日待办）",
+        "## Recent Work Sessions (extract today's to-dos from these)",
+    );
+    push_bullet_section(&mut sections, sess_header, &sess_contents);
 
     // 读取 Claude Code MEMORY.md（含项目进展和待办）
     if let Some(content) = read_claude_memory() {
@@ -152,40 +162,28 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
     let project_memories = store
         .search_memories("project status priority", 10)
         .unwrap_or_default();
-    if !project_memories.is_empty() {
-        let lines: Vec<String> = project_memories
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let proj_header = sec(lang, "## 项目相关记忆", "## Project Memories");
-        sections.push(format!("{proj_header}\n{}", lines.join("\n")));
-    }
+    let proj_contents: Vec<&str> = project_memories.iter().map(|m| m.content.as_str()).collect();
+    let proj_header = sec(lang, "## 项目相关记忆", "## Project Memories");
+    push_bullet_section(&mut sections, proj_header, &proj_contents);
 
     // 近 7 天的决策记忆
     let since_7d = days_ago(7);
     let memories = store.get_memories_since(&since_7d).unwrap_or_default();
-    let decisions: Vec<_> = memories
+    let decisions: Vec<&str> = memories
         .iter()
         .filter(|m| m.category == "decision")
+        .map(|m| m.content.as_str())
         .collect();
-    if !decisions.is_empty() {
-        let lines: Vec<String> = decisions
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let dec_header = sec(lang, "## 近期决策", "## Recent Decisions");
-        sections.push(format!("{dec_header}\n{}", lines.join("\n")));
-    }
+    let dec_header = sec(lang, "## 近期决策", "## Recent Decisions");
+    push_bullet_section(&mut sections, dec_header, &decisions);
 
     // 近 7 天的 coach insights
     let insights = store
         .get_coach_insights_since(&since_7d)
         .unwrap_or_default();
-    if !insights.is_empty() {
-        let lines: Vec<String> = insights.iter().map(|s| format!("- {s}")).collect();
-        let coach_header = sec(lang, "## 教练洞察", "## Coach Insights");
-        sections.push(format!("{coach_header}\n{}", lines.join("\n")));
-    }
+    let insights_refs: Vec<&str> = insights.iter().map(|s| s.as_str()).collect();
+    let coach_header = sec(lang, "## 教练洞察", "## Coach Insights");
+    push_bullet_section(&mut sections, coach_header, &insights_refs);
 
     // 上次 evening review 报告（仅 3 天内有效，避免注入过时回顾）
     if let Ok(Some(report)) = store.get_latest_report("evening") {
@@ -201,8 +199,7 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
         sections.push(feed_section);
     }
 
-    inject_corrections(store, "morning", &mut sections, lang);
-    inject_calibration_rules(store, "morning", &mut sections, lang);
+    inject_context_calibration(store, "morning", &mut sections, lang);
 
     if sections.is_empty() {
         return String::new();
@@ -231,14 +228,9 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
     let sessions = store
         .get_session_summaries_since(&since)
         .unwrap_or_default();
-    if !sessions.is_empty() {
-        let lines: Vec<String> = sessions
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let sess_header = sec(lang, "## 今日工作 Sessions", "## Today's Work Sessions");
-        sections.push(format!("{sess_header}\n{}", lines.join("\n")));
-    }
+    let sess_contents: Vec<&str> = sessions.iter().map(|m| m.content.as_str()).collect();
+    let sess_header = sec(lang, "## 今日工作 Sessions", "## Today's Work Sessions");
+    push_bullet_section(&mut sections, sess_header, &sess_contents);
 
     // 今日 observations 数量
     let obs_count = store.count_observations_since(&since).unwrap_or(0);
@@ -252,11 +244,9 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
 
     // 今日 coach insights
     let insights = store.get_coach_insights_since(&since).unwrap_or_default();
-    if !insights.is_empty() {
-        let lines: Vec<String> = insights.iter().map(|s| format!("- {s}")).collect();
-        let coach_header = sec(lang, "## 今日教练洞察", "## Today's Coach Insights");
-        sections.push(format!("{coach_header}\n{}", lines.join("\n")));
-    }
+    let insights_refs: Vec<&str> = insights.iter().map(|s| s.as_str()).collect();
+    let coach_header = sec(lang, "## 今日教练洞察", "## Today's Coach Insights");
+    push_bullet_section(&mut sections, coach_header, &insights_refs);
 
     // 今日浏览器行为（Teams 消息 + 页面访问 + 活动模式）
     let behaviors = store
@@ -373,8 +363,7 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
         sections.push(feed_section);
     }
 
-    inject_corrections(store, "evening", &mut sections, lang);
-    inject_calibration_rules(store, "evening", &mut sections, lang);
+    inject_context_calibration(store, "evening", &mut sections, lang);
 
     if sections.is_empty() {
         return String::new();
@@ -393,65 +382,44 @@ fn gather_weekly(store: &Store, lang: &str) -> String {
     let sessions = store
         .get_session_summaries_since(&since)
         .unwrap_or_default();
-    if !sessions.is_empty() {
-        let lines: Vec<String> = sessions
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let sess_header = sec(lang, "## 本周工作 Sessions", "## This Week's Work Sessions");
-        sections.push(format!("{sess_header}\n{}", lines.join("\n")));
-    }
+    let sess_contents: Vec<&str> = sessions.iter().map(|m| m.content.as_str()).collect();
+    let sess_header = sec(lang, "## 本周工作 Sessions", "## This Week's Work Sessions");
+    push_bullet_section(&mut sections, sess_header, &sess_contents);
 
     // 本周所有记忆（按 category 分组）
     let memories = store.get_memories_since(&since).unwrap_or_default();
-    if !memories.is_empty() {
-        let decision_lines: Vec<_> = memories
-            .iter()
-            .filter(|m| m.category == "decision")
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        if !decision_lines.is_empty() {
-            let dec_header = sec(lang, "## 本周决策", "## This Week's Decisions");
-            sections.push(format!("{dec_header}\n{}", decision_lines.join("\n")));
-        }
+    let decisions: Vec<&str> = memories
+        .iter()
+        .filter(|m| m.category == "decision")
+        .map(|m| m.content.as_str())
+        .collect();
+    let dec_header = sec(lang, "## 本周决策", "## This Week's Decisions");
+    push_bullet_section(&mut sections, dec_header, &decisions);
 
-        let insight_lines: Vec<_> = memories
-            .iter()
-            .filter(|m| m.category == "coach_insight")
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        if !insight_lines.is_empty() {
-            let ins_header = sec(lang, "## 本周教练洞察", "## This Week's Coach Insights");
-            sections.push(format!("{ins_header}\n{}", insight_lines.join("\n")));
-        }
-    }
+    let insights: Vec<&str> = memories
+        .iter()
+        .filter(|m| m.category == "coach_insight")
+        .map(|m| m.content.as_str())
+        .collect();
+    let ins_header = sec(lang, "## 本周教练洞察", "## This Week's Coach Insights");
+    push_bullet_section(&mut sections, ins_header, &insights);
 
     // 从记忆中查询项目和团队相关信息
     let project_memories = store
         .search_memories("project status progress", 8)
         .unwrap_or_default();
-    if !project_memories.is_empty() {
-        let lines: Vec<String> = project_memories
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let proj_header = sec(lang, "## 项目相关记忆", "## Project Memories");
-        sections.push(format!("{proj_header}\n{}", lines.join("\n")));
-    }
+    let proj_contents: Vec<&str> = project_memories.iter().map(|m| m.content.as_str()).collect();
+    let proj_header = sec(lang, "## 项目相关记忆", "## Project Memories");
+    push_bullet_section(&mut sections, proj_header, &proj_contents);
+
     let team_memories = store
         .search_memories("team member colleague", 8)
         .unwrap_or_default();
-    if !team_memories.is_empty() {
-        let lines: Vec<String> = team_memories
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let team_header = sec(lang, "## 团队相关记忆", "## Team Memories");
-        sections.push(format!("{team_header}\n{}", lines.join("\n")));
-    }
+    let team_contents: Vec<&str> = team_memories.iter().map(|m| m.content.as_str()).collect();
+    let team_header = sec(lang, "## 团队相关记忆", "## Team Memories");
+    push_bullet_section(&mut sections, team_header, &team_contents);
 
-    inject_corrections(store, "weekly", &mut sections, lang);
-    inject_calibration_rules(store, "weekly", &mut sections, lang);
+    inject_context_calibration(store, "weekly", &mut sections, lang);
 
     if sections.is_empty() {
         return String::new();
@@ -473,14 +441,9 @@ fn gather_week_start(store: &Store, lang: &str) -> String {
     let project_memories = store
         .search_memories("project plan priority", 8)
         .unwrap_or_default();
-    if !project_memories.is_empty() {
-        let lines: Vec<String> = project_memories
-            .iter()
-            .map(|m| format!("- {}", m.content))
-            .collect();
-        let proj_header = sec(lang, "## 项目相关记忆", "## Project Memories");
-        sections.push(format!("{proj_header}\n{}", lines.join("\n")));
-    }
+    let proj_contents: Vec<&str> = project_memories.iter().map(|m| m.content.as_str()).collect();
+    let proj_header = sec(lang, "## 项目相关记忆", "## Project Memories");
+    push_bullet_section(&mut sections, proj_header, &proj_contents);
 
     if sections.is_empty() {
         return String::new();

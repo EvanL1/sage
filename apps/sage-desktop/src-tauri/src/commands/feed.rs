@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::map_err;
+use super::{config_path, extract_json_object, format_existing_memories, get_provider, map_err, today_str};
 use crate::AppState;
 
 /// 从 LLM 返回的 sage-memory 块中提取记忆内容文本
@@ -16,12 +16,6 @@ fn parse_memory_items(raw: &str) -> Vec<String> {
         .filter_map(|it| it["content"].as_str().map(String::from))
         .filter(|s| !s.is_empty())
         .collect()
-}
-
-fn config_path() -> Result<std::path::PathBuf, String> {
-    dirs::home_dir()
-        .map(|h| h.join(".sage/config.toml"))
-        .ok_or_else(|| "无法确定 home 目录".into())
 }
 
 /// 获取最近的 Feed 条目
@@ -86,12 +80,7 @@ pub async fn search_feed_topic(
 ) -> Result<usize, String> {
     use sage_core::channels::feed::search_topic;
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or("没有可用的 AI 服务")?;
-    let agent_config = super::default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
     let agent = sage_core::agent::Agent::with_provider(provider);
 
     search_topic(&query, &agent, &state.store).await.map_err(map_err)
@@ -161,14 +150,13 @@ pub async fn summarize_user_interests(
         .collect();
 
     let lang = state.store.prompt_lang();
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let Some((info, config)) = sage_core::discovery::select_best_provider(&discovered, &configs) else {
-        let cats: std::collections::BTreeSet<String> = sorted.iter().map(|m| m.category.clone()).collect();
-        return Ok(cats.into_iter().collect());
+    let provider = match get_provider(&state.store) {
+        Ok(p) => p,
+        Err(_) => {
+            let cats: std::collections::BTreeSet<String> = sorted.iter().map(|m| m.category.clone()).collect();
+            return Ok(cats.into_iter().collect());
+        }
     };
-    let agent_config = super::default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
     let system = match lang.as_str() {
         "en" => "Extract the user's interest KEYWORDS from their memories. These keywords will be used as search queries to find relevant news/articles. Output one keyword or short phrase per line (max 10, each ≤4 words). Examples: Rust, distributed systems, LLM agents, embedded systems. Do NOT output full sentences or descriptions. Output ONLY the keyword list.",
         _ => "从用户记忆中提取兴趣关键词。这些关键词将用于搜索相关新闻/文章。每行一个关键词或短语（最多10个，每个不超过4个词）。示例：Rust、分布式系统、LLM agent、嵌入式开发。不要输出完整句子或描述。只输出关键词列表。",
@@ -265,20 +253,12 @@ pub async fn update_feed_natural(
     );
 
     // 调用 LLM
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or("没有可用的 AI 服务")?;
-    let agent_config = super::default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     let raw = provider.invoke(&prompt, None).await.map_err(map_err)?;
 
     // 提取 JSON
-    let json_str = raw
-        .find('{')
-        .and_then(|start| raw.rfind('}').map(|end| &raw[start..=end]))
-        .ok_or("LLM 未返回有效 JSON")?;
+    let json_str = extract_json_object(&raw).ok_or("LLM 未返回有效 JSON")?;
     let new_config: Value = serde_json::from_str(json_str).map_err(map_err)?;
 
     // 写入 config.toml（复用已有逻辑）
@@ -374,7 +354,7 @@ pub async fn save_feed_config(feed_config: Value) -> Result<(), String> {
 /// 获取今日 Feed 简报（优先读缓存，无缓存返回空）
 #[tauri::command]
 pub async fn get_feed_digest(state: State<'_, AppState>) -> Result<String, String> {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = today_str();
     match state.store.get_feed_digest_for_date(&today).map_err(map_err)? {
         Some(content) => Ok(content),
         None => Ok(String::new()),
@@ -426,16 +406,7 @@ pub async fn regenerate_feed_digest(state: State<'_, AppState>) -> Result<String
         });
     }
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or(if lang == "en" {
-            "No AI provider available."
-        } else {
-            "没有可用的 AI 服务。"
-        })?;
-    let agent_config = super::default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     let system = sage_core::prompts::feed_digest_system(&lang);
     let user = sage_core::prompts::feed_digest_user(&lang, &lines.join("\n"));
@@ -443,7 +414,7 @@ pub async fn regenerate_feed_digest(state: State<'_, AppState>) -> Result<String
     let content = provider.invoke(&user, Some(system)).await.map_err(map_err)?;
 
     // 写入缓存
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = today_str();
     let _ = state.store.save_feed_digest(&today, &content);
 
     Ok(content)
@@ -479,14 +450,10 @@ pub async fn deep_learn_feed_item(
     state.store.mark_feed_learning(observation_id).map_err(map_err)?;
 
     let lang = state.store.prompt_lang();
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or("没有可用的 AI 服务")?;
-    let agent_config = super::default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
-    let client = build_http_client();
+    // 复用 sage-core 中共用的带代理 HTTP 客户端
+    let client = sage_core::channels::feed::build_feed_client();
 
     // 根据 URL 类型采集不同深度的内容
     let content = if is_github_repo(&url) {
@@ -501,14 +468,7 @@ pub async fn deep_learn_feed_item(
     }
 
     // LLM 提取记忆
-    let existing = state.store.load_memories().unwrap_or_default();
-    let existing_text = if existing.is_empty() {
-        "（暂无）".to_string()
-    } else {
-        existing.iter().take(30)
-            .map(|m| format!("[{}] {} (置信度: {:.1})", m.category, m.content, m.confidence))
-            .collect::<Vec<_>>().join("\n")
-    };
+    let existing_text = format_existing_memories(&state.store);
     let conversation = format!(
         "User: 我想深入了解：{title}\n\n以下是采集到的详细资料：\n{content}"
     );
@@ -570,27 +530,6 @@ async fn generate_and_save_note(
     Some(note)
 }
 
-fn build_http_client() -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .user_agent("Sage/1.0 (Personal AI Advisor)")
-        .timeout(std::time::Duration::from_secs(15));
-    // 中国网络代理
-    for &(key, default_val) in &[
-        ("http_proxy", "http://127.0.0.1:7890"),
-        ("https_proxy", "http://127.0.0.1:7890"),
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            if let Ok(proxy) = reqwest::Proxy::all(&val) {
-                builder = builder.proxy(proxy);
-                break;
-            }
-        } else if let Ok(proxy) = reqwest::Proxy::all(default_val) {
-            builder = builder.proxy(proxy);
-            break;
-        }
-    }
-    builder.build().unwrap_or_default()
-}
 
 fn is_github_repo(url: &str) -> bool {
     if !url.starts_with("https://github.com/") { return false; }

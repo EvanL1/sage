@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { GridLayout, type LayoutItem, type Layout } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { DashData, TYPE_COLORS, TYPE_LABEL, reportLabel, preview } from "./types";
+import { TaskItem } from "../types";
 import { loadPinned, togglePin, isPinned as checkPinned, onPinChange, unpinItem, type PinnedItem } from "./pinStore";
 import { useLang } from "../LangContext";
 import InteractiveReport from "../components/InteractiveReport";
@@ -219,11 +220,6 @@ function PeopleWidget({ data }: { data: DashData }) {
 }
 
 /* Compact Tasks widget — quick add + top open tasks + completion dialog */
-interface TaskItem {
-  id: number; content: string; status: string; priority: string;
-  due_date: string | null; source: string; created_at: string; updated_at: string;
-  outcome: string | null; verification: string | null;
-}
 
 
 interface TaskSignalLight {

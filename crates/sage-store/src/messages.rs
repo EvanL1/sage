@@ -52,10 +52,7 @@ impl Store {
         direction: &str,
     ) -> Result<i64> {
         let ts = sage_types::normalize_timestamp(timestamp);
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT OR IGNORE INTO messages (sender, channel, content, source, message_type, timestamp, direction)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -67,10 +64,7 @@ impl Store {
 
     /// 按频道查询消息
     pub fn get_messages_by_channel(&self, channel: &str, limit: usize) -> Result<Vec<Message>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
              FROM messages WHERE channel = ?1 ORDER BY timestamp DESC LIMIT ?2",
@@ -84,10 +78,7 @@ impl Store {
 
     /// 按来源查询消息
     pub fn get_messages_by_source(&self, source: &str, limit: usize) -> Result<Vec<Message>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
              FROM messages WHERE source = ?1 ORDER BY created_at DESC LIMIT ?2",
@@ -101,10 +92,7 @@ impl Store {
 
     /// 搜索消息内容
     pub fn search_messages(&self, query: &str, limit: usize) -> Result<Vec<Message>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let pattern = format!("%{query}%");
         let mut stmt = conn.prepare(
             "SELECT id, sender, channel, content, source, message_type, timestamp, created_at, direction, action_state, resolved_at
@@ -121,10 +109,7 @@ impl Store {
 
     /// 今日消息统计（按来源分组）
     pub fn get_today_message_stats(&self) -> Result<Vec<(String, i64)>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let mut stmt = conn.prepare(
             "SELECT source, COUNT(*) FROM messages
@@ -138,10 +123,7 @@ impl Store {
 
     /// 获取所有频道列表（含 source 和消息数）
     pub fn get_message_channels(&self) -> Result<Vec<(String, String, i64)>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT channel, source, COUNT(*) as cnt FROM messages
              GROUP BY channel, source ORDER BY cnt DESC",
@@ -158,20 +140,14 @@ impl Store {
 
     /// 消息总数
     pub fn count_messages(&self) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
         Ok(count as usize)
     }
 
     /// 删除指定消息
     pub fn delete_message(&self, id: i64) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute("DELETE FROM messages WHERE id = ?1", rusqlite::params![id])
             .context("删除 message 失败")?;
         Ok(())
@@ -179,10 +155,7 @@ impl Store {
 
     /// 更新消息的 action_state
     pub fn update_message_action_state(&self, id: i64, state: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let resolved_at = if state == "resolved" || state == "expired" {
             Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
         } else {
@@ -198,10 +171,7 @@ impl Store {
 
     /// 获取所有超过 N 小时且状态为 pending 的已接收消息
     pub fn get_pending_messages_older_than(&self, hours: i64) -> Result<Vec<Message>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let cutoff = (chrono::Local::now() - chrono::Duration::hours(hours))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
@@ -217,10 +187,7 @@ impl Store {
 
     /// 获取最近 N 小时内已发送的消息（用于回复链检测）
     pub fn get_recent_sent_messages(&self, hours: i64) -> Result<Vec<Message>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let cutoff = (chrono::Local::now() - chrono::Duration::hours(hours))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
@@ -239,10 +206,7 @@ impl Store {
         if ids.is_empty() {
             return Ok(0);
         }
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let mut count = 0;
         for id in ids {
@@ -256,7 +220,7 @@ impl Store {
 
     /// 获取今日消息摘要（sender + channel + 内容前80字），用于人物提取
     pub fn get_today_message_summaries(&self, limit: usize) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let mut stmt = conn.prepare(
             "SELECT sender, channel, substr(content, 1, 80) FROM messages
@@ -274,10 +238,7 @@ impl Store {
 
     /// 统计处于 pending 状态的已接收消息数量
     pub fn count_pending_messages(&self) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM messages WHERE direction = 'received' AND action_state = 'pending'",
             [],

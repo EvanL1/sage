@@ -68,3 +68,21 @@ export interface Memory {
   valid_until?: string;
   validation_count?: number;
 }
+
+export interface CustomPage {
+  id: number;
+  title: string;
+  markdown?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskItem {
+  id: number; content: string; status: string; priority: string;
+  due_date: string | null; source: string; created_at: string; updated_at: string;
+  outcome: string | null; verification: string | null; description: string | null;
+}
+
+export interface PersonMemory extends Memory {
+  about_person?: string;
+}

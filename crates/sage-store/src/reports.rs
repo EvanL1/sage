@@ -4,21 +4,42 @@ use sage_types::Report;
 
 use super::Store;
 
+/// 将数据库行转换为 Report（列顺序：id, report_type, content, created_at）
+fn row_to_report(row: &rusqlite::Row) -> rusqlite::Result<Report> {
+    Ok(Report {
+        id: row.get(0)?,
+        report_type: row.get(1)?,
+        content: row.get(2)?,
+        created_at: row.get(3)?,
+    })
+}
+
+/// 将数据库行转换为 ReportCorrection（列顺序：id, report_type, wrong_claim, correct_fact, context_hint, confidence, applied_count, created_at, superseded_at）
+fn row_to_correction(row: &rusqlite::Row) -> rusqlite::Result<sage_types::ReportCorrection> {
+    Ok(sage_types::ReportCorrection {
+        id: row.get(0)?,
+        report_type: row.get(1)?,
+        wrong_claim: row.get(2)?,
+        correct_fact: row.get(3)?,
+        context_hint: row.get(4)?,
+        confidence: row.get(5)?,
+        applied_count: row.get(6)?,
+        created_at: row.get(7)?,
+        superseded_at: row.get(8)?,
+    })
+}
+
 impl Store {
     /// 保存报告（同一天同类型只保留一条，重复生成时更新内容）
     pub fn save_report(&self, report_type: &str, content: &str) -> Result<i64> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let now = chrono::Local::now().to_rfc3339();
-        let today = &now[..10]; // "2026-03-25"
 
         // 查找今天是否已有同类型报告
         let existing: Option<i64> = conn
             .query_row(
                 "SELECT id FROM reports WHERE report_type = ?1 AND created_at >= ?2 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![report_type, format!("{today}T00:00:00")],
+                rusqlite::params![report_type, crate::today_start()],
                 |row| row.get(0),
             )
             .optional()?;
@@ -42,34 +63,21 @@ impl Store {
 
     /// 检查今天是否已生成指定类型的报告
     pub fn has_today_report(&self, report_type: &str) -> bool {
-        let conn = self.conn.lock().ok();
-        let Some(conn) = conn else {
-            tracing::warn!("Store mutex poisoned");
-            return false;
-        };
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let Some(conn) = self.conn_or_warn() else { return false; };
         conn.query_row(
             "SELECT 1 FROM reports WHERE report_type = ?1 AND created_at >= ?2 LIMIT 1",
-            rusqlite::params![report_type, format!("{today}T00:00:00")],
+            rusqlite::params![report_type, crate::today_start()],
             |_| Ok(()),
         ).is_ok()
     }
 
     /// 获取指定类型的最新一条报告
     pub fn get_latest_report(&self, report_type: &str) -> Result<Option<Report>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.query_row(
             "SELECT id, report_type, content, created_at FROM reports WHERE report_type = ?1 ORDER BY created_at DESC LIMIT 1",
             rusqlite::params![report_type],
-            |row| Ok(Report {
-                id: row.get(0)?,
-                report_type: row.get(1)?,
-                content: row.get(2)?,
-                created_at: row.get(3)?,
-            }),
+            row_to_report,
         )
         .optional()
         .map_err(Into::into)
@@ -77,41 +85,21 @@ impl Store {
 
     /// 获取指定类型的最近 N 条报告（按时间倒序）
     pub fn get_reports(&self, report_type: &str, limit: usize) -> Result<Vec<Report>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, report_type, content, created_at FROM reports WHERE report_type = ?1 ORDER BY created_at DESC LIMIT ?2",
         ).context("准备 get_reports 查询失败")?;
-        let rows = stmt.query_map(rusqlite::params![report_type, limit as i64], |row| {
-            Ok(Report {
-                id: row.get(0)?,
-                report_type: row.get(1)?,
-                content: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![report_type, limit as i64], row_to_report)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// 获取所有类型的最近 N 条报告（按时间倒序）
     pub fn get_all_reports(&self, limit: usize) -> Result<Vec<Report>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, report_type, content, created_at FROM reports ORDER BY created_at DESC LIMIT ?1",
         ).context("准备 get_all_reports 查询失败")?;
-        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
-            Ok(Report {
-                id: row.get(0)?,
-                report_type: row.get(1)?,
-                content: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], row_to_report)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -122,7 +110,7 @@ impl Store {
         correct_fact: &str,
         context_hint: &str,
     ) -> Result<i64> {
-        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute(
             "UPDATE report_corrections SET superseded_at = datetime('now') WHERE report_type = ?1 AND wrong_claim = ?2 AND superseded_at IS NULL",
@@ -142,30 +130,18 @@ impl Store {
         report_type: &str,
         limit: usize,
     ) -> Result<Vec<sage_types::ReportCorrection>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, report_type, wrong_claim, correct_fact, context_hint, confidence, applied_count, created_at, superseded_at
              FROM report_corrections WHERE report_type = ?1 AND superseded_at IS NULL
              ORDER BY confidence DESC, created_at DESC LIMIT ?2"
         )?;
-        let rows = stmt.query_map(rusqlite::params![report_type, limit as i64], |row| {
-            Ok(sage_types::ReportCorrection {
-                id: row.get(0)?,
-                report_type: row.get(1)?,
-                wrong_claim: row.get(2)?,
-                correct_fact: row.get(3)?,
-                context_hint: row.get(4)?,
-                confidence: row.get(5)?,
-                applied_count: row.get(6)?,
-                created_at: row.get(7)?,
-                superseded_at: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![report_type, limit as i64], row_to_correction)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn increment_correction_applied(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE report_corrections SET applied_count = applied_count + 1, confidence = MIN(1.0, confidence + 0.05) WHERE id = ?1",
             rusqlite::params![id],
@@ -177,31 +153,19 @@ impl Store {
         &self,
         report_type: &str,
     ) -> Result<Vec<sage_types::ReportCorrection>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         let cutoff = (chrono::Local::now() - chrono::Duration::days(30)).to_rfc3339();
         let mut stmt = conn.prepare(
             "SELECT id, report_type, wrong_claim, correct_fact, context_hint, confidence, applied_count, created_at, superseded_at
              FROM report_corrections WHERE report_type = ?1 AND created_at > ?2 AND applied_count >= 1
              ORDER BY created_at DESC"
         )?;
-        let rows = stmt.query_map(rusqlite::params![report_type, cutoff], |row| {
-            Ok(sage_types::ReportCorrection {
-                id: row.get(0)?,
-                report_type: row.get(1)?,
-                wrong_claim: row.get(2)?,
-                correct_fact: row.get(3)?,
-                context_hint: row.get(4)?,
-                confidence: row.get(5)?,
-                applied_count: row.get(6)?,
-                created_at: row.get(7)?,
-                superseded_at: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![report_type, cutoff], row_to_correction)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn delete_correction(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "DELETE FROM report_corrections WHERE id = ?1",
             rusqlite::params![id],
@@ -210,24 +174,12 @@ impl Store {
     }
 
     pub fn get_all_corrections(&self) -> Result<Vec<sage_types::ReportCorrection>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, report_type, wrong_claim, correct_fact, context_hint, confidence, applied_count, created_at, superseded_at
              FROM report_corrections WHERE superseded_at IS NULL ORDER BY created_at DESC"
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(sage_types::ReportCorrection {
-                id: row.get(0)?,
-                report_type: row.get(1)?,
-                wrong_claim: row.get(2)?,
-                correct_fact: row.get(3)?,
-                context_hint: row.get(4)?,
-                confidence: row.get(5)?,
-                applied_count: row.get(6)?,
-                created_at: row.get(7)?,
-                superseded_at: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_correction)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }

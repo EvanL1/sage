@@ -1,10 +1,12 @@
+import type React from "react";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLang } from "../LangContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { formatTime } from "../utils/time";
 
-interface Message {
+interface CommMessage {
   id: number;
   sender: string;
   channel: string;
@@ -60,21 +62,16 @@ function sourceIcon(source: string): string {
   }
 }
 
-function formatTime(ts: string, yesterday: string): string {
-  try {
-    const d = new Date(ts);
-    if (isNaN(d.getTime())) return ts;
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    const diffDays = Math.floor(diffMs / 86400000);
-    if (diffDays === 0) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (diffDays === 1) return yesterday;
-    if (diffDays < 7) return d.toLocaleDateString([], { weekday: "short" });
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
-  } catch {
-    return ts;
-  }
-}
+const dismissBtnStyle: React.CSSProperties = {
+  position: "absolute", top: 4, right: 8, background: "none",
+  border: "none", fontSize: 14, cursor: "pointer",
+  color: "var(--text-tertiary)", padding: 0, lineHeight: 1,
+};
+
+const panelHeaderLabelStyle: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, color: "var(--accent)",
+  marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px",
+};
 
 // ─── Message Graph sub-component ───
 function MessageGraph() {
@@ -401,13 +398,13 @@ function MessageFlow() {
   const { t } = useLang();
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<CommMessage[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<"all" | "received" | "sent">("all");
-  const [selectedMsg, setSelectedMsg] = useState<Message | null>(null);
+  const [selectedMsg, setSelectedMsg] = useState<CommMessage | null>(null);
   const [aiInsight, setAiInsight] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [situation, setSituation] = useState<string | null>(null);
@@ -441,7 +438,7 @@ function MessageFlow() {
       const params: Record<string, unknown> = { limit: 100 };
       if (selectedChannel) params.channel = selectedChannel;
       else if (selectedSource) params.source = selectedSource;
-      const data = await invoke<Message[]>("get_messages", params);
+      const data = await invoke<CommMessage[]>("get_messages", params);
       setMessages(data);
     } catch (e) {
       console.error("Failed to load messages:", e);
@@ -489,7 +486,7 @@ function MessageFlow() {
       m.sender.toLowerCase().includes(searchQuery.toLowerCase()),
     );
 
-  const grouped = new Map<string, Message[]>();
+  const grouped = new Map<string, CommMessage[]>();
   for (const msg of filteredMessages) {
     const dateKey = msg.timestamp.slice(0, 10);
     if (!grouped.has(dateKey)) grouped.set(dateKey, []);
@@ -597,7 +594,7 @@ function MessageFlow() {
                 if (ch.count === 1) {
                   setSelectedChannel(ch.channel);
                   setSelectedSource(ch.source);
-                  invoke<Message[]>("get_messages", { channel: ch.channel, limit: 1 })
+                  invoke<CommMessage[]>("get_messages", { channel: ch.channel, limit: 1 })
                     .then((msgs) => { if (msgs.length > 0) setSelectedMsg(msgs[0]); })
                     .catch(() => {});
                 } else {
@@ -727,13 +724,10 @@ function MessageFlow() {
             color: "var(--text)", position: "relative", whiteSpace: "pre-wrap",
             maxHeight: 300, overflowY: "auto",
           }}>
-            <button
-              onClick={() => setSituation(null)}
-              style={{ position: "absolute", top: 4, right: 8, background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "var(--text-tertiary)", padding: 0, lineHeight: 1 }}
-            >
+            <button onClick={() => setSituation(null)} style={dismissBtnStyle}>
               x
             </button>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            <div style={panelHeaderLabelStyle}>
               Situation
             </div>
             <div className="md-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{situation}</ReactMarkdown></div>
@@ -749,13 +743,10 @@ function MessageFlow() {
             border: "1px solid var(--accent)", fontSize: 12, lineHeight: 1.6,
             color: "var(--text)", position: "relative",
           }}>
-            <button
-              onClick={() => setAiInsight(null)}
-              style={{ position: "absolute", top: 4, right: 8, background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "var(--text-tertiary)", padding: 0, lineHeight: 1 }}
-            >
+            <button onClick={() => setAiInsight(null)} style={dismissBtnStyle}>
               x
             </button>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            <div style={panelHeaderLabelStyle}>
               {t("msg.convSummary")}
             </div>
             <div className="md-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{aiInsight}</ReactMarkdown></div>

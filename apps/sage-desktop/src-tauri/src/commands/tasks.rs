@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tauri::State;
 
-use super::{default_agent_config, map_err};
+use super::{extract_json_object, format_existing_memories, get_provider, map_err, strip_code_fences, today_str};
 use crate::AppState;
 
 /// Look up a task by id and build a TaskSnapshot. Returns None if not found.
@@ -38,7 +38,7 @@ pub async fn create_task_natural(
         return Err("内容不能为空".into());
     }
 
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = today_str();
     let prompt = format!(
         r#"从用户的自然语言中提取任务信息。今天是 {today}。
 
@@ -58,19 +58,11 @@ pub async fn create_task_natural(
 - 只输出 JSON"#
     );
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(super::map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or("没有可用的 AI 服务")?;
-    let agent_config = super::default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
-    let raw = provider.invoke(&prompt, None).await.map_err(super::map_err)?;
+    let raw = provider.invoke(&prompt, None).await.map_err(map_err)?;
 
-    let json_str = raw
-        .find('{')
-        .and_then(|start| raw.rfind('}').map(|end| &raw[start..=end]))
-        .ok_or("LLM 未返回有效 JSON")?;
+    let json_str = extract_json_object(&raw).ok_or("LLM 未返回有效 JSON")?;
     let parsed: Value = serde_json::from_str(json_str).map_err(super::map_err)?;
 
     let content = parsed["content"]
@@ -349,32 +341,8 @@ async fn learn_from_task_outcome(
     outcome: &str,
 ) {
     let lang = store.prompt_lang();
-    let discovered = sage_core::discovery::discover_providers(&store);
-    let configs = match store.load_provider_configs() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let Some((info, config)) =
-        sage_core::discovery::select_best_provider(&discovered, &configs)
-    else {
-        return;
-    };
-    let agent_config = super::default_agent_config();
-    let provider =
-        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
-
-    // 构造 existing memories 文本
-    let existing = store.load_memories().unwrap_or_default();
-    let existing_text = if existing.is_empty() {
-        "（暂无）".to_string()
-    } else {
-        existing
-            .iter()
-            .take(30)
-            .map(|m| format!("[{}] {} (置信度: {:.1})", m.category, m.content, m.confidence))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let Ok(provider) = get_provider(&store) else { return };
+    let existing_text = format_existing_memories(&store);
 
     // 构造 conversation 上下文
     let conversation = format!(
@@ -444,23 +412,13 @@ pub async fn generate_tasks(
     let lang = state.store.prompt_lang();
     let system = sage_core::prompts::cmd_task_extraction_system(&lang, &today);
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or("未配置 AI 服务")?;
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
     let raw = provider
         .invoke(&context, Some(&system))
         .await
         .map_err(map_err)?;
 
-    let json_str = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let json_str = strip_code_fences(&raw);
     let tasks: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
 
     let mut created = Vec::new();
@@ -504,14 +462,10 @@ pub async fn generate_verification(state: State<'_, AppState>, task_id: i64) -> 
         .map(|(_, content, _, _, _, _, _, _, _, _, _)| content.clone())
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = match sage_core::discovery::select_best_provider(&discovered, &configs) {
-        Some(p) => p,
-        None => return Ok(()),
+    let provider = match get_provider(&state.store) {
+        Ok(p) => p,
+        Err(_) => return Ok(()),
     };
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
 
     let lang = state.store.prompt_lang();
     let system = sage_core::prompts::cmd_verification_system(&lang);
@@ -519,12 +473,7 @@ pub async fn generate_verification(state: State<'_, AppState>, task_id: i64) -> 
 
     match provider.invoke(&prompt, Some(system)).await {
         Ok(raw) => {
-            let json_str = raw
-                .trim()
-                .trim_start_matches("```json")
-                .trim_start_matches("```")
-                .trim_end_matches("```")
-                .trim();
+            let json_str = strip_code_fences(&raw);
             if let Ok(items) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 新格式 {"done":[...],"cancelled":[...]} 或旧格式 [...]
                 if items.is_object() || items.is_array() {
@@ -541,28 +490,27 @@ pub async fn generate_verification(state: State<'_, AppState>, task_id: i64) -> 
 
 // ─── Task Signals ──────────────────────────────
 
+fn signal_to_json(s: &sage_core::store::TaskSignal) -> Value {
+    json!({
+        "id": s.id,
+        "signalType": s.signal_type,
+        "taskId": s.task_id,
+        "title": s.title,
+        "evidence": s.evidence,
+        "suggestedOutcome": s.suggested_outcome,
+        "status": s.status,
+        "createdAt": s.created_at,
+        "importance": s.importance,
+    })
+}
+
 #[tauri::command]
 pub async fn get_task_signals(state: State<'_, AppState>) -> Result<Value, String> {
     let signals = state
         .store
         .get_pending_signals()
         .map_err(|e| e.to_string())?;
-    let items: Vec<Value> = signals
-        .into_iter()
-        .map(|s| {
-            json!({
-                "id": s.id,
-                "signalType": s.signal_type,
-                "taskId": s.task_id,
-                "title": s.title,
-                "evidence": s.evidence,
-                "suggestedOutcome": s.suggested_outcome,
-                "status": s.status,
-                "createdAt": s.created_at,
-                "importance": s.importance,
-            })
-        })
-        .collect();
+    let items: Vec<Value> = signals.into_iter().map(|s| signal_to_json(&s)).collect();
     Ok(json!(items))
 }
 

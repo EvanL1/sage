@@ -30,10 +30,7 @@ impl Store {
     ///
     /// 如果 depth 字段全为 episodic（旧数据未迁移），自动回退到 tier-based 查询。
     pub fn get_memory_context(&self, max_bytes: usize) -> Result<String> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
 
         // 检查是否有非 episodic 的 depth（用于 fallback 判断）
         let has_deep: bool = conn
@@ -267,10 +264,7 @@ impl Store {
 
     /// 查询今天已完成的心跳动作标题
     pub fn get_today_handled_actions(&self) -> Result<Vec<String>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let mut stmt = conn.prepare(
             "SELECT content FROM memories WHERE category = 'decision' AND source = 'router' AND created_at >= ?1"
@@ -295,13 +289,12 @@ impl Store {
 
     /// 检查自上次 evolution 以来是否有新的非 episodic 记忆
     pub fn has_memories_since_last_evolution(&self) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let conn = self.conn()?;
         // 上次 evolution 时间：最近一条 coach_insight 或 observer_note 的 created_at 之前的最后 evolution
         // 简化：用 today 的第一条 coach_insight 时间作为基准（Coach 在 Evolution 之前跑）
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let last_evolution: Option<String> = conn.query_row(
             "SELECT MAX(created_at) FROM memories WHERE category = 'coach_insight' AND created_at >= ?1",
-            rusqlite::params![format!("{today}T00:00:00")],
+            rusqlite::params![crate::today_start()],
             |row| row.get(0),
         ).ok().flatten();
 
@@ -320,23 +313,21 @@ impl Store {
 
     /// 获取今天的 observer_notes 内容列表
     pub fn get_today_observer_notes(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT content FROM memories WHERE category = 'observer_note' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 30"
         )?;
-        let rows = stmt.query_map(rusqlite::params![format!("{today}T00:00:00")], |r| r.get(0))?;
+        let rows = stmt.query_map(rusqlite::params![crate::today_start()], |r| r.get(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// 获取今天的 coach_insights 内容列表
     pub fn get_today_coach_insights(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT content FROM memories WHERE category = 'coach_insight' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 15"
         )?;
-        let rows = stmt.query_map(rusqlite::params![format!("{today}T00:00:00")], |r| r.get(0))?;
+        let rows = stmt.query_map(rusqlite::params![crate::today_start()], |r| r.get(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -360,10 +351,7 @@ impl Store {
             format!("%{}%", owner_name)
         };
 
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT a.sender, b.sender,

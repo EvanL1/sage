@@ -5,6 +5,7 @@ use crate::agent::Agent;
 use crate::pipeline::{actions, parser};
 use crate::prompts;
 use crate::store::Store;
+use crate::text_utils::truncate_with_ellipsis as truncate;
 
 // ─── Typed Task Signal Commands ─────────────────────────────────────────────
 
@@ -458,15 +459,6 @@ async fn self_reflect_on_dismissals(agent: &Agent, store: &Store) -> Result<()> 
         info!("Task intelligence self-evolved: {rule_count} new rules from dismiss patterns");
     }
     Ok(())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
-        format!("{}…", &s[..end])
-    }
 }
 
 /// 从文本中提取 due:YYYY-MM-DD 或裸 YYYY-MM-DD 格式的日期

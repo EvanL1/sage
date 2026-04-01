@@ -11,6 +11,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 use crate::store::Store;
+use crate::text_utils::truncate_str;
 
 /// 单次 Claude Code 会话的提炼摘要
 #[derive(Debug, Clone, Default)]
@@ -234,20 +235,6 @@ fn build_summary_hint(user_messages: &[String]) -> String {
         .map(|msg| truncate_str(msg, 50).to_string())
         .collect::<Vec<_>>()
         .join(" | ")
-}
-
-/// 将字符串截断到指定字节长度，保证 UTF-8 边界安全。
-fn truncate_str(s: &str, max_chars: usize) -> &str {
-    if s.chars().count() <= max_chars {
-        return s;
-    }
-    // 按字符数截断，找到对应的字节边界
-    let byte_pos = s
-        .char_indices()
-        .nth(max_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
-    &s[..byte_pos]
 }
 
 // ─── Session Ingestion Pipeline ───────────────────────────────────────────────
@@ -640,10 +627,11 @@ mod tests {
         assert_eq!(summary.message_count, 1);
     }
 
-    // ── 辅助测试：truncate_str 的 UTF-8 安全截断 ─────────────────────────────
+    // ── 辅助测试：truncate_str 的 UTF-8 安全截断（现由 text_utils 提供）──────
 
     #[test]
     fn test_truncate_str_multibyte() {
+        use crate::text_utils::truncate_str;
         // 中文每个字符 3 字节，截断时不能切断多字节序列
         let s = "你好世界，这是一段很长的中文文本用于测试截断功能是否正确处理多字节字符";
         let result = truncate_str(s, 10);

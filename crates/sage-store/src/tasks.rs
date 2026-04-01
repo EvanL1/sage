@@ -32,6 +32,21 @@ pub(crate) fn strip_id_markers(s: &str) -> String {
     result.trim().to_string()
 }
 
+/// 将数据库行转换为 TaskSignal（列顺序：id, signal_type, task_id, title, evidence, suggested_outcome, status, created_at, importance）
+fn row_to_signal(row: &rusqlite::Row) -> rusqlite::Result<TaskSignal> {
+    Ok(TaskSignal {
+        id: row.get(0)?,
+        signal_type: row.get(1)?,
+        task_id: row.get(2)?,
+        title: row.get(3)?,
+        evidence: row.get(4)?,
+        suggested_outcome: row.get(5)?,
+        status: row.get(6)?,
+        created_at: row.get(7)?,
+        importance: row.get(8)?,
+    })
+}
+
 impl Store {
     /// 创建任务，自动与 open/done/cancelled 任务语义去重。
     /// 返回 Ok(-1) 表示检测到重复，跳过创建。
@@ -48,10 +63,7 @@ impl Store {
         let clean_content = strip_id_markers(content);
         let content = if clean_content.is_empty() { content } else { &clean_content };
 
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
 
         // 语义去重：与 open/done/cancelled 任务比较（deleted 的已从 DB 移除，不参与）
         let mut stmt = conn.prepare(
@@ -103,10 +115,7 @@ impl Store {
             Option<String>,
         )>,
     > {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(s) =
             status
         {
@@ -142,10 +151,7 @@ impl Store {
     }
 
     pub fn update_task_verification(&self, task_id: i64, verification: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE tasks SET verification = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![verification, task_id],
@@ -154,10 +160,7 @@ impl Store {
     }
 
     pub fn update_task_status(&self, task_id: i64, status: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![status, task_id],
@@ -171,10 +174,7 @@ impl Store {
         status: &str,
         outcome: Option<&str>,
     ) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE tasks SET status = ?1, outcome = ?2, updated_at = datetime('now') WHERE id = ?3",
             rusqlite::params![status, outcome, task_id],
@@ -184,10 +184,7 @@ impl Store {
 
     pub fn update_task_due_date(&self, task_id: i64, due_date: Option<&str>) -> Result<()> {
         let normalized = due_date.map(|d| sage_types::normalize_timestamp(d));
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE tasks SET due_date = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![normalized, task_id],
@@ -203,10 +200,7 @@ impl Store {
         due_date: Option<&str>,
         description: Option<&str>,
     ) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE tasks SET content = ?1, priority = ?2, due_date = ?3, description = ?4, updated_at = datetime('now') WHERE id = ?5",
             rusqlite::params![content, priority.unwrap_or("normal"), due_date, description, task_id],
@@ -219,10 +213,7 @@ impl Store {
         &self,
         task_id: i64,
     ) -> Result<Option<(String, String, String, Option<String>, Option<String>, Option<String>)>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT content, status, priority, due_date, description, outcome FROM tasks WHERE id = ?1",
         )?;
@@ -240,10 +231,7 @@ impl Store {
     }
 
     pub fn delete_task(&self, task_id: i64) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "DELETE FROM tasks WHERE id = ?1",
             rusqlite::params![task_id],
@@ -263,35 +251,17 @@ impl Store {
     }
 
     pub fn get_pending_signals(&self) -> Result<Vec<TaskSignal>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, signal_type, task_id, title, evidence, suggested_outcome, status, created_at, importance
              FROM task_signals WHERE status = 'pending' ORDER BY importance DESC, created_at DESC"
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(TaskSignal {
-                id: row.get(0)?,
-                signal_type: row.get(1)?,
-                task_id: row.get(2)?,
-                title: row.get(3)?,
-                evidence: row.get(4)?,
-                suggested_outcome: row.get(5)?,
-                status: row.get(6)?,
-                created_at: row.get(7)?,
-                importance: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_signal)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn update_signal_status(&self, signal_id: i64, status: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE task_signals SET status = ?1 WHERE id = ?2",
             rusqlite::params![status, signal_id],
@@ -301,63 +271,30 @@ impl Store {
 
     /// Get recently dismissed signals (to prevent re-suggesting)
     pub fn get_recent_dismissed_signals(&self, limit: usize) -> Result<Vec<TaskSignal>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, signal_type, task_id, title, evidence, suggested_outcome, status, created_at, importance
              FROM task_signals WHERE status = 'dismissed' ORDER BY created_at DESC LIMIT ?1"
         )?;
-        let rows = stmt.query_map(rusqlite::params![limit], |row| {
-            Ok(TaskSignal {
-                id: row.get(0)?,
-                signal_type: row.get(1)?,
-                task_id: row.get(2)?,
-                title: row.get(3)?,
-                evidence: row.get(4)?,
-                suggested_outcome: row.get(5)?,
-                status: row.get(6)?,
-                created_at: row.get(7)?,
-                importance: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![limit], row_to_signal)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Get recently accepted signals (to prevent LLM re-suggesting same topics)
     pub fn get_recent_accepted_signals(&self, limit: usize) -> Result<Vec<TaskSignal>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, signal_type, task_id, title, evidence, suggested_outcome, status, created_at, importance
              FROM task_signals WHERE status = 'accepted' AND created_at > datetime('now', '-7 days')
              ORDER BY created_at DESC LIMIT ?1"
         )?;
-        let rows = stmt.query_map(rusqlite::params![limit], |row| {
-            Ok(TaskSignal {
-                id: row.get(0)?,
-                signal_type: row.get(1)?,
-                task_id: row.get(2)?,
-                title: row.get(3)?,
-                evidence: row.get(4)?,
-                suggested_outcome: row.get(5)?,
-                status: row.get(6)?,
-                created_at: row.get(7)?,
-                importance: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![limit], row_to_signal)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Auto-dismiss signals older than 3 days
     pub fn dismiss_old_signals(&self) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let n = conn.execute(
             "UPDATE task_signals SET status = 'dismissed'
              WHERE status = 'pending' AND created_at < datetime('now', '-3 days')",
@@ -389,10 +326,7 @@ impl Store {
         suggested_outcome: Option<&str>,
         importance: Option<f32>,
     ) -> Result<i64> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         // 去重：同 task_id + signal_type 若已有 pending 信号则跳过
         if let Some(tid) = task_id {
             let exists: bool = conn.query_row(
@@ -449,10 +383,7 @@ impl Store {
 
     /// 返回窗口内 (accepted_count, total_count)
     pub fn get_signal_accept_rate(&self, window_days: u32) -> Result<(usize, usize)> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let window = format!("-{} days", window_days);
         let total: usize = conn.query_row(
             "SELECT COUNT(*) FROM task_signals WHERE status IN ('accepted', 'dismissed') AND created_at > datetime('now', ?1)",
@@ -469,10 +400,7 @@ impl Store {
 
     /// 读取重要性阈值，默认 0.65
     pub fn get_importance_threshold(&self) -> Result<f32> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let result: Option<String> = conn
             .query_row(
                 "SELECT value FROM kv_store WHERE key = 'importance_threshold'",
@@ -487,10 +415,7 @@ impl Store {
 
     /// 写入重要性阈值
     pub fn set_importance_threshold(&self, value: f32) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ('importance_threshold', ?1, datetime('now'))",
             rusqlite::params![value.to_string()],
@@ -500,7 +425,7 @@ impl Store {
 
     /// 通用 KV 读写（用于 evolution 进度等轻量状态）
     pub fn kv_set(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, datetime('now'))",
             rusqlite::params![key, value],
@@ -509,7 +434,7 @@ impl Store {
     }
 
     pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE key = ?1")?;
         let result = stmt.query_row(rusqlite::params![key], |row| row.get::<_, String>(0));
         match result {
@@ -520,7 +445,7 @@ impl Store {
     }
 
     pub fn kv_delete(&self, key: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute("DELETE FROM kv_store WHERE key = ?1", rusqlite::params![key])?;
         Ok(())
     }

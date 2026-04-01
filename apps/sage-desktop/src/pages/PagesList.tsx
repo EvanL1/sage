@@ -2,14 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useLang } from "../LangContext";
-
-interface CustomPage {
-  id: string;
-  title: string;
-  content: string;
-  created_at: string;
-  updated_at: string;
-}
+import type { CustomPage } from "../types";
 
 export default function PagesList() {
   const navigate = useNavigate();
@@ -25,7 +18,7 @@ export default function PagesList() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
+  const handleDelete = async (id: number, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await invoke("delete_custom_page", { id });

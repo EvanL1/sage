@@ -2,13 +2,9 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import { useLang } from "../LangContext";
-import { createT } from "../i18n";
-
-interface TaskItem {
-  id: number; content: string; status: string; priority: string;
-  due_date: string | null; source: string; created_at: string; updated_at: string;
-  outcome: string | null; verification: string | null; description: string | null;
-}
+import { TaskItem } from "../types";
+import { ReportData } from "../layouts/types";
+import CompletionDialog from "../components/CompletionDialog";
 
 interface TaskSignal {
   id: number;
@@ -21,18 +17,27 @@ interface TaskSignal {
   createdAt: string;
 }
 
-interface VerificationItem {
-  q: string;
-  options?: string[];
-  multi?: boolean; // default true
-}
-
 interface CompletionTarget {
   task: TaskItem;
   status: "done" | "cancelled";
 }
-interface ReportData { content: string; created_at: string; }
 type FilterKey = "open" | "done" | "cancelled";
+
+/* ─── Calendar helpers ─── */
+function buildCalendarCells(year: number, month: number): (number | null)[] {
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const startOffset = firstDay === 0 ? 6 : firstDay - 1;
+  const cells: (number | null)[] = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
+function formatDateStr(year: number, month: number, day: number): string {
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
 
 /* ─── Calendar ─── */
 function MiniCalendar({ selected, onSelect, taskDates }: {
@@ -41,14 +46,8 @@ function MiniCalendar({ selected, onSelect, taskDates }: {
   const [viewDate, setViewDate] = useState(() => new Date());
   const today = new Date().toISOString().slice(0, 10);
   const year = viewDate.getFullYear(), month = viewDate.getMonth();
-  const firstDay = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const startOffset = firstDay === 0 ? 6 : firstDay - 1;
   const monthLabel = viewDate.toLocaleDateString("en-US", { year: "numeric", month: "long" });
-  const cells: (number | null)[] = [];
-  for (let i = 0; i < startOffset; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null);
+  const cells = buildCalendarCells(year, month);
 
   return (
     <div className="tcal">
@@ -63,7 +62,7 @@ function MiniCalendar({ selected, onSelect, taskDates }: {
       <div className="tcal-grid">
         {cells.map((day, i) => {
           if (day === null) return <span key={i} className="tcal-cell empty" />;
-          const ds = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          const ds = formatDateStr(year, month, day);
           const count = taskDates.get(ds) ?? 0;
           return (
             <button key={i} className={`tcal-cell${ds === today ? " today" : ""}${ds === selected ? " selected" : ""}${count > 0 ? " has-tasks" : ""}`}
@@ -105,14 +104,8 @@ function DatePicker({ value, onChange }: { value: string; onChange: (v: string) 
   const [showCal, setShowCal] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const year = viewDate.getFullYear(), month = viewDate.getMonth();
-  const firstDay = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const startOffset = firstDay === 0 ? 6 : firstDay - 1;
   const monthLabel = viewDate.toLocaleDateString("en-US", { year: "numeric", month: "long" });
-  const cells: (number | null)[] = [];
-  for (let i = 0; i < startOffset; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null);
+  const cells = buildCalendarCells(year, month);
 
   const quickDates = [
     { label: t("datePicker.today"), d: today },
@@ -150,7 +143,7 @@ function DatePicker({ value, onChange }: { value: string; onChange: (v: string) 
           <div className="dp-cal-grid">
             {cells.map((day, i) => {
               if (day === null) return <span key={i} className="dp-cal-cell empty" />;
-              const ds = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+              const ds = formatDateStr(year, month, day);
               return (
                 <button key={i} className={`dp-cal-cell${ds === today ? " today" : ""}${ds === sel ? " selected" : ""}`}
                   onClick={() => handleCalPick(ds)}>{day}</button>
@@ -214,144 +207,6 @@ function TaskForm({ initial, onSave, onCancel }: {
     </div>
   );
 }
-
-/* ─── Completion Dialog ─── */
-
-const getFallbackDone = (t: ReturnType<typeof createT>): VerificationItem[] => [
-  { q: t("fallback.doneQ"), options: [t("fallback.doneAsPlanned"), t("fallback.donePartially"), t("fallback.doneDelegated"), t("fallback.doneDifferent")] },
-];
-const getFallbackCancel = (t: ReturnType<typeof createT>): VerificationItem[] => [
-  { q: t("fallback.cancelQ"), options: [t("fallback.cancelIrrelevant"), t("fallback.cancelBlocked"), t("fallback.cancelDeprioritized"), t("fallback.cancelMerged"), t("fallback.cancelSomeoneElse")] },
-];
-
-/** Parse verification JSON: { done: [...], cancelled: [...] } */
-function parseVerification(raw: string | null, status: "done" | "cancelled"): VerificationItem[] | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    const items = status === "done" ? parsed.done : parsed.cancelled;
-    if (!Array.isArray(items) || items.length === 0) return null;
-    return items.map((item: { q: string; options?: string[] }) => ({
-      q: item.q,
-      options: item.options ?? [],
-    }));
-  } catch { return null; }
-}
-
-// Per-question answer: selected chips (multi) + custom text
-interface QAnswer { chips: string[]; text: string; }
-
-function CompletionDialog({ target, onClose, onRefresh }: {
-  target: CompletionTarget;
-  onClose: () => void;
-  onRefresh: () => void;
-}) {
-  const { t } = useLang();
-  const isDone = target.status === "done";
-  const task = target.task;
-
-  const questions: VerificationItem[] =
-    parseVerification(task.verification, target.status)
-    ?? (isDone ? getFallbackDone(t) : getFallbackCancel(t));
-
-  const [answers, setAnswers] = useState<QAnswer[]>(() => questions.map(() => ({ chips: [], text: "" })));
-  const [notes, setNotes] = useState("");
-
-  const toggleChip = (qi: number, chip: string) => {
-    setAnswers(prev => {
-      const next = [...prev];
-      const a = { ...next[qi] };
-      if (a.chips.includes(chip)) {
-        a.chips = a.chips.filter(c => c !== chip);
-      } else {
-        a.chips = [...a.chips, chip];
-      }
-      next[qi] = a;
-      return next;
-    });
-  };
-
-  const setQText = (qi: number, text: string) => {
-    setAnswers(prev => {
-      const next = [...prev];
-      next[qi] = { ...next[qi], text };
-      return next;
-    });
-  };
-
-  const save = (skip: boolean) => {
-    if (skip) {
-      invoke("complete_task", { taskId: task.id, status: target.status, outcome: null })
-        .then(() => { onRefresh(); onClose(); })
-        .catch(e => console.error("complete_task:", e));
-      return;
-    }
-    const parts: string[] = [];
-    questions.forEach((q, i) => {
-      const a = answers[i];
-      const answerParts = [...a.chips];
-      if (a.text.trim()) answerParts.push(a.text.trim());
-      if (answerParts.length) parts.push(`${q.q}: ${answerParts.join(", ")}`);
-    });
-    if (notes.trim()) parts.push(notes.trim());
-    const outcome = parts.length ? parts.join(" | ") : null;
-    invoke("complete_task", { taskId: task.id, status: target.status, outcome })
-      .then(() => { onRefresh(); onClose(); })
-      .catch(e => console.error("complete_task:", e));
-  };
-
-  return (
-    <div className="completion-dialog-overlay" onClick={onClose}>
-      <div className="completion-dialog" onClick={e => e.stopPropagation()}>
-        <button className="completion-dialog-close" onClick={onClose} title={t("close")}>&times;</button>
-        <div className="cd-task-content">{task.content}</div>
-        <div className="cd-task-meta">
-          {task.due_date && <span className="cd-meta-item">{t("completion.due")}: {task.due_date}</span>}
-          {task.priority !== "normal" && <span className="cd-meta-item cd-priority">{task.priority}</span>}
-          <span className="cd-meta-item">{t("completion.source")}: {task.source}</span>
-          <span className="cd-meta-item">{t("completion.created")}: {task.created_at.slice(0, 10)}</span>
-        </div>
-        <div className={`completion-dialog-status ${target.status}`}>
-          <span className="completion-dialog-status-dot" />
-          {isDone ? t("completion.completing") : t("completion.cancelling")}
-        </div>
-
-        <div className="cd-questions">
-          {questions.map((q, qi) => (
-            <div key={qi} className="cd-q-item">
-              <div className="cd-q-label">{q.q}</div>
-              {q.options && q.options.length > 0 && (
-                <div className="cd-q-chips">
-                  {q.options.map(opt => (
-                    <button key={opt}
-                      className={`cd-q-chip${answers[qi]?.chips.includes(opt) ? " active" : ""}`}
-                      onClick={() => toggleChip(qi, opt)}>{opt}</button>
-                  ))}
-                </div>
-              )}
-              <input className="cd-q-text" type="text" placeholder={t("completion.typeAnswer")}
-                value={answers[qi]?.text ?? ""}
-                onChange={e => setQText(qi, e.target.value)}
-                onKeyDown={e => { if (e.key === "Escape") onClose(); }} />
-            </div>
-          ))}
-        </div>
-
-        <textarea
-          className="completion-dialog-textarea"
-          placeholder={t("completion.notes")}
-          value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-          onKeyDown={e => { if (e.key === "Escape") onClose(); }}
-        />
-        <div className="completion-dialog-actions">
-          <button className="completion-dialog-skip" onClick={() => save(true)}>{t("skip")}</button>
-          <button className="completion-dialog-save" onClick={() => save(false)}>{t("save")}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 
 /* ─── Main Page ─── */
 export default function Tasks() {
@@ -668,7 +523,9 @@ export default function Tasks() {
       {/* Completion dialog */}
       {completionTarget && (
         <CompletionDialog
-          target={completionTarget}
+          task={completionTarget.task}
+          status={completionTarget.status}
+          meta={{ showCreatedAt: true }}
           onClose={() => {
             setCompletionTarget(null);
             setPendingSignalId(null);

@@ -31,24 +31,95 @@ pub(crate) fn map_err(e: impl std::fmt::Display) -> String {
 
 pub(crate) fn default_agent_config() -> sage_core::config::AgentConfig {
     sage_core::config::AgentConfig {
-        provider: "claude".into(),
-        claude_binary: "claude".into(),
-        codex_binary: String::new(),
-        gemini_binary: String::new(),
         default_model: "claude-sonnet-4-6".into(),
         project_dir: ".".into(),
         max_budget_usd: 1.0,
         permission_mode: "default".into(),
-        max_iterations: 10,
+        ..Default::default()
     }
+}
+
+/// 解析 provider：discover → load_configs → select_best → create
+pub(crate) fn get_provider(
+    store: &sage_core::store::Store,
+) -> Result<Box<dyn sage_core::provider::LlmProvider>, String> {
+    let discovered = sage_core::discovery::discover_providers(store);
+    let configs = store.load_provider_configs().map_err(map_err)?;
+    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
+        .ok_or_else(|| {
+            let lang = store.prompt_lang();
+            if lang == "en" {
+                "No AI provider configured. Please add an API key in Settings.".to_string()
+            } else {
+                "没有可用的 AI 服务。请在设置中配置 API Key。".to_string()
+            }
+        })?;
+    Ok(sage_core::provider::create_provider_from_config(
+        &info,
+        &config,
+        &default_agent_config(),
+    ))
+}
+
+/// 格式化现有记忆为文本（供 LLM prompt 使用）
+pub(crate) fn format_existing_memories(store: &sage_core::store::Store) -> String {
+    let existing = store.load_memories().unwrap_or_default();
+    if existing.is_empty() {
+        "（暂无）".to_string()
+    } else {
+        existing
+            .iter()
+            .take(30)
+            .map(|m| format!("[{}] {} (置信度: {:.1})", m.category, m.content, m.confidence))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// 从 markdown 首行提取标题（去掉 `# ` 前缀）
+pub(crate) fn extract_markdown_title(markdown: &str) -> String {
+    for line in markdown.lines() {
+        if let Some(title) = line.trim().strip_prefix("# ") {
+            return title.trim().to_string();
+        }
+    }
+    "Untitled Page".to_string()
+}
+
+/// ~/.sage/config.toml 路径
+pub(crate) fn config_path() -> Result<std::path::PathBuf, String> {
+    dirs::home_dir()
+        .map(|h| h.join(".sage/config.toml"))
+        .ok_or_else(|| "无法确定 home 目录".into())
+}
+
+/// 去除代码围栏标记（```json / ``` 前后）
+pub(crate) fn strip_code_fences(s: &str) -> &str {
+    let s = s.trim();
+    let s = s.strip_prefix("```json").unwrap_or(s);
+    let s = s.strip_prefix("```").unwrap_or(s);
+    let s = s.strip_suffix("```").unwrap_or(s);
+    s.trim()
+}
+
+/// 从字符串中提取第一个完整的 JSON 对象（`{...}`）
+pub(crate) fn extract_json_object(s: &str) -> Option<&str> {
+    let start = s.find('{')?;
+    let end = s.rfind('}')?;
+    if end >= start { Some(&s[start..=end]) } else { None }
+}
+
+/// 今天的日期字符串（YYYY-MM-DD）
+pub(crate) fn today_str() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 /// 获取 Claude Code 的记忆目录路径
 /// ~/.claude/projects/-{project_path_encoded}/memory/
 pub(crate) fn claude_memory_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let config_path = std::path::PathBuf::from(format!("{home}/.sage/config.toml"));
-    let config = sage_core::config::Config::load_or_default(&config_path);
+    let cfg_path = config_path().ok()?;
+    let config = sage_core::config::Config::load_or_default(&cfg_path);
     let project_dir = config.agent.project_dir;
     let expanded = if project_dir.starts_with('~') {
         project_dir.replacen('~', &home, 1)
@@ -77,9 +148,7 @@ pub async fn update_config_natural(
         return Err("内容不能为空".into());
     }
 
-    let config_path = dirs::home_dir()
-        .map(|h| h.join(".sage/config.toml"))
-        .ok_or("无法确定 home 目录")?;
+    let config_path = config_path()?;
     let raw_toml = std::fs::read_to_string(&config_path).unwrap_or_default();
 
     // 脱敏：移除 API key 相关行
@@ -114,14 +183,7 @@ pub async fn update_config_natural(
     );
 
     // 调用 LLM
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) =
-        sage_core::discovery::select_best_provider(&discovered, &configs)
-            .ok_or("没有可用的 AI 服务")?;
-    let agent_config = default_agent_config();
-    let provider =
-        sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store).map_err(|e| e)?;
 
     let result = provider.invoke(&prompt, None).await.map_err(map_err)?;
 
@@ -276,13 +338,7 @@ pub(crate) async fn extract_and_save_memories(
     let saved;
     let integrator =
         sage_core::memory_integrator::MemoryIntegrator::new(std::sync::Arc::clone(store));
-    let discovered = sage_core::discovery::discover_providers(store);
-    let configs = store.load_provider_configs().unwrap_or_default();
-    if let Some((info, config)) = sage_core::discovery::select_best_provider(&discovered, &configs)
-    {
-        let agent_config = default_agent_config();
-        let provider =
-            sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    if let Ok(provider) = get_provider(store) {
         match integrator.integrate(mem_entries, provider.as_ref()).await {
             Ok(result) => {
                 saved = tasks_saved + result.created + result.updated;

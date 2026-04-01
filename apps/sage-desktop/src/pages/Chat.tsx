@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import { formatDate } from "../utils/time";
 import { useLang } from "../LangContext";
 
-interface Message {
+interface ChatMessage {
   id: number;
   role: "user" | "sage";
   content: string;
@@ -30,7 +30,7 @@ function Chat() {
   const { t } = useLang();
   const location = useLocation();
   const navigate = useNavigate();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -64,7 +64,7 @@ function Chat() {
 
   // Load chat history
   useEffect(() => {
-    invoke<Message[]>("get_chat_history", { limit: 50 })
+    invoke<ChatMessage[]>("get_chat_history", { limit: 50 })
       .then((history) => {
         if (history.length > 0) {
           setMessages(history.map((m) => ({
@@ -81,7 +81,7 @@ function Chat() {
 
   const loadSession = async (sid: string) => {
     try {
-      const history = await invoke<Message[]>("get_chat_history", { sessionId: sid });
+      const history = await invoke<ChatMessage[]>("get_chat_history", { sessionId: sid });
       setMessages(history.map((m) => ({ ...m, role: m.role as "user" | "sage" })));
       setSessionId(sid);
       setShowSessions(false);
@@ -123,7 +123,7 @@ function Chat() {
 
     const sid = forceNewSession ? null : sessionId;
 
-    const tempUserMsg: Message = {
+    const tempUserMsg: ChatMessage = {
       id: Date.now(),
       role: "user",
       content: text,
@@ -147,7 +147,7 @@ function Chat() {
         setSessionId(result.session_id);
       }
 
-      const sageMsg: Message = {
+      const sageMsg: ChatMessage = {
         id: Date.now() + 1,
         role: "sage",
         content: result.response,
@@ -158,7 +158,7 @@ function Chat() {
 
       // If backend generated a dynamic page, show a navigation card
       if (result.page_id) {
-        const pageCard: Message = {
+        const pageCard: ChatMessage = {
           id: Date.now() + 2,
           role: "sage",
           content: `📄 [${t("pages.created")} — ${t("pages.title")}](/pages/${result.page_id})`,
@@ -184,7 +184,7 @@ function Chat() {
       const errorContent = isProviderError
         ? t("chat.providerError")
         : t("chat.errorPrefix") + errStr;
-      const errorMsg: Message = {
+      const errorMsg: ChatMessage = {
         id: Date.now() + 1,
         role: "sage",
         content: errorContent,

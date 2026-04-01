@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::{claude_memory_dir, default_agent_config, map_err, trigger_memory_sync};
+use super::{claude_memory_dir, format_existing_memories, get_provider, map_err, trigger_memory_sync};
 use crate::AppState;
 
 #[tauri::command]
@@ -38,21 +38,7 @@ pub async fn extract_memories(
         return Ok(vec![]);
     }
 
-    let existing = state.store.load_memories().map_err(map_err)?;
-    let existing_text = if existing.is_empty() {
-        "（暂无）".to_string()
-    } else {
-        existing
-            .iter()
-            .map(|m| {
-                format!(
-                    "[{}] {} (置信度: {:.1})",
-                    m.category, m.content, m.confidence
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let existing_text = format_existing_memories(&state.store);
 
     let conversation = messages
         .iter()
@@ -63,13 +49,7 @@ pub async fn extract_memories(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or("没有可用的 AI 服务")?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     let lang = state.store.prompt_lang();
     let extraction_prompt =
@@ -299,13 +279,7 @@ pub async fn import_raw_memories(
         return Err("内容不能为空".to_string());
     }
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or("没有可用的 AI 服务。请在设置中配置 API Key。")?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     let lang = state.store.prompt_lang();
     let prompt = sage_core::prompts::cmd_import_ai_memory_user(&lang, text);

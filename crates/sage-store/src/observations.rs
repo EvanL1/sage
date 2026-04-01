@@ -6,11 +6,7 @@ impl Store {
     /// 记录观察
     /// 检查是否已存在同标题的 feed observation
     pub fn has_feed_observation(&self, title: &str) -> bool {
-        let conn = self.conn.lock().ok();
-        let Some(conn) = conn else {
-            tracing::warn!("Store mutex poisoned");
-            return false;
-        };
+        let Some(conn) = self.conn_or_warn() else { return false; };
         conn.query_row(
             "SELECT 1 FROM observations WHERE category = 'feed' AND observation = ?1 LIMIT 1",
             rusqlite::params![title],
@@ -24,10 +20,7 @@ impl Store {
         observation: &str,
         raw_data: Option<&str>,
     ) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let now = chrono::Local::now().to_rfc3339();
         conn.execute(
             "INSERT INTO observations (category, observation, raw_data, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -38,10 +31,7 @@ impl Store {
 
     /// 读取未处理的 observations（学习教练用），返回带 id 的完整行
     pub fn load_unprocessed_observations(&self, limit: usize) -> Result<Vec<ObservationRow>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, category, observation, raw_data, created_at
@@ -68,10 +58,7 @@ impl Store {
         if ids.is_empty() {
             return Ok(());
         }
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let now = chrono::Local::now().to_rfc3339();
         let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
@@ -94,10 +81,7 @@ impl Store {
 
     /// 读取最近 N 条 observations，返回 (category, observation) 对
     pub fn load_recent_observations(&self, limit: usize) -> Result<Vec<(String, String)>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT category, observation FROM observations ORDER BY created_at DESC LIMIT ?1",
@@ -119,10 +103,7 @@ impl Store {
 
     /// 读取最近的 feed observations
     pub fn load_feed_observations(&self, limit: usize) -> Result<Vec<ObservationRow>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         // UNION: 最新 limit 条 + 所有有 action 的条目（归档/已学习），避免旧归档被挤出
         let mut stmt = conn
             .prepare(
@@ -154,10 +135,7 @@ impl Store {
 
     /// 保存 Feed 每日简报到缓存
     pub fn save_feed_digest(&self, date: &str, content: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO feed_digests (date, content) VALUES (?1, ?2)
              ON CONFLICT(date) DO UPDATE SET content = excluded.content, created_at = datetime('now')",
@@ -169,10 +147,7 @@ impl Store {
 
     /// 读取指定日期的 Feed 简报缓存
     pub fn get_feed_digest_for_date(&self, date: &str) -> Result<Option<String>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let result = conn.query_row(
             "SELECT content FROM feed_digests WHERE date = ?1",
             rusqlite::params![date],
@@ -187,7 +162,7 @@ impl Store {
 
     /// 归档 feed 条目
     pub fn archive_feed_item(&self, observation_id: i64, category: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO feed_actions (observation_id, action, category)
              VALUES (?1, 'archived', ?2)
@@ -199,7 +174,7 @@ impl Store {
 
     /// 取消归档
     pub fn unarchive_feed_item(&self, observation_id: i64) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "DELETE FROM feed_actions WHERE observation_id = ?1",
             rusqlite::params![observation_id],
@@ -209,7 +184,7 @@ impl Store {
 
     /// 标记 feed 条目为已学习
     pub fn mark_feed_learned(&self, observation_id: i64) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO feed_actions (observation_id, action)
              VALUES (?1, 'learned')
@@ -221,7 +196,7 @@ impl Store {
 
     /// 标记 feed 条目为学习中
     pub fn mark_feed_learning(&self, observation_id: i64) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO feed_actions (observation_id, action)
              VALUES (?1, 'learning')
@@ -233,7 +208,7 @@ impl Store {
 
     /// 获取所有 feed actions（归档/学习状态）
     pub fn get_feed_actions(&self) -> Result<std::collections::HashMap<i64, (String, Option<String>)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT observation_id, action, category FROM feed_actions"
         ).context("查询 feed_actions 失败")?;
@@ -250,7 +225,7 @@ impl Store {
 
     /// 获取已归档的 observation IDs（用于 digest 排除）
     pub fn get_archived_feed_ids(&self) -> Result<std::collections::HashSet<i64>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT observation_id FROM feed_actions WHERE action IN ('archived', 'learned')"
         )?;
@@ -262,7 +237,7 @@ impl Store {
 
     /// 更新 feed 条目的分类
     pub fn set_feed_category(&self, observation_id: i64, category: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO feed_actions (observation_id, action, category)
              VALUES (?1, 'archived', ?2)
@@ -274,10 +249,7 @@ impl Store {
 
     /// 获取某个日期之后的 observations 数量
     pub fn count_observations_since(&self, since: &str) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let conn = self.conn()?;
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM observations WHERE created_at >= ?1",

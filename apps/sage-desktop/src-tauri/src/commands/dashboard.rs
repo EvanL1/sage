@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::{default_agent_config, map_err};
+use super::{get_provider, map_err, strip_code_fences};
 use crate::AppState;
 
 /// 将日期转为相对标签：今日/明日/昨日/周X/MM-DD（支持中英双语）
@@ -177,25 +177,14 @@ pub async fn curate_homepage(state: State<'_, AppState>) -> Result<Value, String
 
     let system = sage_core::prompts::cmd_dashboard_brief_system(&lang, user_name);
 
-    let discovered = sage_core::discovery::discover_providers(&state.store);
-    let configs = state.store.load_provider_configs().map_err(map_err)?;
-    let (info, config) = sage_core::discovery::select_best_provider(&discovered, &configs)
-        .ok_or(if lang == "en" { "AI service not configured" } else { "未配置 AI 服务" })?;
-
-    let agent_config = default_agent_config();
-    let provider = sage_core::provider::create_provider_from_config(&info, &config, &agent_config);
+    let provider = get_provider(&state.store)?;
 
     let raw = provider
         .invoke(&context, Some(&system))
         .await
         .map_err(map_err)?;
 
-    let json_str = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let json_str = strip_code_fences(&raw);
 
     let greeting = if lang == "en" {
         format!("Hello, {}. I'm ready.", user_name)
