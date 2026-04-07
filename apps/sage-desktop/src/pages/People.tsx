@@ -11,16 +11,24 @@ function People() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
+  // 合并相关
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
+  const [merging, setMerging] = useState(false);
+  const [mergeMsg, setMergeMsg] = useState<string | null>(null);
+
+  const refreshPersons = useCallback(async () => {
+    const list = await invoke<string[]>("get_known_persons");
+    setPersons(list);
+    return list;
+  }, []);
 
   useEffect(() => {
-    invoke<string[]>("get_known_persons")
-      .then((list) => {
-        setPersons(list);
-        if (list.length > 0) setSelected((prev) => prev ?? list[0]);
-      })
+    refreshPersons()
+      .then((list) => { if (list.length > 0) setSelected((prev) => prev ?? list[0]); })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [refreshPersons]);
 
   const loadMemories = useCallback(async (name: string) => {
     setMemories([]);
@@ -33,16 +41,15 @@ function People() {
   }, []);
 
   useEffect(() => {
-    if (selected) loadMemories(selected);
-  }, [selected, loadMemories]);
+    if (selected && !mergeMode) loadMemories(selected);
+  }, [selected, loadMemories, mergeMode]);
 
   const handleExtract = async () => {
     setExtracting(true);
     try {
       await invoke("trigger_person_extract");
       setTimeout(async () => {
-        const list = await invoke<string[]>("get_known_persons");
-        setPersons(list);
+        await refreshPersons();
         if (selected) loadMemories(selected);
         setExtracting(false);
       }, 3000);
@@ -52,9 +59,51 @@ function People() {
     }
   };
 
+  const toggleMergeSelect = (name: string) => {
+    setMergeSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const handleMerge = async () => {
+    const names = Array.from(mergeSelection);
+    if (names.length < 2) return;
+    // 第一个选中的作为 target
+    const target = names[0];
+    setMerging(true);
+    setMergeMsg(null);
+    try {
+      let totalMoved = 0;
+      for (let i = 1; i < names.length; i++) {
+        const moved = await invoke<number>("merge_persons", { target, source: names[i] });
+        totalMoved += moved;
+      }
+      setMergeMsg(t("people.mergeSuccess").replace("{0}", String(totalMoved)));
+      const list = await refreshPersons();
+      setSelected(target);
+      setMergeMode(false);
+      setMergeSelection(new Set());
+      if (list.includes(target)) loadMemories(target);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  const exitMergeMode = () => {
+    setMergeMode(false);
+    setMergeSelection(new Set());
+    setMergeMsg(null);
+  };
+
   const categoryLabel: Record<string, string> = {
     behavior: "Behavior", personality: "Personality", values: "Values",
     thinking: "Thinking", emotion: "Emotion", identity: "Identity", growth: "Growth",
+    role: "Role",
   };
 
   if (loading) return <div style={{ padding: 24, color: "var(--text-tertiary)" }}>{t("loading")}</div>;
@@ -95,31 +144,103 @@ function People() {
     return acc;
   }, {});
 
+  const sortedNames = Array.from(mergeSelection);
+
   return (
     <div style={{ padding: 24 }}>
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1>{t("people.title")}</h1>
-        <button onClick={handleExtract} disabled={extracting} style={{
-          padding: "6px 14px", fontSize: 12, border: "1px solid var(--border)",
-          borderRadius: "var(--radius-md)", background: "var(--surface)",
-          color: "var(--text-secondary)", cursor: extracting ? "not-allowed" : "pointer",
-          opacity: extracting ? 0.6 : 1,
-        }}>{extracting ? t("people.extracting") : t("people.extractNow")}</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {mergeMode ? (
+            <>
+              <button onClick={exitMergeMode} style={{
+                padding: "6px 14px", fontSize: 12, border: "1px solid var(--border)",
+                borderRadius: "var(--radius-md)", background: "var(--surface)",
+                color: "var(--text-secondary)", cursor: "pointer",
+              }}>{t("cancel")}</button>
+              <button onClick={handleMerge} disabled={mergeSelection.size < 2 || merging} style={{
+                padding: "6px 14px", fontSize: 12, border: "none",
+                borderRadius: "var(--radius-md)",
+                background: mergeSelection.size >= 2 ? "var(--accent)" : "var(--surface)",
+                color: mergeSelection.size >= 2 ? "#fff" : "var(--text-tertiary)",
+                cursor: mergeSelection.size >= 2 && !merging ? "pointer" : "not-allowed",
+                opacity: merging ? 0.6 : 1,
+              }}>
+                {mergeSelection.size >= 2
+                  ? `${t("people.mergeConfirm")} "${sortedNames[0]}"`
+                  : t("people.merge")}
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => setMergeMode(true)} style={{
+                padding: "6px 14px", fontSize: 12, border: "1px solid var(--border)",
+                borderRadius: "var(--radius-md)", background: "var(--surface)",
+                color: "var(--text-secondary)", cursor: "pointer",
+              }}>{t("people.merge")}</button>
+              <button onClick={handleExtract} disabled={extracting} style={{
+                padding: "6px 14px", fontSize: 12, border: "1px solid var(--border)",
+                borderRadius: "var(--radius-md)", background: "var(--surface)",
+                color: "var(--text-secondary)", cursor: extracting ? "not-allowed" : "pointer",
+                opacity: extracting ? 0.6 : 1,
+              }}>{extracting ? t("people.extracting") : t("people.extractNow")}</button>
+            </>
+          )}
+        </div>
       </div>
+
+      {mergeMode && (
+        <div style={{
+          marginBottom: 12, padding: "8px 14px", fontSize: 12,
+          borderRadius: "var(--radius-md)", background: "var(--accent-light)",
+          color: "var(--accent-text)",
+        }}>
+          {t("people.mergeTip")}
+          {sortedNames.length >= 2 && (
+            <span style={{ marginLeft: 8, fontWeight: 600 }}>
+              {sortedNames.slice(1).join(", ")} → {sortedNames[0]}
+            </span>
+          )}
+        </div>
+      )}
+
+      {mergeMsg && (
+        <div style={{
+          marginBottom: 12, padding: "8px 14px", fontSize: 12,
+          borderRadius: "var(--radius-md)", background: "var(--success-bg, #e8f5e9)",
+          color: "var(--success-text, #2e7d32)",
+        }}>{mergeMsg}</div>
+      )}
 
       <div style={{ display: "flex", gap: 16 }}>
         <div style={{ width: 180, flexShrink: 0 }}>
           <div className="card" style={{ padding: 8 }}>
-            {persons.map((name) => (
-              <button key={name} onClick={() => setSelected(name)} style={{
-                display: "block", width: "100%", padding: "8px 12px", border: "none",
-                borderRadius: "var(--radius-md)",
-                background: selected === name ? "var(--accent-light)" : "transparent",
-                color: selected === name ? "var(--accent-text)" : "var(--text)",
-                fontWeight: selected === name ? 600 : 400, fontSize: 13, textAlign: "left",
-                cursor: "pointer", transition: "all 0.15s ease",
-              }}>{name}</button>
-            ))}
+            {persons.map((name) => {
+              const isChecked = mergeSelection.has(name);
+              const isActive = !mergeMode && selected === name;
+              return (
+                <button key={name} onClick={() => mergeMode ? toggleMergeSelect(name) : setSelected(name)} style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  width: "100%", padding: "8px 12px", border: "none",
+                  borderRadius: "var(--radius-md)",
+                  background: isActive ? "var(--accent-light)" : isChecked ? "var(--accent-light)" : "transparent",
+                  color: isActive ? "var(--accent-text)" : isChecked ? "var(--accent-text)" : "var(--text)",
+                  fontWeight: isActive || isChecked ? 600 : 400, fontSize: 13, textAlign: "left",
+                  cursor: "pointer", transition: "all 0.15s ease",
+                }}>
+                  {mergeMode && (
+                    <span style={{
+                      width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                      border: isChecked ? "none" : "1.5px solid var(--border)",
+                      background: isChecked ? "var(--accent)" : "transparent",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      color: "#fff", fontSize: 11, lineHeight: 1,
+                    }}>{isChecked ? "✓" : ""}</span>
+                  )}
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+                </button>
+              );
+            })}
           </div>
           <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-tertiary)", textAlign: "center" }}>
             {persons.length} {t("people.people")}
@@ -127,7 +248,7 @@ function People() {
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
-          {selected && (
+          {!mergeMode && selected && (
             <>
               <div style={{ marginBottom: 12 }}>
                 <span style={{ fontSize: 15, fontWeight: 600 }}>{selected}</span>

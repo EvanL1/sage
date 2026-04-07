@@ -41,13 +41,12 @@ define_prompts! {
         "chat_memory_write_protocol", "chat_safety_protocol",
         "page_gen_system",
         "person_extract",
-    ],
-    en_only: [
         "memory_integrator",
         "task_intelligence_system",
         "task_intelligence_user",
         "cmd_verification_user",
-    ]
+    ],
+    en_only: []
 }
 
 /// Load a prompt with user-override support.
@@ -102,7 +101,7 @@ pub fn reconciler_full(lang: &str, items_text: &str) -> String {
 
 // ─── Memory Integrator ────────────────────────────────────────────────────────
 
-pub fn memory_integrator_template(_lang: &str) -> &'static str { s("memory_integrator", "en") }
+pub fn memory_integrator_template(lang: &str) -> &'static str { s("memory_integrator", lang) }
 
 // ─── Persona ──────────────────────────────────────────────────────────────────
 
@@ -121,9 +120,9 @@ pub fn person_extract(lang: &str, events: &str) -> String {
 
 // ─── Task Intelligence ────────────────────────────────────────────────────────
 
-pub fn task_intelligence_system(_lang: &str) -> &'static str { s("task_intelligence_system", "en") }
+pub fn task_intelligence_system(lang: &str) -> &'static str { s("task_intelligence_system", lang) }
 
-pub fn task_intelligence_user_template(_lang: &str) -> &'static str { s("task_intelligence_user", "en") }
+pub fn task_intelligence_user_template(lang: &str) -> &'static str { s("task_intelligence_user", lang) }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 

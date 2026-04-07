@@ -473,6 +473,24 @@ pub async fn get_memories_about_person(
         .collect()
 }
 
+/// 合并两个人物（将 source 的所有记忆合并到 target）
+#[tauri::command]
+pub async fn merge_persons(
+    state: State<'_, AppState>,
+    target: String,
+    source: String,
+) -> Result<u64, String> {
+    let target = target.trim().to_string();
+    let source = source.trim().to_string();
+    if target.is_empty() || source.is_empty() {
+        return Err("人名不能为空".to_string());
+    }
+    if target == source {
+        return Err("不能合并同一个人".to_string());
+    }
+    state.store.merge_persons(&target, &source).map_err(map_err)
+}
+
 /// 单独触发记忆图谱连接
 #[tauri::command]
 pub async fn trigger_memory_linking(state: State<'_, AppState>) -> Result<Value, String> {

@@ -795,6 +795,19 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 49;")?;
         }
 
+        // v50: person_aliases 表 — 人物合并后自动重定向
+        if version < 50 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS person_aliases (
+                    alias TEXT NOT NULL PRIMARY KEY,
+                    canonical TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_person_aliases_canonical
+                    ON person_aliases(canonical);
+                PRAGMA user_version = 50;",
+            )?;
+        }
+
         // 补偿：messages 在 v14 插入，但已跳到 v15 的 DB 需要补偿创建
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (

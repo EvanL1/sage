@@ -377,7 +377,7 @@ impl Store {
         self.save_memory_inner(category, content, source, confidence, visibility, None)
     }
 
-    /// 保存关于某人的记忆
+    /// 保存关于某人的记忆（自动解析别名）
     pub fn save_memory_about_person(
         &self,
         category: &str,
@@ -387,7 +387,26 @@ impl Store {
         visibility: &str,
         about_person: &str,
     ) -> Result<i64> {
-        self.save_memory_inner(category, content, source, confidence, visibility, Some(about_person))
+        let resolved = self.resolve_person_alias(about_person)?;
+        self.save_memory_inner(category, content, source, confidence, visibility, Some(&resolved))
+    }
+
+    /// 查询别名，返回 canonical name（无别名则返回原名）
+    pub fn resolve_person_alias(&self, name: &str) -> Result<String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let result = conn.query_row(
+            "SELECT canonical FROM person_aliases WHERE alias = ?1",
+            rusqlite::params![name],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(canonical) => Ok(canonical),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(name.to_string()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// 清理过期 working 记忆：标记为 expired
@@ -731,6 +750,59 @@ impl Store {
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 合并两个人：将 source 的所有记忆转移到 target 名下，记录别名，然后去重
+    pub fn merge_persons(&self, target: &str, source: &str) -> Result<u64> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        // 将 source 的所有记忆归到 target
+        let moved = conn.execute(
+            "UPDATE memories SET about_person = ?1 WHERE about_person = ?2",
+            rusqlite::params![target, source],
+        ).context("合并人物记忆失败")? as u64;
+        // 记录别名：下次 LLM 再提取出 source 名字时自动映射到 target
+        conn.execute(
+            "INSERT OR REPLACE INTO person_aliases (alias, canonical) VALUES (?1, ?2)",
+            rusqlite::params![source, target],
+        )?;
+        // 将指向 source 的旧别名也重定向到 target（传递合并）
+        conn.execute(
+            "UPDATE person_aliases SET canonical = ?1 WHERE canonical = ?2",
+            rusqlite::params![target, source],
+        )?;
+        // 合并后去重：同 category + 相似内容只保留 confidence 最高的
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, confidence FROM memories
+             WHERE about_person = ?1 AND status = 'active'
+             ORDER BY category, confidence DESC",
+        )?;
+        let rows: Vec<(i64, String, String, f64)> = stmt
+            .query_map(rusqlite::params![target], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut to_archive: Vec<i64> = Vec::new();
+        for (id, cat, content, _conf) in &rows {
+            let dominated = seen.iter().any(|(sc, st)| {
+                sc == cat && crate::similarity::text_similarity(st, content) > 0.6
+            });
+            if dominated {
+                to_archive.push(*id);
+            } else {
+                seen.push((cat.clone(), content.clone()));
+            }
+        }
+        for id in &to_archive {
+            conn.execute(
+                "UPDATE memories SET status = 'archived', evolution_note = '人物合并去重' WHERE id = ?1",
+                rusqlite::params![id],
+            )?;
+        }
+        Ok(moved)
     }
 
     /// 删除记忆

@@ -37,7 +37,6 @@ pub struct Daemon {
     calendar: Option<CalendarChannel>,
     hooks: Option<HooksChannel>,
     wechat: Option<WechatChannel>,
-    feed_channels: Vec<Box<dyn InputChannel>>,
     heartbeat_interval: Duration,
     handled_keys: Mutex<HashSet<String>>,
     /// Tick 计数器，用于控制每 3 tick 触发一次 task_intelligence
@@ -114,112 +113,6 @@ impl Daemon {
 
         let heartbeat_interval = Duration::from_secs(config.daemon.heartbeat_interval_secs);
 
-        // 构建 Feed 通道（全部默认 disabled，不影响现有用户）
-        let feed_agent = Arc::new(make_agent_from_discovery(&store, &config.agent).0);
-        let mut feed_channels: Vec<Box<dyn InputChannel>> = Vec::new();
-        let feed_cfg = &config.channels.feed;
-        let interests = feed_cfg.user_interests.join(", ");
-        // Personality summary: top identity/personality memories joined, or empty
-        let personality = store
-            .search_memories("identity personality traits", 5)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| m.content)
-            .collect::<Vec<_>>()
-            .join("; ");
-        let project_focus = store
-            .load_profile()
-            .ok()
-            .flatten()
-            .map(|profile| {
-                let mut parts = Vec::new();
-                let active_projects = profile
-                    .work_context
-                    .projects
-                    .iter()
-                    .filter(|project| {
-                        matches!(
-                            project.status,
-                            ProjectStatus::Active | ProjectStatus::Planning
-                        )
-                    })
-                    .take(3)
-                    .map(|project| format!("{}: {}", project.name, project.description))
-                    .collect::<Vec<_>>();
-                if !active_projects.is_empty() {
-                    parts.push(match store.prompt_lang().as_str() {
-                        "en" => format!("Current projects: {}", active_projects.join("; ")),
-                        _ => format!("当前项目：{}", active_projects.join("；")),
-                    });
-                }
-                if !profile.work_context.tech_stack.is_empty() {
-                    let tech_stack = profile
-                        .work_context
-                        .tech_stack
-                        .iter()
-                        .take(8)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    parts.push(match store.prompt_lang().as_str() {
-                        "en" => format!("Tech stack: {tech_stack}"),
-                        _ => format!("技术栈：{tech_stack}"),
-                    });
-                }
-                parts.join("\n")
-            })
-            .unwrap_or_default();
-        if feed_cfg.reddit.enabled {
-            feed_channels.push(Box::new(RedditChannel::new(
-                feed_cfg.reddit.clone(),
-                Arc::clone(&store),
-                interests.clone(),
-                personality.clone(),
-                project_focus.clone(),
-                feed_agent.clone(),
-            )));
-        }
-        if feed_cfg.github.enabled {
-            feed_channels.push(Box::new(GitHubChannel::new(
-                feed_cfg.github.clone(),
-                Arc::clone(&store),
-                interests.clone(),
-                personality.clone(),
-                project_focus.clone(),
-                feed_agent.clone(),
-            )));
-        }
-        if feed_cfg.hackernews.enabled {
-            feed_channels.push(Box::new(HackerNewsChannel::new(
-                feed_cfg.hackernews.clone(),
-                Arc::clone(&store),
-                interests.clone(),
-                personality.clone(),
-                project_focus.clone(),
-                feed_agent.clone(),
-            )));
-        }
-        if feed_cfg.arxiv.enabled {
-            feed_channels.push(Box::new(ArxivChannel::new(
-                feed_cfg.arxiv.clone(),
-                Arc::clone(&store),
-                interests.clone(),
-                personality.clone(),
-                project_focus.clone(),
-                feed_agent.clone(),
-            )));
-        }
-        if feed_cfg.rss.enabled {
-            feed_channels.push(Box::new(RssChannel::new(
-                feed_cfg.rss.clone(),
-                Arc::clone(&store),
-                interests.clone(),
-                personality.clone(),
-                project_focus.clone(),
-                feed_agent.clone(),
-            )));
-        }
-
         // 从数据库恢复今天已处理的心跳动作，避免重启后重复触发
         let mut handled_keys = HashSet::new();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -244,7 +137,6 @@ impl Daemon {
             calendar,
             hooks,
             wechat,
-            feed_channels,
             heartbeat_interval,
             handled_keys: Mutex::new(handled_keys),
             tick_count: Mutex::new(0),
@@ -722,9 +614,123 @@ impl Daemon {
         }
     }
 
+    /// 按当前磁盘配置构建 Feed 通道列表（每次抓取前重新读取，支持热更新）
+    fn build_feed_channels(&self) -> Vec<Box<dyn InputChannel>> {
+        let config_path = Config::expand_path("~/.sage/config.toml");
+        let feed_cfg = Config::load_or_default(&config_path).channels.feed;
+
+        let interests = feed_cfg.user_interests.join(", ");
+        let personality = self
+            .store
+            .search_memories("identity personality traits", 5)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.content)
+            .collect::<Vec<_>>()
+            .join("; ");
+        let project_focus = self
+            .store
+            .load_profile()
+            .ok()
+            .flatten()
+            .map(|profile| {
+                let mut parts = Vec::new();
+                let active_projects = profile
+                    .work_context
+                    .projects
+                    .iter()
+                    .filter(|p| {
+                        matches!(p.status, ProjectStatus::Active | ProjectStatus::Planning)
+                    })
+                    .take(3)
+                    .map(|p| format!("{}: {}", p.name, p.description))
+                    .collect::<Vec<_>>();
+                if !active_projects.is_empty() {
+                    parts.push(match self.store.prompt_lang().as_str() {
+                        "en" => format!("Current projects: {}", active_projects.join("; ")),
+                        _ => format!("当前项目：{}", active_projects.join("；")),
+                    });
+                }
+                if !profile.work_context.tech_stack.is_empty() {
+                    let tech = profile
+                        .work_context
+                        .tech_stack
+                        .iter()
+                        .take(8)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    parts.push(match self.store.prompt_lang().as_str() {
+                        "en" => format!("Tech stack: {tech}"),
+                        _ => format!("技术栈：{tech}"),
+                    });
+                }
+                parts.join("\n")
+            })
+            .unwrap_or_default();
+
+        let feed_agent = Arc::new(make_agent_from_discovery(&self.store, &self.config.agent).0);
+        let mut channels: Vec<Box<dyn InputChannel>> = Vec::new();
+
+        if feed_cfg.reddit.enabled {
+            channels.push(Box::new(RedditChannel::new(
+                feed_cfg.reddit.clone(),
+                Arc::clone(&self.store),
+                interests.clone(),
+                personality.clone(),
+                project_focus.clone(),
+                feed_agent.clone(),
+            )));
+        }
+        if feed_cfg.github.enabled {
+            channels.push(Box::new(GitHubChannel::new(
+                feed_cfg.github.clone(),
+                Arc::clone(&self.store),
+                interests.clone(),
+                personality.clone(),
+                project_focus.clone(),
+                feed_agent.clone(),
+            )));
+        }
+        if feed_cfg.hackernews.enabled {
+            channels.push(Box::new(HackerNewsChannel::new(
+                feed_cfg.hackernews.clone(),
+                Arc::clone(&self.store),
+                interests.clone(),
+                personality.clone(),
+                project_focus.clone(),
+                feed_agent.clone(),
+            )));
+        }
+        if feed_cfg.arxiv.enabled {
+            channels.push(Box::new(ArxivChannel::new(
+                feed_cfg.arxiv.clone(),
+                Arc::clone(&self.store),
+                interests.clone(),
+                personality.clone(),
+                project_focus.clone(),
+                feed_agent.clone(),
+            )));
+        }
+        if feed_cfg.rss.enabled {
+            channels.push(Box::new(RssChannel::new(
+                feed_cfg.rss.clone(),
+                Arc::clone(&self.store),
+                interests.clone(),
+                personality.clone(),
+                project_focus.clone(),
+                feed_agent.clone(),
+            )));
+        }
+
+        channels
+    }
+
     /// 轮询所有 Feed 通道，将结果写入 observations 表（同标题去重）
+    /// 每次重新从磁盘读取配置，支持用户在 UI 启用/禁用数据源后立即生效
     async fn poll_feed_channels(&self) {
-        for ch in &self.feed_channels {
+        let channels = self.build_feed_channels();
+        for ch in &channels {
             match ch.poll().await {
                 Ok(events) => {
                     for ev in events {

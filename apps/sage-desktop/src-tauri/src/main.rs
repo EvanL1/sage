@@ -149,6 +149,7 @@ fn main() {
             commands::trigger_person_extract,
             commands::get_known_persons,
             commands::get_memories_about_person,
+            commands::merge_persons,
             commands::get_all_tags,
             commands::get_memory_tags,
             commands::add_memory_tag,

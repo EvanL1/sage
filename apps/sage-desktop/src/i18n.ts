@@ -590,6 +590,11 @@ const translations = {
   "people.memories": { zh: "条记忆", en: "memories" },
   "people.people": { zh: "人", en: "people" },
   "people.noMemories": { zh: "暂无关于此人的记忆", en: "No memories about this person yet" },
+  "people.merge": { zh: "合并", en: "Merge" },
+  "people.mergeMode": { zh: "选择要合并的人物", en: "Select people to merge" },
+  "people.mergeConfirm": { zh: "合并为", en: "Merge into" },
+  "people.mergeSuccess": { zh: "已合并 {0} 条记忆", en: "Merged {0} memories" },
+  "people.mergeTip": { zh: "选择 2 个或更多人物，然后点击合并", en: "Select 2+ people, then click merge" },
 } as const;
 
 type TranslationKey = keyof typeof translations;

@@ -351,8 +351,9 @@ function FeedIntelligence() {
               color: sortBy === "time" ? "#fff" : "var(--text-secondary)",
             }}>时间</button>
         </span>
-        <button onClick={handlePoll} disabled={polling || enabledCount === 0}
-          style={{ ...S.btn(enabledCount > 0 && !polling), opacity: enabledCount === 0 ? 0.5 : 1 }}>
+        <button onClick={handlePoll} disabled={polling}
+          style={{ ...S.btn(!polling), opacity: polling ? 0.5 : 1 }}
+          title={enabledCount === 0 ? "请先在设置中启用至少一个数据源" : undefined}>
           {polling ? t("feed.fetching") : t("feed.fetchNow")}
         </button>
         <button onClick={() => setShowConfig(!showConfig)}
