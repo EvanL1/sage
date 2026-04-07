@@ -319,14 +319,29 @@ async fn behavior_handler(
             .get("direction")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        // 只信任显式 direction 字段，Unknown sender 默认为 received
-        let direction = if raw_dir == "sent" {
-            "sent"
+
+        // direction 判断：显式 "sent" > sender 匹配 profile 用户名 > 默认 "received"
+        let profile_name = store.load_profile().ok().flatten()
+            .map(|p| p.identity.name)
+            .unwrap_or_default();
+
+        let sender_unknown = sender == "unknown" || sender == "Unknown" || sender.is_empty();
+        let is_me = raw_dir == "sent" || (sender_unknown && !profile_name.is_empty()) || (
+            !sender_unknown && !profile_name.is_empty() && (
+                sender == profile_name
+                || sender.eq_ignore_ascii_case(&profile_name)
+                || profile_name.contains(sender)
+                || sender.contains(&profile_name)
+            )
+        );
+        let direction = if is_me { "sent" } else { "received" };
+        let resolved_sender = if sender_unknown && !profile_name.is_empty() {
+            profile_name
         } else {
-            "received"
+            sender.to_string()
         };
 
-        if let Err(e) = store.save_message_with_direction(sender, channel, content, &event.source, msg_type, &ts, direction) {
+        if let Err(e) = store.save_message_with_direction(&resolved_sender, channel, content, &event.source, msg_type, &ts, direction) {
             error!("Bridge: failed to save message: {e}");
         }
     }

@@ -51,16 +51,29 @@ fn inject_proxy(cmd: &mut Command) {
     }
 }
 
-/// Path to an empty MCP config file — used with --strict-mcp-config to skip all MCP servers.
-/// Created once on first call, reused thereafter.
+/// ~/.sage 下的懒创建辅助文件路径
+fn sage_config_path(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+        .join(".sage")
+        .join(name)
+}
+
+/// 空 MCP 配置——配合 --strict-mcp-config 跳过所有 MCP servers
 fn empty_mcp_config_path() -> String {
-    let path = std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()),
-    )
-    .join(".sage/empty-mcp.json");
+    let path = sage_config_path("empty-mcp.json");
     if !path.exists() {
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("/tmp")));
         let _ = std::fs::write(&path, r#"{"mcpServers":{}}"#);
+    }
+    path.to_string_lossy().to_string()
+}
+
+/// 空 settings——配合 --settings 跳过所有 plugins、hooks、autoMemory
+fn headless_settings_path() -> String {
+    let path = sage_config_path("settings_headless.json");
+    if !path.exists() {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("/tmp")));
+        let _ = std::fs::write(&path, r#"{"enabledPlugins":{},"mcpServers":{},"hooks":{},"autoMemoryEnabled":false,"includeCoAuthoredBy":false}"#);
     }
     path.to_string_lossy().to_string()
 }
@@ -118,6 +131,8 @@ impl ClaudeProvider {
 
         let (model, effort) = parse_model_with_effort(&self.model);
         cmd.arg("--print")
+            .arg("--settings")
+            .arg(headless_settings_path())
             .arg("--strict-mcp-config")
             .arg("--mcp-config")
             .arg(empty_mcp_config_path())
@@ -300,7 +315,9 @@ impl LlmProvider for CodexProvider {
             .arg(safe_dir.to_str().unwrap_or("/tmp"))
             .arg("--ephemeral")
             // Sage 在 ~/.sage 下跑定时任务，不一定是受信任的 Git 目录。
-            .arg("--skip-git-repo-check");
+            .arg("--skip-git-repo-check")
+            // 清空 MCP servers，避免启动用户全局配置的外部服务
+            .arg("-c").arg("mcp_servers={}");
         if let Some(effort) = reasoning_effort {
             cmd.arg("-c").arg(format!("reasoning_effort=\"{effort}\""));
         }
@@ -377,7 +394,9 @@ impl LlmProvider for GeminiProvider {
             .arg(&self.model)
             .arg("-o")
             .arg("text")
-            .arg("--yolo");
+            .arg("--yolo")
+            // 不加载任何 MCP server
+            .arg("--allowed-mcp-server-names");
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         inject_proxy(&mut cmd);

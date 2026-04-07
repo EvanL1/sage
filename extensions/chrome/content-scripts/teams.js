@@ -64,6 +64,11 @@
 
   // --- 当前用户名检测 ---
   var currentUserName = "";
+  // 从 storage 恢复上次检测到的用户名（跨页面刷新保持）
+  chrome.storage.local.get(["teams_current_user"], function (r) {
+    if (r.teams_current_user) currentUserName = r.teams_current_user;
+  });
+
   function detectCurrentUser() {
     // Teams 页面头像/个人信息区域 — 多种选择器覆盖不同版本
     var sels = [
@@ -76,10 +81,15 @@
       'button[id="mectrl_headerPicture"]',
       '[class*="me-control"] span[class*="displayName"]',
       '[class*="ProfileCard"] span',
+      // 新版 Teams 2.0 / Copilot era 选择器
+      '[data-tid="me-control-button"] span',
+      'button[id*="meControl"] span',
+      '#mectrl_currentAccount_primary',
       // aria-label 兜底
       'button[aria-label*="profile" i]',
       'button[aria-label*="账户" i]',
       'button[aria-label*="个人资料" i]',
+      'button[aria-label*="account" i]',
     ];
     for (var i = 0; i < sels.length; i++) {
       try {
@@ -87,9 +97,11 @@
         if (el) {
           // 优先 aria-label（更稳定），再 innerText
           var t = el.getAttribute("aria-label") || (el.innerText || el.textContent || "").trim();
-          // aria-label 可能是 "打开个人资料, Evan Li"，提取名字部分
-          if (t && t.includes(",")) t = t.split(",").pop().trim();
-          if (t && t.length > 1 && t.length < 40) { currentUserName = t; return; }
+          // aria-label 可能是 "打开个人资料, Evan Li" 或 "Open profile, Evan Li"
+          if (t && (t.includes(",") || t.includes("，"))) {
+            t = t.split(/[,，]/).pop().trim();
+          }
+          if (t && t.length > 1 && t.length < 40) { setCurrentUser(t); return; }
         }
       } catch (e) {}
     }
@@ -98,14 +110,24 @@
       var myMsg = document.querySelector('.fui-ChatMyMessage [class*="author"], [class*="ChatMyMessage"] [class*="author"]');
       if (myMsg) {
         var t = (myMsg.innerText || myMsg.textContent || "").trim();
-        if (t && t.length > 1) { currentUserName = t; return; }
+        if (t && t.length > 1) { setCurrentUser(t); return; }
       }
     } catch (e) {}
   }
+
+  function setCurrentUser(name) {
+    if (name === currentUserName) return;
+    currentUserName = name;
+    chrome.storage.local.set({ teams_current_user: name });
+    console.log(LOG_PREFIX + " 检测到当前用户: " + name);
+  }
+
   // 启动时检测，多次重试（Teams SPA 加载慢）
   setTimeout(detectCurrentUser, 3000);
   setTimeout(detectCurrentUser, 8000);
   setTimeout(detectCurrentUser, 15000);
+  // 额外晚一次重试，覆盖超慢网络/首次登录
+  setTimeout(detectCurrentUser, 30000);
 
   function isFromMe(sender) {
     if (!sender || !currentUserName) return false;
@@ -189,8 +211,16 @@
         else if (tt === "topic" || tt === "channel") chatType = "channel";
         else if (tt === "p2p" || tt === "chat" || tt === "one_on_one") chatType = "p2p";
         else if (topic) chatType = "group"; // 有 topic 说明是群/频道
-        // isFromMe: Teams API 用 properties.isFromMe 或 from 包含 8:orgid: 前缀匹配
-        var fromMe = obj.isFromMe || (obj.properties && obj.properties.isFromMe) || false;
+        // isFromMe 检测：多字段 fallback
+        var fromMe = obj.isFromMe ||
+          (obj.properties && (obj.properties.isFromMe === true || obj.properties.isFromMe === "true")) ||
+          (obj.imDisplayName === "" && obj.imdisplayname === "") || // 自己的消息有时 displayname 为空
+          false;
+        // 对比 clientmessageid：本地发送的消息有 clientmessageid，收到的消息通常没有
+        if (!fromMe && obj.clientmessageid && !obj.isread) {
+          // clientmessageid 存在且 isread 不存在，可能是自己发送的
+          // 这只是一个弱信号，配合 content script 端的 isFromMe(sender) 使用
+        }
         return { sender: sender, content: content, timestamp: ts, channel: topic || ch, chatType: chatType, direction: fromMe ? "sent" : "" };
       }
 

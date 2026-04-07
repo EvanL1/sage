@@ -27,7 +27,7 @@
   <img src="https://img.shields.io/badge/platform-macOS%2014%2B-black?style=flat-square&logo=apple" />
   <img src="https://img.shields.io/badge/runtime-Tauri%202%20+%20Rust-orange?style=flat-square&logo=rust" />
   <img src="https://img.shields.io/badge/storage-SQLite%20(local)-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/tests-356%20passing-brightgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/tests-478%20passing-brightgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/i18n-en%20%7C%20zh-purple?style=flat-square" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" />
 </p>
@@ -70,29 +70,37 @@ You work normally
 ┌─────────────────────────────────────────────────┐
 │  Sage Daemon (background, runs every N minutes) │
 │                                                 │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ Observer │→ │  Coach   │→ │    Mirror     │  │
-│  │ raw      │  │ behavior │  │  cognitive    │  │
-│  │ events   │  │ patterns │  │  profile      │  │
-│  └──────────┘  └─────┬────┘  └──────┬────────┘  │
-│                      │              │           │
-│              ┌───────┴───────┐  ┌───┴────────┐  │
-│              │ Task Engine   │  │ Reflective │  │
-│              │ open tasks ×  │  │ Detector   │  │
-│              │ recent events │  │ 7 signal   │  │
-│              │ → suggestions │  │ types      │  │
-│              └───────────────┘  └────────────┘  │
+│  ┌──────────────────────────────────────────┐   │
+│  │ Cognitive Pipeline (DAG execution engine) │   │
+│  │                                          │   │
+│  │ observer → coach → mirror → questioner   │   │
+│  │              └→ person_observer           │   │
+│  │ calibrator   strategist (parallel)       │   │
+│  │                                          │   │
+│  │ evolution: merge→synth→condense→link     │   │
+│  │            →decay→promote                │   │
+│  │                                          │   │
+│  │ meta: params→prompts→ui (self-evolution) │   │
+│  └──────────────────────────────────────────┘   │
+│                                                 │
+│  ┌───────────────┐  ┌────────────────────────┐  │
+│  │ Task Engine   │  │ Reflective Detector    │  │
+│  │ open tasks ×  │  │ 7 rule-based signal    │  │
+│  │ recent events │  │ types (zero-LLM)       │  │
+│  │ → suggestions │  │                        │  │
+│  └───────────────┘  └────────────────────────┘  │
 └──────────────────────┬──────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────┐
-│  SQLite (WAL mode, FTS5, 31 migrations)         │
+│  SQLite (WAL mode, FTS5, 49 migrations)         │
 │  ~/.sage/data/sage.db                           │
 │                                                 │
 │  Memories → structured, indexed, graph-linked   │
 │  Tasks    → with source, priority, due date     │
 │  Profile  → evolving cognitive model of you     │
 │  Signals  → reflective moments, intensity-scored│
+│  Pipeline → execution logs, runtime overrides   │
 └─────────────────────────────────────────────────┘
                        │
                        ▼
@@ -125,8 +133,13 @@ Open tasks are cross-referenced against recent events every 3rd daemon tick. Sag
 ### Reflective Signal Detection
 A zero-LLM rule-based engine scans every ingested text for 7 signal types: **uncertainty**, **contradiction**, **vulnerability**, **defensive abstraction**, **blocked state**, **self-analysis**, and **divergence from baseline**. Weekly mirror reports aggregate these signals into a reflection — what's unresolved, where you diverged from your patterns, where you deployed "armor."
 
-### Cognitive Pipeline
-**Observer** → **Coach** → **Mirror** → **Questioner** → **Strategist**: raw events are transformed into semantic annotations, then behavioral patterns, then cognitive insights, then reflective prompts, then strategic analysis.
+### Cognitive Pipeline (Self-Evolving DAG)
+16 preset stages execute as a DAG (directed acyclic graph) — not a fixed linear chain. All stages run through a **unified constraint engine** with:
+- **ACTION whitelist**: each stage declares exactly which write operations it can perform (22 action types)
+- **Input source filtering**: stages only see data they're authorized to read
+- **Rate limiting**: max actions per execution to prevent runaway LLM output
+- **Pre-condition SQL gates**: optional queries that must pass before a stage executes
+- **Meta stages** (`meta_params`, `meta_prompts`, `meta_ui`): the pipeline evolves itself — adjusting parameters, rewriting prompts, and generating UI pages based on execution history
 
 ### Skill Routing
 Automatic persona switching: **Strategist** for work decisions, **Companion** for personal reflection. Each skill has its own system prompt and behavioral rules.
@@ -194,9 +207,9 @@ on = ["task_created", "task_updated"]
 |-------|------|
 | Desktop | **Tauri 2** — Rust backend, single binary |
 | Frontend | **React 18** + TypeScript + react-router-dom |
-| Storage | **SQLite** — WAL mode, FTS5 full-text search, 31 migrations |
+| Storage | **SQLite** — WAL mode, FTS5 full-text search, 49 migrations |
 | LLM | Multi-provider priority queue + per-model config |
-| i18n | Zero-dependency bilingual system (en/zh), 479 keys |
+| i18n | Zero-dependency bilingual system (en/zh), 530 keys |
 | Platform | macOS 14+ — LaunchAgent-driven background daemon |
 | Extensions | Chrome MV3 — Browser Bridge |
 
@@ -204,29 +217,30 @@ on = ["task_created", "task_updated"]
 
 ```
 sage/
-├── apps/sage-desktop/           # Tauri desktop app
-│   ├── src/                     # React frontend (11 pages)
-│   │   ├── i18n.ts              # Bilingual translation dictionary
-│   │   ├── LangContext.tsx      # Language context provider
-│   │   └── pages/               # Dashboard, Chat, Tasks, Settings, ...
-│   └── src-tauri/               # Rust backend (commands, tray, daemon)
+├── apps/sage-desktop/             # Tauri 2 desktop app
+│   ├── src/                       # React 18 frontend (15 pages)
+│   │   ├── i18n.ts                # Bilingual translation (530 keys)
+│   │   ├── LangContext.tsx        # Language context provider
+│   │   └── pages/                 # Dashboard, Chat, Tasks, Settings, ...
+│   └── src-tauri/                 # Rust backend (commands, tray, daemon)
 ├── crates/
-│   ├── sage-core/               # Core logic (356 tests)
-│   │   ├── daemon.rs            # Background event loop
-│   │   ├── store.rs             # SQLite storage (31 migrations)
-│   │   ├── provider.rs          # LLM provider abstraction
-│   │   ├── discovery.rs         # Auto-discover installed CLIs & APIs
-│   │   ├── memory_evolution.rs  # 6-stage memory lifecycle
-│   │   ├── task_intelligence.rs # Task signal detection
+│   ├── sage-types/                # Shared types (Event, Memory, Message, etc.)
+│   ├── sage-store/                # SQLite persistence (217 tests, 49 migrations)
+│   ├── sage-llm/                  # LLM provider abstraction (6 tests)
+│   ├── sage-channels/             # Input channels: email, calendar, feeds (10 tests)
+│   ├── sage-core/                 # Business logic (203 tests)
+│   │   ├── daemon.rs              # Background event loop
+│   │   ├── pipeline.rs            # DAG cognitive pipeline engine
+│   │   ├── pipeline/              # invoker, actions, stages, parser
+│   │   ├── router.rs              # Event routing + skill dispatch
+│   │   ├── task_intelligence.rs   # Task signal detection
 │   │   ├── reflective_detector.rs # Rule-based reflective signal engine
-│   │   ├── mirror.rs            # Daily reflection + weekly mirror report
-│   │   ├── observer.rs          # Raw event → semantic annotation
 │   │   └── ...
-│   └── sage-types/              # Shared type definitions
-├── plugins/                     # Plugin implementations (TickTick, etc.)
-├── skills/                      # LLM skill files (persona definitions)
-├── extensions/chrome/           # Browser Bridge extension (MV3)
-└── launchd/                     # macOS LaunchAgent templates
+│   └── sage-cli/                  # CLI binary (thin wrapper)
+├── plugins/                       # Plugin implementations (TickTick, etc.)
+├── skills/                        # LLM skill files (persona definitions)
+├── extensions/chrome/             # Browser Bridge extension (MV3)
+└── launchd/                       # macOS LaunchAgent templates
 ```
 
 ## Quick Start
@@ -263,7 +277,7 @@ Data: `~/.sage/data/sage.db` — Logs: `~/.sage/logs/`
 ```bash
 cargo check --workspace       # type check
 cargo clippy --workspace      # lint
-cargo test --workspace        # run all tests (356)
+cargo test --workspace        # run all tests (478)
 npx tsc --noEmit              # TypeScript check (in apps/sage-desktop)
 ```
 
@@ -271,8 +285,14 @@ npx tsc --noEmit              # TypeScript check (in apps/sage-desktop)
 
 ```
 Background Daemon (event loop):
-  tick() → Email/Calendar polling → Time-window check → Skill routing
-  → LLM call → Memory persistence → Reflective detection → macOS notification
+  tick() → Email/Calendar polling → Time-window check → Cognitive Pipeline
+  → DAG-ordered stages (16 preset) → ACTION constraint system → SQLite
+
+Cognitive Pipeline (evening, 16 stages):
+  observer → coach → mirror → questioner → calibrator
+  → person_observer, strategist (parallel)
+  → evolution: merge → synth → condense → link → decay → promote
+  → meta: params → prompts → ui (self-evolution)
 
 Desktop Chat:
   invoke("chat") → FTS5 memory search + graph-augmented retrieval
@@ -281,8 +301,8 @@ Desktop Chat:
 Task Intelligence (every 3rd tick):
   open tasks × recent events → LLM comparison → DONE / CANCEL / NEW signals → user review
 
-Memory Evolution (daily or manual):
-  merge → synthesize → condense → link → decay → promote
+Memory Evolution (6 stages, daily or manual):
+  merge similar → synthesize traits → condense verbose → link related → decay stale → promote validated
 
 Mirror Layer (continuous + weekly):
   text → rule-based signal detection (7 types) → SQLite
