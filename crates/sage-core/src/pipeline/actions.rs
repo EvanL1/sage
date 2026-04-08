@@ -764,7 +764,7 @@ pub fn load_filtered_context(store: &Store, allowed: &[String]) -> String {
             "memories" => {
                 let since = (chrono::Local::now() - chrono::Duration::days(3)).to_rfc3339();
                 for m in store.get_memories_since(&since).unwrap_or_default().iter().take(15) {
-                    ctx.push_str(&format!("- [记忆] [{}] {}\n", m.category, m.content));
+                    ctx.push_str(&format!("- [记忆:id={}] [{}] {}\n", m.id, m.category, m.content));
                 }
             }
             "raw_observations" => {
@@ -794,15 +794,15 @@ pub fn load_filtered_context(store: &Store, allowed: &[String]) -> String {
             // 相似记忆聚类（供 evolution_transform）
             "similar_memories" => {
                 let mems = store.load_memories_by_depth("episodic").unwrap_or_default();
-                for m in mems.iter().take(50) {
+                for m in mems.iter().take(30) {
                     ctx.push_str(&format!("- [记忆:id={}] {}\n", m.id, m.content));
                 }
             }
             // 冗长记忆（供 evolution_transform）
             "verbose_memories" => {
                 let mems = store.load_memories().unwrap_or_default();
-                for m in mems.iter().filter(|m| m.content.len() > 50).take(50) {
-                    ctx.push_str(&format!("- [记忆:id={},len={}] {}\n", m.id, m.content.len(), m.content));
+                for m in mems.iter().filter(|m| m.content.chars().count() > 50).take(20) {
+                    ctx.push_str(&format!("- [记忆:id={},len={}] {}\n", m.id, m.content.chars().count(), m.content));
                 }
             }
             // 管线执行统计（供 meta_params）
