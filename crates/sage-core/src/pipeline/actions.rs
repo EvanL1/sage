@@ -965,18 +965,25 @@ pub fn load_filtered_context(store: &Store, allowed: &[String]) -> String {
                     ctx.push_str(&format!("- [信号] {}\n", s.response));
                 }
             }
-            // 相似记忆聚类（供 evolution_transform）
+            // 相似记忆聚类（供 evolution_transform）— 小批量轮转，最旧优先
             "similar_memories" => {
-                let mems = store.load_memories_by_depth("episodic").unwrap_or_default();
-                for m in mems.iter().take(30) {
+                let mems = store.load_oldest_episodic_batch(15).unwrap_or_default();
+                for m in &mems {
                     ctx.push_str(&format!("- [记忆:id={}] {}\n", m.id, m.content));
                 }
+                // 标记已访问，下次轮转到其他记忆
+                for m in &mems {
+                    let _ = store.touch_memory(m.id);
+                }
             }
-            // 冗长记忆（供 evolution_transform）
+            // 冗长记忆（供 evolution_transform）— 小批量轮转
             "verbose_memories" => {
-                let mems = store.load_memories().unwrap_or_default();
-                for m in mems.iter().filter(|m| m.content.chars().count() > 50).take(20) {
+                let mems = store.load_oldest_verbose_batch(10).unwrap_or_default();
+                for m in &mems {
                     ctx.push_str(&format!("- [记忆:id={},len={}] {}\n", m.id, m.content.chars().count(), m.content));
+                }
+                for m in &mems {
+                    let _ = store.touch_memory(m.id);
                 }
             }
             // 管线执行统计（供 meta_params）

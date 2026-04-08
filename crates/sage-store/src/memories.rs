@@ -1169,6 +1169,43 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// 加载最旧的 episodic 批次（evolution 小批量轮转）
+    pub fn load_oldest_episodic_batch(&self, limit: usize) -> Result<Vec<Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+             about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
+             FROM memories WHERE depth = 'episodic' AND status = 'active' \
+             ORDER BY last_accessed_at ASC NULLS FIRST, created_at ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 加载最旧的冗长记忆批次（content > 50 字符，evolution 小批量轮转）
+    pub fn load_oldest_verbose_batch(&self, limit: usize) -> Result<Vec<Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+             about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
+             FROM memories WHERE status = 'active' AND length(content) > 50 \
+             ORDER BY last_accessed_at ASC NULLS FIRST, created_at ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 更新 last_accessed_at 为当前时间（标记已处理，用于轮转）
+    pub fn touch_memory(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET last_accessed_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, id],
+        )?;
+        Ok(())
+    }
+
     /// 记忆总数（活跃状态）
     pub fn count_memories(&self) -> Result<usize> {
         let conn = self
