@@ -856,17 +856,17 @@ impl Store {
         )
         .context("补偿创建 browser_behaviors 表失败")?;
 
-        // 补偿：删除旧的 6 个 evolution 预设（已被 evolution_transform + evolution_graph 取代）
-        // v50 migration 的 DELETE 可能因为 DB 已在 v50 而被跳过，这里无条件清理
-        conn.execute_batch(
-            "DELETE FROM custom_stages WHERE name IN (
-                'evolution_merge', 'evolution_synth', 'evolution_condense',
-                'evolution_link', 'evolution_decay', 'evolution_promote'
-            ) AND is_preset = 1;",
-        ).ok();
-
-        // 补偿：重新种子所有预设（INSERT OR IGNORE 幂等，确保新预设存在）
-        crate::pipeline::seed_preset_stages(&conn).ok();
+        // v52: 清理旧 evolution 预设 + 种子新预设
+        if version < 52 {
+            conn.execute_batch(
+                "DELETE FROM custom_stages WHERE name IN (
+                    'evolution_merge', 'evolution_synth', 'evolution_condense',
+                    'evolution_link', 'evolution_decay', 'evolution_promote'
+                ) AND is_preset = 1;",
+            )?;
+            crate::pipeline::seed_preset_stages(&conn)?;
+            conn.execute_batch("PRAGMA user_version = 52;")?;
+        }
 
         Ok(())
     }
