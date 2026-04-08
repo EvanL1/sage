@@ -107,7 +107,6 @@ function Settings() {
   const [customModelOpen, setCustomModelOpen] = useState<Record<string, boolean>>({});
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
   const [providersLoading, setProvidersLoading] = useState(true);
-  const [reconcileRunning, setReconcileRunning] = useState(false);
   const [evolutionProgress, setEvolutionProgress] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -654,30 +653,6 @@ function Settings() {
                   {evolutionProgress}
                 </div>
               )}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{t("settings.reconcile")}</div>
-                  <div className="form-hint">{t("settings.reconcileHint")}</div>
-                </div>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  disabled={reconcileRunning}
-                  onClick={() => {
-                    setReconcileRunning(true);
-                    showToast("success", t("settings.reconciling"));
-                    invoke<{ revised: number }>("trigger_reconcile")
-                      .then((r) => {
-                        showToast("success", r.revised
-                          ? t("settings.reconcileRevised").replace("{n}", String(r.revised))
-                          : t("settings.reconcileNone"));
-                      })
-                      .catch((err) => showToast("error", String(err)))
-                      .finally(() => setReconcileRunning(false));
-                  }}
-                >
-                  {reconcileRunning ? t("settings.reconciling") : t("settings.runNow")}
-                </button>
-              </div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{t("settings.syncToClaudeCode")}</div>
