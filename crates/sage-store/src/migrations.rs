@@ -886,6 +886,19 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 53;")?;
         }
 
+        // v54: 新增 verifier / contradiction_detector / integrator 预设阶段
+        //      evolution_graph 移除 promote（由 integrator 负责）
+        if version < 54 {
+            // 删除旧的预设（重新种入最新版本）
+            conn.execute_batch(
+                "DELETE FROM custom_stages WHERE name IN \
+                 ('evolution_graph', 'verifier', 'contradiction_detector', 'integrator') \
+                 AND is_preset = 1;",
+            )?;
+            crate::pipeline::seed_preset_stages(&conn)?;
+            conn.execute_batch("PRAGMA user_version = 54;")?;
+        }
+
         Ok(())
     }
 }

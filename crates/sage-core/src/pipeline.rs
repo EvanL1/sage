@@ -426,26 +426,45 @@ pub fn build_pipeline(config: &crate::config::PipelineConfig, store: &Store) -> 
 
 pub fn default_evening_stages() -> Vec<String> {
     vec![
-        "observer", "coach", "mirror", "questioner",
+        "observer", "verifier", "contradiction_detector",
+        "coach", "person_observer",
+        "mirror", "questioner",
+        "integrator",
         "evolution_transform", "evolution_graph",
         "meta_params", "meta_prompts", "meta_ui",
     ].into_iter().map(String::from).collect()
 }
 
-/// 默认晚间管线边：认知链 & 进化链并行，meta 组最后并行
+/// 默认晚间管线边：
+/// Wave 1: observer（独立）+ contradiction_detector（读 core_memories，无依赖）
+/// Wave 2: verifier + coach + person_observer（依赖 observer）
+/// Wave 3: mirror + questioner（依赖 coach + verifier）
+/// Wave 4: integrator（依赖 verifier + coach + contradiction_detector）
+/// 进化链：evolution_transform → evolution_graph（依赖 integrator）
+/// Meta 组：最后并行（依赖 integrator + evolution_graph）
 pub fn default_evening_edges() -> Vec<crate::config::EdgeConfig> {
     use crate::config::EdgeConfig;
     vec![
-        // 认知链：observer → coach → mirror → questioner
+        // Wave 1 → Wave 2: observer 输出供 verifier / coach / person_observer 消费
+        EdgeConfig { from: "observer".into(), to: "verifier".into() },
         EdgeConfig { from: "observer".into(), to: "coach".into() },
+        EdgeConfig { from: "observer".into(), to: "person_observer".into() },
+        // Wave 2 → Wave 3: coach + verifier → mirror + questioner
         EdgeConfig { from: "coach".into(), to: "mirror".into() },
-        EdgeConfig { from: "mirror".into(), to: "questioner".into() },
-        // 进化链：transform → graph（与认知链并行）
+        EdgeConfig { from: "verifier".into(), to: "mirror".into() },
+        EdgeConfig { from: "coach".into(), to: "questioner".into() },
+        EdgeConfig { from: "verifier".into(), to: "questioner".into() },
+        // Wave 2/1 → Wave 4: integrator 需要 verifier + coach + contradiction_detector
+        EdgeConfig { from: "verifier".into(), to: "integrator".into() },
+        EdgeConfig { from: "coach".into(), to: "integrator".into() },
+        EdgeConfig { from: "contradiction_detector".into(), to: "integrator".into() },
+        // Wave 4 → 进化链
+        EdgeConfig { from: "integrator".into(), to: "evolution_transform".into() },
         EdgeConfig { from: "evolution_transform".into(), to: "evolution_graph".into() },
-        // 两条链汇合后 → meta 组（meta 三个并行）
-        EdgeConfig { from: "questioner".into(), to: "meta_params".into() },
-        EdgeConfig { from: "questioner".into(), to: "meta_prompts".into() },
-        EdgeConfig { from: "questioner".into(), to: "meta_ui".into() },
+        // 进化链 + integrator → meta 组（并行）
+        EdgeConfig { from: "integrator".into(), to: "meta_params".into() },
+        EdgeConfig { from: "integrator".into(), to: "meta_prompts".into() },
+        EdgeConfig { from: "integrator".into(), to: "meta_ui".into() },
         EdgeConfig { from: "evolution_graph".into(), to: "meta_params".into() },
         EdgeConfig { from: "evolution_graph".into(), to: "meta_prompts".into() },
         EdgeConfig { from: "evolution_graph".into(), to: "meta_ui".into() },
@@ -554,21 +573,34 @@ mod tests {
     }
 
     #[test]
-    fn default_evening_has_nine_stages() {
-        assert_eq!(default_evening_stages().len(), 9);
-        assert_eq!(default_evening_stages().last().unwrap(), "meta_ui");
-        assert_eq!(default_evening_stages().first().unwrap(), "observer");
+    fn default_evening_has_expected_stages() {
+        let stages = default_evening_stages();
+        assert_eq!(stages.len(), 13);
+        assert_eq!(stages.last().unwrap(), "meta_ui");
+        assert_eq!(stages.first().unwrap(), "observer");
+        // new stages present
+        assert!(stages.contains(&"verifier".to_string()));
+        assert!(stages.contains(&"contradiction_detector".to_string()));
+        assert!(stages.contains(&"integrator".to_string()));
     }
 
     #[test]
-    fn default_edges_create_parallel_chains() {
+    fn default_edges_create_self_correcting_dag() {
         let edges = default_evening_edges();
-        // observer→coach 在认知链
+        // observer → verifier (wave 1→2)
+        assert!(edges.iter().any(|e| e.from == "observer" && e.to == "verifier"));
+        // observer → coach
         assert!(edges.iter().any(|e| e.from == "observer" && e.to == "coach"));
-        // evolution_transform→evolution_graph 在进化链
+        // verifier + coach → integrator
+        assert!(edges.iter().any(|e| e.from == "verifier" && e.to == "integrator"));
+        assert!(edges.iter().any(|e| e.from == "coach" && e.to == "integrator"));
+        assert!(edges.iter().any(|e| e.from == "contradiction_detector" && e.to == "integrator"));
+        // integrator → evolution_transform
+        assert!(edges.iter().any(|e| e.from == "integrator" && e.to == "evolution_transform"));
+        // evolution_transform → evolution_graph
         assert!(edges.iter().any(|e| e.from == "evolution_transform" && e.to == "evolution_graph"));
-        // 两条链都汇入 meta_params
-        assert!(edges.iter().any(|e| e.from == "questioner" && e.to == "meta_params"));
+        // both integrator + evolution_graph → meta_params
+        assert!(edges.iter().any(|e| e.from == "integrator" && e.to == "meta_params"));
         assert!(edges.iter().any(|e| e.from == "evolution_graph" && e.to == "meta_params"));
     }
 

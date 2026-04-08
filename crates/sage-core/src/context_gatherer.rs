@@ -256,6 +256,11 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
         let mut teams_msgs = Vec::new();
         let mut page_visits = Vec::new();
         let mut patterns = Vec::new();
+        // Claude Code session 聚合：session_id → (project, tools, errors, stop_summary)
+        let mut cc_sessions: std::collections::HashMap<
+            String,
+            CcSession,
+        > = std::collections::HashMap::new();
 
         for b in &behaviors {
             let meta: serde_json::Value = b
@@ -263,6 +268,42 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
+
+            // Claude Code hooks 事件
+            if b.source == "claude-hooks" {
+                let sid = meta["session_id"].as_str().unwrap_or("").to_string();
+                if sid.is_empty() { continue; }
+                let sess = cc_sessions.entry(sid).or_insert_with(CcSession::default);
+                if let Some(cwd) = meta["cwd"].as_str() {
+                    sess.project = extract_project_name(cwd);
+                }
+                match b.event_type.as_str() {
+                    "PreToolUse" | "PostToolUse" => {
+                        if let Some(tool) = meta["tool_name"].as_str() {
+                            *sess.tools.entry(tool.to_string()).or_insert(0) += 1;
+                        }
+                        // 从 PostToolUse 提取错误
+                        if b.event_type == "PostToolUse" {
+                            if let Some(stderr) = meta["tool_response"]["stderr"].as_str() {
+                                if !stderr.is_empty() && stderr.contains("error") {
+                                    let first_line = stderr.lines().next().unwrap_or("");
+                                    if first_line.len() > 10 {
+                                        sess.errors.push(truncate(first_line, 120));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "Stop" => {
+                        if let Some(msg) = meta["last_assistant_message"].as_str() {
+                            sess.stop_summary = Some(truncate(msg, 200));
+                        }
+                    }
+                    _ => {}
+                }
+                sess.event_count += 1;
+                continue;
+            }
 
             match b.event_type.as_str() {
                 "message_received" if b.source == "teams" => {
@@ -356,6 +397,14 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
         }
 
         sections.push(browser_section);
+
+        // Claude Code 开发活动
+        if !cc_sessions.is_empty() {
+            let cc_section = build_claude_code_section(&cc_sessions, lang);
+            if !cc_section.is_empty() {
+                sections.push(cc_section);
+            }
+        }
     }
 
     // Feed 信息洞察（过去 24h，简洁版）
@@ -619,6 +668,110 @@ fn inject_calibration_rules(store: &Store, report_type: &str, sections: &mut Vec
     sections.push(format!("{header}\n{}", lines.join("\n")));
 }
 
+// ─── Claude Code session 聚合 ─────────────────────────────────────────
+
+#[derive(Default)]
+struct CcSession {
+    project: String,
+    tools: std::collections::HashMap<String, usize>,
+    errors: Vec<String>,
+    stop_summary: Option<String>,
+    event_count: usize,
+}
+
+fn extract_project_name(cwd: &str) -> String {
+    // /Users/evan/dev/sage → sage, /Users/evan/.sage → .sage
+    cwd.rsplit('/').next().unwrap_or(cwd).to_string()
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max { s.to_string() } else { format!("{}…", &s[..s.floor_char_boundary(max)]) }
+}
+
+fn build_claude_code_section(
+    sessions: &std::collections::HashMap<String, CcSession>,
+    lang: &str,
+) -> String {
+    // 按 event_count 降序，取 top 10
+    let mut sorted: Vec<_> = sessions.iter().collect();
+    sorted.sort_by(|a, b| b.1.event_count.cmp(&a.1.event_count));
+    sorted.truncate(10);
+
+    // 按项目聚合
+    let mut by_project: std::collections::HashMap<String, ProjectStats> =
+        std::collections::HashMap::new();
+    for (_, sess) in &sorted {
+        let proj = if sess.project.is_empty() { "unknown" } else { &sess.project };
+        let ps = by_project.entry(proj.to_string()).or_insert_with(ProjectStats::default);
+        ps.session_count += 1;
+        ps.total_events += sess.event_count;
+        for (tool, count) in &sess.tools {
+            *ps.tools.entry(tool.clone()).or_insert(0) += count;
+        }
+        ps.errors.extend(sess.errors.iter().cloned());
+        if let Some(ref summary) = sess.stop_summary {
+            ps.summaries.push(summary.clone());
+        }
+    }
+
+    let header = sec(lang,
+        "## 今日 Claude Code 开发活动",
+        "## Today's Claude Code Development",
+    );
+    let mut lines = vec![header.to_string()];
+
+    let mut projects: Vec<_> = by_project.into_iter().collect();
+    projects.sort_by(|a, b| b.1.total_events.cmp(&a.1.total_events));
+
+    for (proj, ps) in &projects {
+        let session_label = if lang == "en" { "sessions" } else { "个会话" };
+        let event_label = if lang == "en" { "events" } else { "个事件" };
+        lines.push(format!("### {proj}（{} {session_label}，{} {event_label}）",
+            ps.session_count, ps.total_events));
+
+        // 工具使用统计
+        let mut tool_list: Vec<_> = ps.tools.iter().collect();
+        tool_list.sort_by(|a, b| b.1.cmp(a.1));
+        let top_tools: Vec<String> = tool_list.iter().take(5)
+            .map(|(t, c)| format!("{t}×{c}"))
+            .collect();
+        let tool_label = if lang == "en" { "Tools" } else { "工具" };
+        lines.push(format!("- {tool_label}: {}", top_tools.join(", ")));
+
+        // 错误摘要（去重，最多 3 条）
+        if !ps.errors.is_empty() {
+            let mut unique_errors: Vec<String> = Vec::new();
+            for e in &ps.errors {
+                if unique_errors.len() >= 3 { break; }
+                if !unique_errors.iter().any(|u| u == e) {
+                    unique_errors.push(e.clone());
+                }
+            }
+            let err_label = if lang == "en" { "Errors" } else { "错误" };
+            for e in &unique_errors {
+                lines.push(format!("- {err_label}: {e}"));
+            }
+        }
+
+        // 最后一条 stop summary
+        if let Some(summary) = ps.summaries.last() {
+            let sum_label = if lang == "en" { "Last output" } else { "最后输出" };
+            lines.push(format!("- {sum_label}: {summary}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
+#[derive(Default)]
+struct ProjectStats {
+    session_count: usize,
+    total_events: usize,
+    tools: std::collections::HashMap<String, usize>,
+    errors: Vec<String>,
+    summaries: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,5 +849,71 @@ mod tests {
         let _ = gather(&ReportType::EveningReview, &store, "outlook", "en").await;
         let _ = gather(&ReportType::WeeklyReport, &store, "outlook", "zh").await;
         let _ = gather(&ReportType::WeekStart, &store, "outlook", "en").await;
+    }
+
+    #[test]
+    fn test_build_claude_code_section_aggregates_sessions() {
+        let mut sessions = std::collections::HashMap::new();
+        let mut sess = CcSession::default();
+        sess.project = "sage".to_string();
+        sess.event_count = 42;
+        sess.tools.insert("Bash".to_string(), 15);
+        sess.tools.insert("Read".to_string(), 10);
+        sess.tools.insert("Edit".to_string(), 8);
+        sess.errors.push("error[E0425]: cannot find function".to_string());
+        sess.stop_summary = Some("Fixed build errors in actions.rs".to_string());
+        sessions.insert("session-1".to_string(), sess);
+
+        let mut sess2 = CcSession::default();
+        sess2.project = "sage".to_string();
+        sess2.event_count = 20;
+        sess2.tools.insert("Bash".to_string(), 5);
+        sessions.insert("session-2".to_string(), sess2);
+
+        let output = build_claude_code_section(&sessions, "zh");
+        assert!(output.contains("Claude Code"), "应有标题");
+        assert!(output.contains("sage"), "应包含项目名");
+        assert!(output.contains("2 个会话"), "应聚合为 2 个会话");
+        assert!(output.contains("Bash×20"), "Bash 应合计为 20");
+        assert!(output.contains("E0425"), "应包含错误摘要");
+        assert!(output.contains("Fixed build"), "应包含 stop summary");
+    }
+
+    #[test]
+    fn test_extract_project_name() {
+        assert_eq!(extract_project_name("/Users/evan/dev/sage"), "sage");
+        assert_eq!(extract_project_name("/Users/evan/.sage"), ".sage");
+        assert_eq!(extract_project_name(""), "");
+    }
+
+    #[test]
+    fn test_truncate_handles_multibyte() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello world!", 5).len(), 8); // "hello…"
+        let chinese = "你好世界测试";
+        let t = truncate(chinese, 6);
+        assert!(t.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn test_evening_review_includes_claude_code_hooks() {
+        let store = make_test_store();
+        let meta = serde_json::json!({
+            "session_id": "test-session",
+            "cwd": "/Users/evan/dev/sage",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_response": { "stderr": "", "stdout": "ok" }
+        });
+        store.save_browser_behavior("claude-hooks", "PostToolUse", &meta.to_string()).unwrap();
+        store.save_browser_behavior("claude-hooks", "Stop", &serde_json::json!({
+            "session_id": "test-session",
+            "cwd": "/Users/evan/dev/sage",
+            "last_assistant_message": "Done fixing bugs"
+        }).to_string()).unwrap();
+
+        let ctx = gather(&ReportType::EveningReview, &store, "outlook", "zh").await;
+        assert!(ctx.contains("Claude Code"), "应包含 Claude Code 开发活动，实际: {ctx}");
+        assert!(ctx.contains("sage"), "应包含项目名 sage");
     }
 }

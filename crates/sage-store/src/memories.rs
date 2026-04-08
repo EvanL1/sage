@@ -190,6 +190,14 @@ impl Store {
         })
     }
 
+    /// 按完整 SQL 查询记忆（供 pipeline actions 使用，SQL 必须返回标准 memory 列集合）
+    pub fn query_memories_by_raw(&self, sql: &str) -> Result<Vec<sage_types::Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(sql).context("准备 query_memories_by_raw 查询失败")?;
+        let rows = stmt.query_map([], Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// 按条件查询记忆（内部方法）
     pub(super) fn query_memories_by(
         conn: &rusqlite::Connection,
@@ -1446,6 +1454,96 @@ impl Store {
             .optional()
             .context("查询 memory by id 失败")?;
         Ok(mem)
+    }
+
+    /// 验证记忆：增加 validation_count，微调 confidence（+0.02，封顶 1.0）
+    pub fn verify_memory(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET validation_count = validation_count + 1, \
+             confidence = MIN(1.0, confidence + 0.02), \
+             last_accessed_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, id],
+        ).context("验证 memory 失败")?;
+        Ok(())
+    }
+
+    /// 挑战记忆：降低 confidence（-0.05，最低 0.3），追加挑战记录到 evolution_note
+    pub fn challenge_memory(&self, id: i64, counter_evidence: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET confidence = MAX(0.3, confidence - 0.05), \
+             last_accessed_at = ?1, \
+             evolution_note = COALESCE(evolution_note || char(10), '') || 'CHALLENGE: ' || ?2 \
+             WHERE id = ?3",
+            rusqlite::params![now, counter_evidence, id],
+        ).context("挑战 memory 失败")?;
+        Ok(())
+    }
+
+    /// 设置 evolution_note（覆盖写）
+    pub fn set_evolution_note(&self, id: i64, note: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.execute(
+            "UPDATE memories SET evolution_note = ?1 WHERE id = ?2",
+            rusqlite::params![note, id],
+        ).context("设置 evolution_note 失败")?;
+        Ok(())
+    }
+
+    /// 按多个 depth 加载活跃记忆（verifier/integrator 使用）
+    pub fn load_memories_by_depths(&self, depths: &[&str]) -> Result<Vec<Memory>> {
+        if depths.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let placeholders = depths.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+             about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
+             FROM memories WHERE depth IN ({placeholders}) AND status = 'active' \
+             ORDER BY confidence DESC, updated_at DESC"
+        );
+        let mut stmt = conn.prepare(&sql).context("准备 load_memories_by_depths 查询失败")?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = depths.iter()
+            .map(|d| d as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 按 category 加载最近 N 条 observations（verifier/integrator 使用）
+    pub fn load_recent_observations_by_category(&self, category: &str, limit: usize) -> Result<Vec<crate::ObservationRow>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, observation, raw_data, created_at FROM observations \
+             WHERE category = ?1 ORDER BY created_at DESC LIMIT ?2",
+        ).context("准备 load_recent_observations_by_category 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![category, limit as i64], |row| {
+            Ok(crate::ObservationRow {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                observation: row.get(2)?,
+                raw_data: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 获取 depth 分布统计（各 depth 的活跃记忆数量）
+    pub fn get_depth_distribution(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT depth, COUNT(*) FROM memories WHERE status = 'active' GROUP BY depth \
+             ORDER BY CASE depth WHEN 'episodic' THEN 1 WHEN 'semantic' THEN 2 \
+             WHEN 'procedural' THEN 3 WHEN 'axiom' THEN 4 ELSE 5 END",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// 软删除记忆（归档而非硬删除），并记录原因

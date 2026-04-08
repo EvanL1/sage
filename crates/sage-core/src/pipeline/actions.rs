@@ -98,6 +98,22 @@ fn action_doc_entry(action: &str) -> Option<&'static str> {
         "save_custom_page" => Some(
             "- `ACTION save_custom_page | title | content`\n  生成 UI 自定义页面\n\n"
         ),
+        // ── Verifier / Integrator ACTION 类型 ────────────────────
+        "verify_confirm" => Some(
+            "- `ACTION verify_confirm | memory_id | evidence_summary`\n  确认记忆（增加验证次数，微调 confidence +0.02）\n\n"
+        ),
+        "verify_challenge" => Some(
+            "- `ACTION verify_challenge | memory_id | counter_evidence`\n  质疑记忆（降低 confidence -0.05，记录反例）\n\n"
+        ),
+        "flag_contradiction" => Some(
+            "- `ACTION flag_contradiction | memory_id_1 | memory_id_2 | explanation`\n  标记两条记忆互相矛盾（写入 contradicts 图边）\n\n"
+        ),
+        "demote_memory" => Some(
+            "- `ACTION demote_memory | memory_id | new_depth | reason`\n  降级记忆（必须逐级降）\n\n"
+        ),
+        "archive_challenged" => Some(
+            "- `ACTION archive_challenged | memory_id | reason`\n  归档反复被挑战的认知\n\n"
+        ),
         _ => None,
     }
 }
@@ -138,6 +154,12 @@ pub fn validate_action_params(action: &str, parts: &[&str]) -> Option<String> {
         "set_pipeline_override" => validate_pipeline_override(parts),
         "rewrite_prompt" => validate_rewrite_prompt(parts),
         "save_custom_page" => validate_custom_page(parts),
+        // ── Verifier / Integrator 验证 ────────────────────────────
+        "verify_confirm" => validate_memory_id_optional_str(parts),
+        "verify_challenge" => validate_memory_id_optional_str(parts),
+        "flag_contradiction" => validate_flag_contradiction(parts),
+        "demote_memory" => validate_demote_memory(parts),
+        "archive_challenged" => validate_memory_id_optional_str(parts),
         _ => Some(format!("未知 action: {action}")),
     }
 }
@@ -339,6 +361,38 @@ fn validate_custom_page(parts: &[&str]) -> Option<String> {
     validate_name_content(parts, "title ", "content ")
 }
 
+/// 验证 parts[1] 是合法 i64 memory_id（parts[2..] 可选）
+fn validate_memory_id_optional_str(parts: &[&str]) -> Option<String> {
+    let id_str = parts.get(1).unwrap_or(&"");
+    if id_str.parse::<i64>().is_err() {
+        return Some(format!("memory_id 格式错误: {id_str}"));
+    }
+    None
+}
+
+fn validate_flag_contradiction(parts: &[&str]) -> Option<String> {
+    for (idx, label) in [(1usize, "memory_id_1"), (2, "memory_id_2")] {
+        let s = parts.get(idx).unwrap_or(&"");
+        if s.parse::<i64>().is_err() {
+            return Some(format!("{label} 格式错误: {s}"));
+        }
+    }
+    None
+}
+
+fn validate_demote_memory(parts: &[&str]) -> Option<String> {
+    let id_str = parts.get(1).unwrap_or(&"");
+    if id_str.parse::<i64>().is_err() {
+        return Some(format!("memory_id 格式错误: {id_str}"));
+    }
+    let depth = parts.get(2).unwrap_or(&"");
+    const DEPTHS: &[&str] = &["episodic", "semantic", "procedural", "axiom"];
+    if !DEPTHS.contains(depth) {
+        return Some(format!("非法 depth: {depth}（需要 episodic/semantic/procedural/axiom）"));
+    }
+    None
+}
+
 // ─── ACTION 执行分发 ──────────────────────────────────────────────────
 
 /// 从 LLM 输出中解析、验证并执行 ACTION 命令（带 rate limit）
@@ -408,6 +462,12 @@ fn dispatch_action(action: &str, parts: &[&str], store: &Store, stage: &str) -> 
         "set_pipeline_override" => handle_pipeline_override(parts, store, stage),
         "rewrite_prompt" => handle_rewrite_prompt(parts, store, stage),
         "save_custom_page" => handle_custom_page(parts, store, stage),
+        // ── Verifier / Integrator handlers ────────────────────────
+        "verify_confirm" => handle_verify_confirm(parts, store, stage),
+        "verify_challenge" => handle_verify_challenge(parts, store, stage),
+        "flag_contradiction" => handle_flag_contradiction(parts, store, stage),
+        "demote_memory" => handle_demote_memory(parts, store, stage),
+        "archive_challenged" => handle_archive_challenged(parts, store, stage),
         _ => None,
     }
 }
@@ -733,6 +793,77 @@ fn handle_custom_page(parts: &[&str], store: &Store, stage: &str) -> Option<i64>
     }
 }
 
+// ─── Verifier / Integrator handlers ──────────────────────────────────────────
+
+fn handle_verify_confirm(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    match store.verify_memory(id) {
+        Ok(()) => { info!("Stage {stage}: ✓ verify_confirm #{id}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: verify_confirm #{id} failed: {e}"); None }
+    }
+}
+
+fn handle_verify_challenge(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    let counter_evidence = parts.get(2).unwrap_or(&"");
+    match store.challenge_memory(id, counter_evidence) {
+        Ok(()) => { info!("Stage {stage}: ⚠ verify_challenge #{id}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: verify_challenge #{id} failed: {e}"); None }
+    }
+}
+
+fn handle_flag_contradiction(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id1: i64 = parts[1].parse().ok()?;
+    let id2: i64 = parts[2].parse().ok()?;
+    let explanation = parts.get(3).unwrap_or(&"");
+    // 写入 contradicts 图边
+    if let Err(e) = store.save_memory_edge(id1, id2, "contradicts", 0.8) {
+        warn!("Stage {stage}: flag_contradiction edge failed: {e}");
+    }
+    // 记录为 observation 供 integrator 读取
+    let note = format!("矛盾: #{id1} vs #{id2} — {explanation}");
+    match store.record_observation(&format!("custom_{stage}"), &note, None) {
+        Ok(()) => { info!("Stage {stage}: ✓ flag_contradiction #{id1} vs #{id2}"); Some(id1) }
+        Err(e) => { warn!("Stage {stage}: flag_contradiction obs failed: {e}"); None }
+    }
+}
+
+fn handle_demote_memory(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    let new_depth = parts[2];
+    let reason = parts.get(3).unwrap_or(&"integrator demotion");
+
+    // 读取当前 depth 做门控（必须逐级降）
+    let current_depth = store.get_memory_by_id(id).ok()??. depth;
+    let valid = matches!(
+        (current_depth.as_str(), new_depth),
+        ("axiom", "procedural") | ("procedural", "semantic") | ("semantic", "episodic")
+    );
+    if !valid {
+        warn!("Stage {stage}: demote #{id} blocked — {current_depth}→{new_depth} not a valid demotion");
+        return None;
+    }
+
+    if let Err(e) = store.update_memory_depth(id, new_depth) {
+        warn!("Stage {stage}: demote #{id} depth update failed: {e}");
+        return None;
+    }
+    if let Err(e) = store.set_evolution_note(id, &format!("降级: {reason}")) {
+        warn!("Stage {stage}: demote #{id} note failed: {e}");
+    }
+    info!("Stage {stage}: ✓ demote #{id} {current_depth}→{new_depth}");
+    Some(id)
+}
+
+fn handle_archive_challenged(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
+    let id: i64 = parts[1].parse().ok()?;
+    let reason = parts.get(2).unwrap_or(&"反复被挑战");
+    match store.archive_memory(id, reason) {
+        Ok(()) => { info!("Stage {stage}: ✓ archive_challenged #{id}"); Some(id) }
+        Err(e) => { warn!("Stage {stage}: archive_challenged #{id} failed: {e}"); None }
+    }
+}
+
 fn parse_confidence(parts: &[&str], idx: usize) -> f64 {
     parts.get(idx)
         .and_then(|c| c.strip_prefix("confidence:"))
@@ -861,6 +992,54 @@ pub fn load_filtered_context(store: &Store, allowed: &[String]) -> String {
                     for m in store.get_memories_by_category(cat).unwrap_or_default() {
                         ctx.push_str(&format!("- [规则] {}\n", m.content));
                     }
+                }
+            }
+            // 待验证认知：semantic/procedural/axiom，按最后访问时间 ASC（轮换）（供 verifier）
+            "verifiable_memories" => {
+                let eligible_cats = "'thinking','behavior','personality','values','growth','communication','emotion','coach_insight','strategy_insight'";
+                let sql = format!(
+                    "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+                     about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
+                     FROM memories \
+                     WHERE status = 'active' \
+                     AND depth IN ('semantic', 'procedural', 'axiom') \
+                     AND category IN ({eligible_cats}) \
+                     AND created_at < datetime('now', '-7 days') \
+                     ORDER BY last_accessed_at ASC NULLS FIRST, validation_count ASC \
+                     LIMIT 10"
+                );
+                if let Ok(mems) = store.query_memories_by_raw(&sql) {
+                    for m in mems {
+                        ctx.push_str(&format!(
+                            "- [验证:id={},depth={},validated={}次,confidence={:.2}] {}\n",
+                            m.id, m.depth, m.validation_count, m.confidence, m.content
+                        ));
+                    }
+                }
+            }
+            // 核心认知记忆：semantic/procedural/axiom（供 contradiction_detector）
+            "core_memories" => {
+                let mems = store.load_memories_by_depths(&["semantic", "procedural", "axiom"]).unwrap_or_default();
+                for m in mems.iter().take(40) {
+                    ctx.push_str(&format!("- [id={},depth={}] {}\n", m.id, m.depth, m.content));
+                }
+            }
+            // 验证结果：verifier stage 产生的 observations（供 integrator）
+            "verification_results" => {
+                for obs in store.load_recent_observations_by_category("custom_verifier", 20).unwrap_or_default() {
+                    ctx.push_str(&format!("- [验证结果] {}\n", obs.observation));
+                }
+            }
+            // 矛盾检测结果（供 integrator）
+            "contradiction_results" => {
+                for obs in store.load_recent_observations_by_category("custom_contradiction_detector", 10).unwrap_or_default() {
+                    ctx.push_str(&format!("- [矛盾] {}\n", obs.observation));
+                }
+            }
+            // 深度分布统计（供 integrator）
+            "depth_summary" => {
+                for (depth, count) in store.get_depth_distribution().unwrap_or_default() {
+                    ctx.push_str(&format!("- {}: {} 条\n", depth, count));
                 }
             }
             _ => {}
