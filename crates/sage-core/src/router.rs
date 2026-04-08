@@ -90,18 +90,42 @@ impl Router {
 
         // 收集上下文
         let mut context = String::new();
+        let lang = self.store.prompt_lang();
         if let Ok(Some(report)) = self.store.get_latest_report("morning") {
-            context.push_str(&format!("## Morning Brief\n{}\n\n", report.content));
+            let h = if lang == "en" { "## Morning Brief" } else { "## 晨间简报" };
+            context.push_str(&format!("{h}\n{}\n\n", report.content));
         }
         if let Ok(Some(report)) = self.store.get_latest_report("week_start") {
+            let h = if lang == "en" { "## Week Start" } else { "## 本周重点" };
             let preview: String = report.content.chars().take(500).collect();
-            context.push_str(&format!("## Week Start\n{}\n\n", preview));
+            context.push_str(&format!("{h}\n{}\n\n", preview));
+        }
+
+        // 用户认知画像：注入 procedural + axiom 记忆，让任务匹配用户风格
+        if let Ok(traits) = self.store.load_memories_by_depths(&["procedural", "axiom"]) {
+            if !traits.is_empty() {
+                let header = if lang == "en" {
+                    "## User Traits (match this person's style and preferences when generating tasks)\n"
+                } else {
+                    "## 用户特质（生成任务时匹配此人的风格和偏好）\n"
+                };
+                context.push_str(header);
+                for m in traits.iter().take(15) {
+                    context.push_str(&format!("- [{}] {}\n", m.category, m.content));
+                }
+                context.push('\n');
+            }
         }
 
         // 已有 open tasks — 带 action_key 提示，帮助 LLM 去重
         let existing = self.store.list_tasks(Some("open"), 20).unwrap_or_default();
         if !existing.is_empty() {
-            context.push_str("## Existing open tasks (DO NOT duplicate these action_keys)\n");
+            let header = if lang == "en" {
+                "## Existing open tasks (DO NOT duplicate these action_keys)\n"
+            } else {
+                "## 已有待办（不要重复这些 action_key）\n"
+            };
+            context.push_str(header);
             for (_, content, _, priority, _, _, _, _, _, _, _) in &existing {
                 let key = derive_action_key(content);
                 context.push_str(&format!("- [action_key={}] [{}] {}\n", key, priority, content));
