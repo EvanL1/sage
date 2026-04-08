@@ -121,6 +121,9 @@ pub async fn suggest_from_event(
     let system = format!(
         "You are a task detection assistant. Given a single event and the user's current \
         open tasks, determine if this event requires a new task. \
+        GRANULARITY: Only suggest ATOMIC tasks (one action, < 2 hours). \
+        For multi-step work, suggest only the next single action. \
+        Each suggested task needs an action_key in format \"verb:entity:person\". \
         Output format: `NEW | <task title> | <evidence> | due:YYYY-MM-DD` for each new task (max 2). \
         Include due:YYYY-MM-DD when a deadline is mentioned or implied (today is {today}). \
         If nothing actionable, output `NONE`."

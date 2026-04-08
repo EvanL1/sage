@@ -439,10 +439,12 @@ fn handle_save_memory_visible(parts: &[&str], store: &Store, stage: &str) -> Opt
     let content = parts[2];
     let confidence = parse_confidence(parts, 3);
     let visibility = parts.get(4).and_then(|s| s.strip_prefix("visibility:")).unwrap_or("public");
-    match store.save_memory_with_visibility(
-        category, content, &format!("stage:{stage}"), confidence, visibility,
+    // observer 阶段生成的记忆是原始观察的直接重述，标记为可重新推导（derivable=1）
+    let is_observer = stage == "observer";
+    match store.save_memory_with_visibility_derivable(
+        category, content, &format!("stage:{stage}"), confidence, visibility, is_observer,
     ) {
-        Ok(id) => { info!("Stage {stage}: ✓ saved memory [{category}] vis={visibility}"); Some(id) }
+        Ok(id) => { info!("Stage {stage}: ✓ saved memory [{category}] vis={visibility} derivable={is_observer}"); Some(id) }
         Err(e) => { warn!("Stage {stage}: save_memory_visible failed: {e}"); None }
     }
 }
@@ -789,14 +791,14 @@ pub fn load_filtered_context(store: &Store, allowed: &[String]) -> String {
                     ctx.push_str(&format!("- [信号] {}\n", s.response));
                 }
             }
-            // 相似记忆聚类（供 evolution_merge）
+            // 相似记忆聚类（供 evolution_transform）
             "similar_memories" => {
                 let mems = store.load_memories_by_depth("episodic").unwrap_or_default();
                 for m in mems.iter().take(50) {
                     ctx.push_str(&format!("- [记忆:id={}] {}\n", m.id, m.content));
                 }
             }
-            // 冗长记忆（供 evolution_condense）
+            // 冗长记忆（供 evolution_transform）
             "verbose_memories" => {
                 let mems = store.load_memories().unwrap_or_default();
                 for m in mems.iter().filter(|m| m.content.len() > 50).take(50) {

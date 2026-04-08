@@ -1,7 +1,7 @@
 use sage_core::plugin::{PluginEvent, TaskSnapshot};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use super::{extract_json_object, format_existing_memories, get_provider, map_err, strip_code_fences, today_str};
 use crate::AppState;
@@ -194,6 +194,7 @@ pub async fn list_tasks(
 
 #[tauri::command]
 pub async fn update_task_status(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     task_id: i64,
     status: String,
@@ -222,6 +223,7 @@ pub async fn update_task_status(
         );
     }
 
+    app.emit("sage:data:tasks", ()).ok();
     Ok(())
 }
 
@@ -239,6 +241,7 @@ pub async fn update_task_due_date(
 
 #[tauri::command]
 pub async fn update_task(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     task_id: i64,
     content: String,
@@ -273,16 +276,20 @@ pub async fn update_task(
         );
     }
 
+    app.emit("sage:data:tasks", ()).ok();
     Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_task(state: State<'_, AppState>, task_id: i64) -> Result<(), String> {
-    state.store.delete_task(task_id).map_err(|e| e.to_string())
+pub async fn delete_task(app: tauri::AppHandle, state: State<'_, AppState>, task_id: i64) -> Result<(), String> {
+    state.store.delete_task(task_id).map_err(|e| e.to_string())?;
+    app.emit("sage:data:tasks", ()).ok();
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn complete_task(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     task_id: i64,
     status: String,
@@ -313,6 +320,7 @@ pub async fn complete_task(
         );
     }
 
+    app.emit("sage:data:tasks", ()).ok();
     // 从用户的 outcome 中提取记忆（后台异步，不阻塞 UI）
     if let Some(ref outcome_text) = outcome {
         if !outcome_text.trim().is_empty() {

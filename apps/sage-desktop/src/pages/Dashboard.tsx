@@ -4,13 +4,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { DisplayItem, DashStats, ReportData, DashData } from "../layouts/types";
+import type { DisplayItem, DashData, ReportData } from "../layouts/types";
 import { useLang } from "../LangContext";
 
 import CommandLayout from "../layouts/CommandLayout";
 import NebulaLayout from "../layouts/NebulaLayout";
 import ClassicLayout from "../layouts/ClassicLayout";
 import InteractiveReport from "../components/InteractiveReport";
+import { DashboardProvider, useDashboard } from "../contexts/DashboardContext";
 
 type Layout = "command" | "nebula" | "classic";
 
@@ -37,22 +38,18 @@ class LayoutErrorBoundary extends React.Component<
 
 const VALID_LAYOUTS = new Set<string>(LAYOUT_KEYS);
 
-function Dashboard() {
+function DashboardInner() {
   const navigate = useNavigate();
   const { t } = useLang();
+  const { state, refresh } = useDashboard();
+
   const [layout, setLayout] = useState<Layout>(() => {
     const saved = localStorage.getItem("dash_layout") as Layout;
     return VALID_LAYOUTS.has(saved) ? saved : "command";
   });
-  const [stats, setStats] = useState<DashStats | null>(null);
-  // depthCounts 暂不在 topbar 展示，数据仍加载以备后用
-  const [, setDepthCounts] = useState<Record<string, number>>({});
-  const [report, setReport] = useState<{ type: string; data: ReportData } | null>(null);
-  const [items, setItems] = useState<DisplayItem[]>([]);
-  const [curated, setCurated] = useState<DisplayItem[]>([]);
+  const [reportLoading, setReportLoading] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<DisplayItem | null>(null);
   const [expandedFull, setExpandedFull] = useState<string | null>(null);
-  const [reportLoading, setReportLoading] = useState<string | null>(null);
   const [showCorrection, setShowCorrection] = useState(false);
   const [corrWrong, setCorrWrong] = useState("");
   const [corrFact, setCorrFact] = useState("");
@@ -80,39 +77,21 @@ function Dashboard() {
       .catch(() => navigate("/welcome", { replace: true }));
   }, [navigate]);
 
-  useEffect(() => {
-    invoke<DashStats>("get_dashboard_stats").then(setStats).catch(() => {});
-    invoke<{ depth?: string }[]>("get_memories").then((mems) => {
-      const counts: Record<string, number> = {};
-      for (const m of mems) {
-        const d = m.depth ?? "episodic";
-        counts[d] = (counts[d] ?? 0) + 1;
-      }
-      setDepthCounts(counts);
-    }).catch(() => {});
-    invoke<Record<string, ReportData>>("get_latest_reports")
-      .then((r) => { for (const rt of ["morning", "evening", "weekly", "week_start"]) { if (r[rt]) { setReport({ type: rt, data: r[rt] }); break; } } })
-      .catch(() => {});
-    invoke<DisplayItem[]>("get_dashboard_snapshot")
-      .then((snap) => setItems(snap.filter((i) => i.category !== "report")))
-      .catch(() => {});
-    invoke<DisplayItem[]>("curate_homepage")
-      .then((c) => { if (c?.length) setCurated(c.filter((i) => i.category !== "greeting")); })
-      .catch(() => {});
-  }, []);
+  const [reportOverride, setReportOverride] = useState<{ type: string; data: ReportData } | null>(null);
 
   const triggerReport = useCallback(async (reportType: string) => {
     setReportLoading(reportType);
+    setReportOverride(null);
     try {
-      const content = await invoke<string>("trigger_report", { reportType });
-      setReport({ type: reportType, data: { content, created_at: new Date().toISOString() } });
-      invoke<DashStats>("get_dashboard_stats").then(setStats).catch(() => {});
+      await invoke<string>("trigger_report", { reportType });
+      await refresh("report");
+      await refresh("memories");
     } catch (err) {
-      setReport({ type: reportType, data: { content: `## Error\n\n${err}`, created_at: new Date().toISOString() } });
+      setReportOverride({ type: reportType, data: { content: `## Error\n\n${err}`, created_at: new Date().toISOString() } });
     } finally {
       setReportLoading(null);
     }
-  }, []);
+  }, [refresh]);
 
   const openExpanded = useCallback(async (item: DisplayItem) => {
     setExpanded(item); setExpandedFull(null);
@@ -124,7 +103,6 @@ function Dashboard() {
         const reports = await invoke<Record<string, ReportData>>("get_latest_reports");
         if (reports[item.ref_id]) setExpandedFull(reports[item.ref_id].content);
       } else if (item.category === "memory" && item.id) {
-        // Fetch full memory content by finding it in all memories
         const mems = await invoke<{ id: number; content: string; category: string; confidence: number }[]>("get_memories");
         const found = mems.find(m => m.id === item.id);
         if (found) setExpandedFull(found.content);
@@ -136,7 +114,16 @@ function Dashboard() {
     } catch {}
   }, []);
 
-  const data: DashData = { stats, report, items, curated, reportLoading, triggerReport, openExpanded };
+  // Build DashData for layouts — reportOverride shows trigger errors, otherwise use context state
+  const data: DashData = {
+    stats: state.stats,
+    report: reportOverride ?? state.report,
+    items: state.items,
+    curated: state.curated,
+    reportLoading,
+    triggerReport,
+    openExpanded,
+  };
 
   const layoutLabels: Record<LayoutKey, string> = {
     command: t("dashboard.layoutCommand"),
@@ -248,6 +235,14 @@ function Dashboard() {
         </div>, document.body
       )}
     </div>
+  );
+}
+
+function Dashboard() {
+  return (
+    <DashboardProvider>
+      <DashboardInner />
+    </DashboardProvider>
   );
 }
 

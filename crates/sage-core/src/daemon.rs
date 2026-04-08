@@ -2,9 +2,19 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
 use tracing::{error, info, warn};
+
+/// Tauri 事件名称常量
+pub mod events {
+    pub const REPORTS: &str = "sage:data:reports";
+    pub const MEMORIES: &str = "sage:data:memories";
+    pub const TASKS: &str = "sage:data:tasks";
+    pub const MESSAGES: &str = "sage:data:messages";
+    pub const REFRESH: &str = "sage:data:refresh";
+}
 
 use sage_types::{Event, EventType, ProjectStatus, WorkSchedule};
 
@@ -41,6 +51,8 @@ pub struct Daemon {
     handled_keys: Mutex<HashSet<String>>,
     /// Tick 计数器，用于控制每 3 tick 触发一次 task_intelligence
     tick_count: Mutex<u32>,
+    /// 可选的 Tauri 事件发送端——前端订阅时接收数据变更通知
+    event_tx: Option<UnboundedSender<String>>,
 }
 
 /// 发现并选出最优 provider，返回 (Agent, Option<provider_id>)。
@@ -127,6 +139,9 @@ impl Daemon {
             }
         }
 
+        // 清理上次可能残留的进度标记
+        let _ = store.kv_delete("evolution_progress");
+
         Ok(Self {
             config,
             router: TokioMutex::new(router),
@@ -140,7 +155,20 @@ impl Daemon {
             heartbeat_interval,
             handled_keys: Mutex::new(handled_keys),
             tick_count: Mutex::new(0),
+            event_tx: None,
         })
+    }
+
+    /// 注入 Tauri 事件发送端（主窗口 setup 后调用）
+    pub fn set_event_tx(&mut self, tx: UnboundedSender<String>) {
+        self.event_tx = Some(tx);
+    }
+
+    /// 通过 channel 发送 Tauri 事件名（接收端在 main.rs 中转发给 AppHandle）
+    fn emit_event(&self, event: &str) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event.to_string());
+        }
     }
 
     pub fn heartbeat_interval_secs(&self) -> u64 {
@@ -180,12 +208,8 @@ impl Daemon {
     ) -> Result<crate::pipeline::EvolutionResult> {
         info!("手动触发记忆进化");
         let stage_labels = [
-            ("evolution_merge", "去重合并"),
-            ("evolution_synth", "特质提炼"),
-            ("evolution_condense", "精简冗长"),
-            ("evolution_link", "记忆关联"),
-            ("evolution_decay", "衰减过期"),
-            ("evolution_promote", "晋升验证"),
+            ("evolution_transform", "合并+提炼+精简"),
+            ("evolution_graph", "关联+衰减+晋升"),
         ];
         // 短暂 lock 拿到 agent clone + store，立即释放（避免和 daemon tick 死锁）
         let (agent, store) = {
@@ -195,36 +219,59 @@ impl Daemon {
         let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
         let total = stage_labels.len();
         let mut summaries = Vec::new();
-        for (i, (name, label)) in stage_labels.iter().enumerate() {
-            let _ = self.store.kv_set("evolution_progress",
-                &format!("{}/{} — [{}] {}", i + 1, total, name, label));
-            let ctx = pipeline.run(
-                &format!("manual_{name}"), &[name.to_string()], &agent, &store,
-            ).await;
-            summaries.push(format!("{label}: {}", ctx.summary()));
-        }
+        // 确保无论成功/失败都清理 progress KV
+        let result = async {
+            for (i, (name, label)) in stage_labels.iter().enumerate() {
+                let _ = self.store.kv_set("evolution_progress",
+                    &format!("{}/{} — [{}] {}", i + 1, total, name, label));
+                let ctx = pipeline.run(
+                    &format!("manual_{name}"), &[name.to_string()], &agent, &store,
+                ).await;
+                summaries.push(format!("{label}: {}", ctx.summary()));
+            }
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        // 无论如何清理进度标记
         let _ = self.store.kv_delete("evolution_progress");
+        result?;
         let summary = summaries.join(" | ");
         info!("手动记忆进化完成: {summary}");
+        self.emit_event(events::MEMORIES);
+        self.emit_event(events::REFRESH);
         Ok(crate::pipeline::EvolutionResult { summary, ..Default::default() })
     }
 
     /// 手动触发人物观察（通过 pipeline 执行 person_observer preset）
     pub async fn trigger_person_observer(&self) -> Result<bool> {
         let ctx = self.run_pipeline_preset("manual_person_observer", "person_observer").await;
-        Ok(!ctx.summary().contains("empty"))
+        let changed = !ctx.summary().contains("empty");
+        if changed {
+            self.emit_event(events::MEMORIES);
+            self.emit_event(events::REFRESH);
+        }
+        Ok(changed)
     }
 
     /// 手动触发战略分析（通过 pipeline 执行 strategist preset）
     pub async fn trigger_strategist(&self) -> Result<bool> {
         let ctx = self.run_pipeline_preset("manual_strategist", "strategist").await;
-        Ok(!ctx.summary().contains("empty"))
+        let changed = !ctx.summary().contains("empty");
+        if changed {
+            self.emit_event(events::MEMORIES);
+            self.emit_event(events::REFRESH);
+        }
+        Ok(changed)
     }
 
-    /// 手动触发记忆连接（通过 pipeline 执行 evolution_link preset）
+    /// 手动触发记忆连接（通过 pipeline 执行 evolution_graph preset）
     pub async fn trigger_memory_linking(&self) -> Result<usize> {
-        let ctx = self.run_pipeline_preset("manual_linking", "evolution_link").await;
-        Ok(ctx.stage_results.len())
+        let ctx = self.run_pipeline_preset("manual_linking", "evolution_graph").await;
+        let linked = ctx.stage_results.len();
+        if linked > 0 {
+            self.emit_event(events::MEMORIES);
+            self.emit_event(events::REFRESH);
+        }
+        Ok(linked)
     }
 
     /// 锁 router 拿到 agent/store clone，构建 pipeline，运行单个 preset，返回 context。
@@ -253,7 +300,11 @@ impl Daemon {
         info!("手动触发全量认知调和");
         let router = self.router.lock().await;
         let invoker = HarnessedAgent::new(router.agent().clone(), router.store_arc(), "reconcile_full");
-        crate::reconciler::reconcile_full(&invoker, router.store()).await
+        let count = crate::reconciler::reconcile_full(&invoker, router.store()).await?;
+        drop(router);
+        self.emit_event(events::MEMORIES);
+        self.emit_event(events::REFRESH);
+        Ok(count)
     }
 
     /// 直接触发指定类型的定时报告（绕过心跳时间窗口检查）
@@ -275,6 +326,8 @@ impl Daemon {
         };
         info!("手动触发报告: {title}");
         self.router.lock().await.route(event).await?;
+        self.emit_event(events::REPORTS);
+        self.emit_event(events::REFRESH);
         // 返回最新生成的报告内容
         if let Ok(Some(report)) = self.store.get_latest_report(report_type) {
             Ok(report.content)
@@ -426,6 +479,11 @@ impl Daemon {
         let deduped = self.filter_new_events(all_events);
         info!("Tick: {} events to process", deduped.len());
 
+        // 只要有新消息就通知前端
+        if !deduped.is_empty() {
+            self.emit_event(events::MESSAGES);
+        }
+
         let mut had_morning_brief = false;
         let mut had_evening_review = false;
         let mut had_weekly_report = false;
@@ -445,15 +503,27 @@ impl Daemon {
             }
         }
 
-        // 晨间任务规划：Morning Brief 后自动提取今日待办
+        // 定时报告路由完成后通知前端
+        if had_morning_brief || had_evening_review || had_weekly_report {
+            self.emit_event(events::REPORTS);
+        }
+
+        // 晨间任务规划：Morning Brief 后自动提取今日待办（每天最多一次）
         if had_morning_brief {
-            match self.router.lock().await.run_task_planner().await {
-                Ok(n) => {
-                    if n > 0 {
-                        info!("Task planner: {n} tasks created from morning brief");
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let already_ran = self.store.kv_get("task_planner_last_date")
+                .ok().flatten().map(|d| d == today).unwrap_or(false);
+            if !already_ran {
+                let _ = self.store.kv_set("task_planner_last_date", &today);
+                match self.router.lock().await.run_task_planner().await {
+                    Ok(n) => {
+                        if n > 0 {
+                            info!("Task planner: {n} tasks created from morning brief");
+                            self.emit_event(events::TASKS);
+                        }
                     }
+                    Err(e) => error!("Task planner failed: {e}"),
                 }
-                Err(e) => error!("Task planner failed: {e}"),
             }
         }
 
@@ -473,23 +543,27 @@ impl Daemon {
             }
         }
 
-        // 认知管线：config 驱动的 stage 执行（替代硬编码链）
-        if had_evening_review || had_weekly_report {
+        // autoDream：三重门控触发进化管线（替代固定的 had_evening_review 触发）
+        if self.should_run_evolution() {
+            // 在运行前记录时间戳（崩溃时不会无限重试）
+            let _ = self.store.kv_set("last_evolution_at", &chrono::Local::now().to_rfc3339());
+            let (agent, store) = {
+                let router = self.router.lock().await;
+                (router.agent().clone(), router.store_arc())
+            };
+            let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
+            let ctx = pipeline.run_evening(&agent, &store).await;
+            info!("Evolution (autoDream): {}", ctx.summary());
+            self.emit_event(events::MEMORIES);
+        }
+
+        // 周报管线：保持原有触发方式
+        if had_weekly_report {
             let router = self.router.lock().await;
-            let pipeline = crate::pipeline::build_pipeline(
-                &self.config.pipeline,
-                &self.store,
-            );
-            let agent = router.agent();
-            let store = router.store_arc();
-            if had_evening_review {
-                let ctx = pipeline.run_evening(agent, &store).await;
-                info!("Evening {}", ctx.summary());
-            }
-            if had_weekly_report {
-                let ctx = pipeline.run_weekly(agent, &store).await;
-                info!("Weekly {}", ctx.summary());
-            }
+            let pipeline = crate::pipeline::build_pipeline(&self.config.pipeline, &self.store);
+            let ctx = pipeline.run_weekly(router.agent(), &router.store_arc()).await;
+            info!("Weekly {}", ctx.summary());
+            self.emit_event(events::MEMORIES);
         }
 
         // 记忆清理：标记过期 working 记忆
@@ -538,6 +612,9 @@ impl Daemon {
                 Err(e) => error!("Staleness check failed: {e}"),
             }
         }
+
+        // tick 结束：通知前端刷新所有数据
+        self.emit_event(events::REFRESH);
 
         Ok(())
     }
@@ -949,5 +1026,45 @@ impl Daemon {
             .flatten()
             .map(|r| r.created_at.starts_with(today))
             .unwrap_or(false)
+    }
+
+    /// autoDream 三重门控：时间 + 数据量 + 安静时段
+    fn should_run_evolution(&self) -> bool {
+        use chrono::Timelike as _;
+
+        // 门控1：时间 — 上次进化距今超过 24h（或从未运行）
+        let last_evolution = self.store.kv_get("last_evolution_at").ok().flatten();
+        if let Some(ref last) = last_evolution {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(last) {
+                let elapsed = chrono::Local::now().signed_duration_since(dt);
+                if elapsed.num_hours() < 24 {
+                    return false;
+                }
+            }
+        }
+
+        // 门控2：数据量 — 自上次进化以来新记忆 > 10 条
+        let last_ts = last_evolution
+            .as_deref()
+            .unwrap_or("2000-01-01T00:00:00+00:00");
+        let new_count = self.store.count_memories_since(last_ts).unwrap_or(0);
+        if new_count < 10 {
+            return false;
+        }
+
+        // 门控3：安静时段 — 非工作高峰期（工作时间外：深夜/凌晨/下班后）
+        let hour = chrono::Local::now().hour();
+        let (work_start, work_end) = {
+            let sched = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                sched.as_ref().map(|s| s.work_start_hour).unwrap_or(8),
+                sched.as_ref().map(|s| s.work_end_hour).unwrap_or(19),
+            )
+        };
+        if hour >= work_start && hour < work_end {
+            return false; // 工作时间内，不打扰
+        }
+
+        true
     }
 }

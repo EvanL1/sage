@@ -795,8 +795,15 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 49;")?;
         }
 
-        // v50: person_aliases 表 — 人物合并后自动重定向
+        // v50: person_aliases 表 + evolution 批量化迁移
         if version < 50 {
+            // 删除旧的 6 个 evolution 预设，新预设由 ensure_presets 重建
+            conn.execute_batch(
+                "DELETE FROM custom_stages WHERE name IN (
+                    'evolution_merge', 'evolution_synth', 'evolution_condense',
+                    'evolution_link', 'evolution_decay', 'evolution_promote'
+                ) AND is_preset = 1;",
+            )?;
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS person_aliases (
                     alias TEXT NOT NULL PRIMARY KEY,
@@ -805,6 +812,15 @@ impl Store {
                 CREATE INDEX IF NOT EXISTS idx_person_aliases_canonical
                     ON person_aliases(canonical);
                 PRAGMA user_version = 50;",
+            )?;
+        }
+
+        // v51: memories 表添加 derivable 列（observer 直接观察可重新推导标记）
+        if version < 51 {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN derivable INTEGER NOT NULL DEFAULT 0;
+                 CREATE INDEX IF NOT EXISTS idx_memories_derivable ON memories(derivable, depth, status);
+                 PRAGMA user_version = 51;",
             )?;
         }
 

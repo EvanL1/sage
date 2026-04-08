@@ -50,7 +50,7 @@ impl Default for PipelineConfig {
             evening: crate::pipeline::default_evening_stages(),
             weekly: crate::pipeline::default_weekly_stages(),
             stages: std::collections::HashMap::new(),
-            edges: Vec::new(),
+            edges: crate::pipeline::default_evening_edges(),
         }
     }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useLang } from "../LangContext";
@@ -109,6 +109,7 @@ function Settings() {
   const [providersLoading, setProvidersLoading] = useState(true);
   const [reconcileRunning, setReconcileRunning] = useState(false);
   const [evolutionProgress, setEvolutionProgress] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     invoke<UserProfile | null>("get_profile")
@@ -149,22 +150,28 @@ function Settings() {
 
   }, []);
 
-  // 进入页面时检查 evolution 是否在跑，如果是则恢复轮询
+  // 进入页面时检查 evolution 是否在跑，如果是则恢复轮询（30s 无变化视为残留并清除）
   useEffect(() => {
-    let poll: ReturnType<typeof setInterval> | null = null;
+    const clearPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
     invoke<string>("get_evolution_progress").then((p) => {
       if (p) {
         setEvolutionProgress(p);
-        poll = setInterval(async () => {
+        let lastValue = p;
+        let staleCount = 0;
+        clearPoll();
+        pollRef.current = setInterval(async () => {
           try {
             const v = await invoke<string>("get_evolution_progress");
-            setEvolutionProgress(v || "");
-            if (!v && poll) { clearInterval(poll); poll = null; }
-          } catch { if (poll) { clearInterval(poll); poll = null; } setEvolutionProgress(""); }
+            if (!v) { clearPoll(); setEvolutionProgress(""); return; }
+            if (v === lastValue) { staleCount++; } else { staleCount = 0; lastValue = v; }
+            setEvolutionProgress(v);
+            // 30s (15 × 2s) 无变化 → 视为残留，清除
+            if (staleCount >= 15) { clearPoll(); setEvolutionProgress(""); }
+          } catch { clearPoll(); setEvolutionProgress(""); }
         }, 2000);
       }
     }).catch(() => {});
-    return () => { if (poll) clearInterval(poll); };
+    return () => clearPoll();
   }, []);
 
   const showToast = (type: "success" | "error", msg: string) => {
@@ -598,15 +605,35 @@ function Settings() {
                   disabled={!!evolutionProgress}
                   onClick={async () => {
                     try {
+                      // 清除可能存在的旧轮询
+                      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                      setEvolutionProgress("启动中…");
                       const msg = await invoke<string>("trigger_memory_evolution");
                       showToast("success", msg);
-                      const poll = setInterval(async () => {
+                      let lastVal = "", stale = 0, done = false;
+                      const check = async () => {
                         try {
                           const p = await invoke<string>("get_evolution_progress");
-                          setEvolutionProgress(p || "");
-                          if (!p) { clearInterval(poll); showToast("success", t("settings.evolutionNotif")); }
-                        } catch { clearInterval(poll); setEvolutionProgress(""); }
-                      }, 2000);
+                          if (!p) {
+                            if (done) return; // 避免重复 toast
+                            done = true;
+                            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                            setEvolutionProgress(""); showToast("success", t("settings.evolutionNotif")); return;
+                          }
+                          setEvolutionProgress(p);
+                          if (p === lastVal) { stale++; } else { stale = 0; lastVal = p; }
+                          if (stale >= 30) {
+                            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                            setEvolutionProgress("");
+                          }
+                        } catch {
+                          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                          setEvolutionProgress("");
+                        }
+                      };
+                      // 首次 500ms 后检查，之后每 1s 轮询（比之前 2s 更及时）
+                      pollRef.current = setInterval(check, 1000);
+                      setTimeout(check, 500);
                     } catch (err) {
                       showToast("error", String(err));
                     }

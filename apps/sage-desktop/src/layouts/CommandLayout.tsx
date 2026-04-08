@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeDeduped } from "../utils/invokeCache";
 import { GridLayout, type LayoutItem, type Layout } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { DashData, TYPE_COLORS, TYPE_LABEL, reportLabel, preview } from "./types";
@@ -8,6 +9,7 @@ import { loadPinned, togglePin, isPinned as checkPinned, onPinChange, unpinItem,
 import { useLang } from "../LangContext";
 import InteractiveReport from "../components/InteractiveReport";
 import CompletionDialog from "../components/CompletionDialog";
+import { useDashboard } from "../contexts/DashboardContext";
 
 /* ═══ Widget Registry ═══ */
 
@@ -147,12 +149,12 @@ function MemoriesWidget({ data }: { data: DashData }) {
   </div>);
 }
 
-/* ─── Self-fetching widgets (call invoke() directly) ─── */
+/* ─── Widgets that read from DashboardContext (useDashboard) ─── */
 
 function QuestionWidget() {
   const { t } = useLang();
-  const [q, setQ] = useState<{ response: string } | null>(null);
-  useEffect(() => { invoke<{ response: string } | null>("get_daily_question").then(setQ).catch(() => {}); }, []);
+  const { state } = useDashboard();
+  const q = state.question;
   return (<div className="cmd-card-body">
     {q ? <div className="cmd-question-text">{q.response}</div>
        : <span className="cmd-empty">{t("widget.noQuestion")}</span>}
@@ -161,12 +163,8 @@ function QuestionWidget() {
 
 function ConnectionsWidget() {
   const { t } = useLang();
-  const [status, setStatus] = useState<Record<string, { status: string; label: string }>>({});
-  useEffect(() => {
-    invoke<Record<string, { status: string; label: string }>>("get_connections_status")
-      .then(setStatus).catch(() => {});
-  }, []);
-  const entries = Object.entries(status);
+  const { state } = useDashboard();
+  const entries = Object.entries(state.connections);
   return (<div className="cmd-card-body">
     {entries.length > 0 ? entries.map(([key, val]) => (
       <div key={key} className="cmd-conn-row">
@@ -180,12 +178,11 @@ function ConnectionsWidget() {
 
 function MessagesWidget() {
   const { t } = useLang();
-  const [msgs, setMsgs] = useState<{ sender?: string; channel?: string; content?: string; created_at?: string; direction?: string }[]>([]);
+  const { state } = useDashboard();
+  const msgs = state.messages;
   const [userName, setUserName] = useState("Me");
   useEffect(() => {
-    invoke<{ sender?: string; channel?: string; content?: string; created_at?: string; direction?: string }[]>("get_messages", { limit: 8 })
-      .then(setMsgs).catch(() => {});
-    invoke<{ identity?: { name?: string } } | null>("get_profile")
+    invokeDeduped<{ identity?: { name?: string } } | null>("get_profile")
       .then(p => { if (p?.identity?.name) setUserName(p.identity.name); }).catch(() => {});
   }, []);
   return (<div className="cmd-card-body">
@@ -203,14 +200,15 @@ function MessagesWidget() {
 }
 
 function PeopleWidget({ data }: { data: DashData }) {
-  const [people, setPeople] = useState<string[]>([]);
-  useEffect(() => {
-    invoke<string[]>("get_memories").then(mems => {
-      const persons = new Set<string>();
-      (mems as unknown as { about_person?: string }[]).forEach(m => { if (m.about_person) persons.add(m.about_person); });
-      setPeople([...persons].slice(0, 12));
-    }).catch(() => {});
-  }, []);
+  const { state } = useDashboard();
+  // Derive person names from items already loaded in context (memories with about_person)
+  const people = useMemo(() => {
+    const persons = new Set<string>();
+    state.items.forEach(m => {
+      if (m.about_person) persons.add(m.about_person);
+    });
+    return [...persons].slice(0, 12);
+  }, [state.items]);
   return (<div className="cmd-card-body">
     <div className="cmd-tags">
       {people.map(p => <span key={p} className="cmd-tag cmd-tag-people">{p}</span>)}
@@ -222,33 +220,18 @@ function PeopleWidget({ data }: { data: DashData }) {
 /* Compact Tasks widget — quick add + top open tasks + completion dialog */
 
 
-interface TaskSignalLight {
-  id: number;
-  signalType: string;
-  title: string;
-}
-
 function TasksWidget() {
   const { t } = useLang();
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [signals, setSignals] = useState<TaskSignalLight[]>([]);
+  const { state, refresh } = useDashboard();
+  const tasks = state.tasks;
+  const signals = state.taskSignals;
   const [input, setInput] = useState("");
   const [completing, setCompleting] = useState<TaskItem | null>(null);
-
-  const load = useCallback(() => {
-    invoke<TaskItem[]>("list_tasks", { status: "open", limit: 8 }).then(setTasks).catch(e => console.error("list_tasks widget:", e));
-  }, []);
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    invoke<TaskSignalLight[]>("get_task_signals")
-      .then(s => setSignals(Array.isArray(s) ? s : []))
-      .catch(() => {});
-  }, []);
 
   const addTask = () => {
     const text = input.trim(); if (!text) return;
     invoke("create_task", { content: text, source: null, sourceId: null, priority: null, dueDate: null })
-      .then(() => { setInput(""); load(); }).catch(e => console.error("create_task:", e));
+      .then(() => { setInput(""); refresh("tasks"); }).catch(e => console.error("create_task:", e));
   };
 
   return (<div className="cmd-card-body">
@@ -272,7 +255,7 @@ function TasksWidget() {
     )}
     <a href="#/tasks" className="cmd-task-viewall">{t("widget.viewAllTasks")}</a>
 
-    {completing && <CompletionDialog task={completing} onClose={() => setCompleting(null)} onRefresh={load} />}
+    {completing && <CompletionDialog task={completing} onClose={() => setCompleting(null)} onRefresh={() => refresh("tasks")} />}
   </div>);
 }
 

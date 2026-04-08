@@ -4,6 +4,7 @@ export interface DisplayItem {
   content: string;
   category: string;
   meta?: string;
+  about_person?: string;
 }
 
 export interface DashStats {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DashData, TYPE_LABEL, preview } from "./types";
@@ -39,7 +39,18 @@ export default function NebulaLayout({ data }: { data: DashData }) {
   const nextId = useRef(0);
   const idx = useRef(0);
 
-  const allItems = [...data.curated, ...data.items];
+  const allItems = useMemo(() => {
+    const raw = [...data.curated, ...data.items].filter(
+      i => i.category !== "report" && i.category !== "question"
+    );
+    const seen = new Set<string | number>();
+    return raw.filter(item => {
+      const key = item.id ?? item.ref_id ?? item.content.slice(0, 50);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [data.curated, data.items]);
 
   // Init particles with theme colors
   useEffect(() => {

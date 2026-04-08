@@ -164,7 +164,7 @@ impl Store {
         }
     }
 
-    /// 从行中构建 Memory（SELECT 列顺序: id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note）
+    /// 从行中构建 Memory（SELECT 列顺序: id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable）
     /// embedding 字段默认 None（普通查询不 SELECT embedding，节省带宽）
     pub(super) fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {
         Ok(Memory {
@@ -186,6 +186,7 @@ impl Store {
             embedding: None,
             derived_from: row.get("derived_from").ok(),
             evolution_note: row.get("evolution_note").ok(),
+            derivable: row.get("derivable").unwrap_or(0),
         })
     }
 
@@ -196,7 +197,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<sage_types::Memory>> {
         let sql = format!(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories WHERE {where_clause}
              ORDER BY confidence DESC, updated_at DESC LIMIT ?1"
         );
@@ -313,6 +314,20 @@ impl Store {
         visibility: &str,
         about_person: Option<&str>,
     ) -> Result<i64> {
+        self.save_memory_inner_with_derivable(category, content, source, confidence, visibility, about_person, 0)
+    }
+
+    /// 核心保存逻辑（带 derivable 标记）：归一化 → 相似去重 → INSERT
+    fn save_memory_inner_with_derivable(
+        &self,
+        category: &str,
+        content: &str,
+        source: &str,
+        confidence: f64,
+        visibility: &str,
+        about_person: Option<&str>,
+        derivable: i64,
+    ) -> Result<i64> {
         let content = crate::time_normalizer::normalize_time_refs(content);
         let content = content.as_str();
 
@@ -349,20 +364,35 @@ impl Store {
         let now = chrono::Local::now().to_rfc3339();
         if let Some(person) = about_person {
             conn.execute(
-                "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, about_person, depth, valid_until, validation_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?9, NULL, 0, ?10, ?10)",
-                rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, person, depth, now],
+                "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, about_person, depth, valid_until, validation_count, derivable, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, ?9, NULL, 0, ?10, ?11, ?11)",
+                rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, person, depth, derivable, now],
             )
             .context("保存 memory（关于某人）失败")?;
         } else {
             conn.execute(
-                "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, depth, valid_until, validation_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, NULL, 0, ?9, ?9)",
-                rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, depth, now],
+                "INSERT INTO memories (category, content, source, confidence, tier, status, expires_at, visibility, depth, valid_until, validation_count, derivable, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7, ?8, NULL, 0, ?9, ?10, ?10)",
+                rusqlite::params![category, content, source, confidence, tier, expires_at, visibility, depth, derivable, now],
             )
             .context("保存 memory 失败")?;
         }
         Ok(conn.last_insert_rowid())
+    }
+
+    /// 保存带可见性的记忆（observer 阶段时 derivable=1，表示可从原始数据重新推导）
+    pub fn save_memory_with_visibility_derivable(
+        &self,
+        category: &str,
+        content: &str,
+        source: &str,
+        confidence: f64,
+        visibility: &str,
+        derivable: bool,
+    ) -> Result<i64> {
+        self.save_memory_inner_with_derivable(
+            category, content, source, confidence, visibility, None, if derivable { 1 } else { 0 },
+        )
     }
 
     /// 保存带可见性的记忆
@@ -571,7 +601,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note FROM memories WHERE status = 'active' ORDER BY confidence DESC, updated_at DESC",
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable FROM memories WHERE status = 'active' ORDER BY confidence DESC, updated_at DESC",
         ).context("准备 load_memories 查询失败")?;
         let rows = stmt.query_map([], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -589,7 +619,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories
              WHERE content LIKE ?1 OR category LIKE ?1
              ORDER BY confidence DESC
@@ -666,7 +696,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories
              WHERE visibility = 'public' AND (content LIKE ?1 OR category LIKE ?1)
              ORDER BY confidence DESC
@@ -686,7 +716,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories WHERE visibility = ?1
              ORDER BY confidence DESC, updated_at DESC",
         ).context("准备 get_memories_by_visibility 查询失败")?;
@@ -731,7 +761,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories WHERE about_person = ?1
              ORDER BY confidence DESC, updated_at DESC",
         ).context("准备 get_memories_about_person 查询失败")?;
@@ -823,7 +853,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note FROM memories WHERE created_at >= ?1 ORDER BY created_at DESC",
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable FROM memories WHERE created_at >= ?1 ORDER BY created_at DESC",
         ).context("准备 get_memories_since 查询失败")?;
         let rows = stmt.query_map(rusqlite::params![since], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -836,7 +866,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note FROM memories WHERE category = 'session' AND created_at >= ?1 ORDER BY created_at DESC",
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable FROM memories WHERE category = 'session' AND created_at >= ?1 ORDER BY created_at DESC",
         ).context("准备 get_session_summaries_since 查询失败")?;
         let rows = stmt.query_map(rusqlite::params![since], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -862,7 +892,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note \
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
              FROM memories WHERE category = ?1 AND status = 'active' ORDER BY created_at DESC",
         ).context("准备 get_memories_by_category 查询失败")?;
         let rows = stmt.query_map(rusqlite::params![category], Self::row_to_memory)?;
@@ -876,7 +906,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories WHERE status = 'active'
              ORDER BY confidence DESC, updated_at DESC",
         ).context("准备 load_active_memories 查询失败")?;
@@ -912,7 +942,7 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories WHERE status = 'active' AND category IN ({placeholders})
              ORDER BY confidence DESC, updated_at DESC"
         );
@@ -1059,11 +1089,75 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories WHERE depth = ?1 AND status = 'active'
              ORDER BY confidence DESC, updated_at DESC",
         ).context("准备 load_memories_by_depth 查询失败")?;
         let rows = stmt.query_map(rusqlite::params![depth], Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// 按 depth + 关键词搜索记忆（主题感知加载）
+    ///
+    /// 先按关键词过滤，不足时用最近记忆补齐（不超过 limit）。
+    pub fn search_memories_by_depth(&self, query: &str, depth: &str, limit: usize) -> Result<Vec<Memory>> {
+        // 从 query 中提取 2 字符以上的词（最多取 5 个关键词）
+        let keywords: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric() && !matches!(c, '\u{4e00}'..='\u{9fff}'))
+            .filter(|w| w.chars().count() >= 2)
+            .take(5)
+            .map(|w| w.replace('\'', "''"))
+            .collect();
+
+        if keywords.is_empty() {
+            return self.load_memories_by_depth_limited(depth, limit);
+        }
+
+        // 构建 LIKE 条件（逐词 OR）
+        let where_clause = keywords
+            .iter()
+            .map(|k| format!("content LIKE '%{k}%'"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+
+        let sql = format!(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+             about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
+             FROM memories WHERE depth = ?1 AND status = 'active' AND ({where_clause}) \
+             ORDER BY confidence DESC, updated_at DESC LIMIT ?2"
+        );
+
+        let mut results: Vec<Memory> = {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+            let mut stmt = conn.prepare(&sql).context("准备 search_memories_by_depth 查询失败")?;
+            let rows = stmt.query_map(rusqlite::params![depth, limit as i64], Self::row_to_memory)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        // 关键词命中不足时，用按时间倒序的记忆补齐
+        if results.len() < limit {
+            let remaining = limit - results.len();
+            let existing_ids: std::collections::HashSet<i64> = results.iter().map(|m| m.id).collect();
+            let extra = self.load_memories_by_depth_limited(depth, remaining + existing_ids.len())?;
+            for m in extra {
+                if !existing_ids.contains(&m.id) && results.len() < limit {
+                    results.push(m);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// 按 depth 加载有限数量的活跃记忆（内部辅助）
+    fn load_memories_by_depth_limited(&self, depth: &str, limit: usize) -> Result<Vec<Memory>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+             about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
+             FROM memories WHERE depth = ?1 AND status = 'active' \
+             ORDER BY confidence DESC, updated_at DESC LIMIT ?2",
+        ).context("准备 load_memories_by_depth_limited 查询失败")?;
+        let rows = stmt.query_map(rusqlite::params![depth, limit as i64], Self::row_to_memory)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -1081,6 +1175,19 @@ impl Store {
         Ok(count)
     }
 
+    /// 统计自指定时间戳以来新增的活跃记忆数（autoDream 数据门控用）
+    pub fn count_memories_since(&self, since: &str) -> Result<i64> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE created_at >= ?1 AND status = 'active'",
+            rusqlite::params![since],
+            |row| row.get(0),
+        ).map_err(Into::into)
+    }
+
     /// 记忆驱逐：当 active 记忆超过 cap 时，按 weighted_score 淘汰末尾批次。
     /// 只淘汰 tier='working' AND depth IN ('episodic','semantic')，不碰 core/procedural/axiom。
     pub fn evict_low_quality_memories(&self, cap: usize, evict_count: usize) -> Result<usize> {
@@ -1094,7 +1201,7 @@ impl Store {
                 .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
             let mut stmt = conn.prepare(
                 "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
-                 about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note \
+                 about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
                  FROM memories \
                  WHERE tier = 'working' AND depth IN ('episodic','semantic') AND status = 'active'",
             ).context("准备驱逐查询失败")?;
@@ -1238,7 +1345,7 @@ impl Store {
             .join(", ");
         let sql = format!(
             "SELECT id, category, content, source, confidence, visibility, created_at, updated_at,
-                    about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note
+                    about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable
              FROM memories WHERE id IN ({placeholders})"
         );
         let mut mem_stmt = conn.prepare(&sql).context("准备向量搜索结果查询失败")?;
@@ -1331,7 +1438,7 @@ impl Store {
         let mem = conn
             .query_row(
                 "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
-                 about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note \
+                 about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
                  FROM memories WHERE id = ?1",
                 rusqlite::params![id],
                 Self::row_to_memory,

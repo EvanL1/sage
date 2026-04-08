@@ -813,7 +813,7 @@ function MessageFlow() {
                         >
                           {msg.source}
                         </span>}
-                        {msg.message_type && msg.message_type !== "text" && msg.message_type !== "unknown" && (
+                        {msg.message_type && msg.message_type !== "text" && msg.message_type !== "unknown" && msg.message_type !== msg.source && (
                           <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: msg.message_type === "group" ? "#10b981" : msg.message_type === "channel" ? "#6366f1" : "#8b5cf6", color: "#fff", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px" }}>
                             {msg.message_type === "group" ? t("msg.group") : msg.message_type === "channel" ? t("msg.channel") : msg.message_type}
                           </span>

@@ -31,6 +31,21 @@ pub async fn trigger_report(
             "未知报告类型: {report_type}，支持: morning/evening/weekly/week_start"
         ));
     }
+    // 防抖：5 分钟内已生成过同类报告则直接返回
+    if let Ok(Some(existing)) = state.store.get_latest_report(&report_type) {
+        if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&existing.created_at)
+            .or_else(|_| {
+                chrono::NaiveDateTime::parse_from_str(&existing.created_at, "%Y-%m-%d %H:%M:%S")
+                    .map(|dt| dt.and_utc().fixed_offset())
+            })
+        {
+            let age_secs = chrono::Local::now().signed_duration_since(created).num_seconds();
+            if age_secs < 300 {
+                return Ok("报告刚刚已生成".into());
+            }
+        }
+    }
+
     let daemon = state.daemon.clone();
     let rt = report_type.clone();
     // 同步等待报告生成，直接把结果/错误返回前端

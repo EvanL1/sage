@@ -28,8 +28,9 @@ impl Store {
     ///
     /// 布局：axiom（开头高注意力）→ procedural → semantic → episodic（结尾高注意力）
     ///
-    /// 如果 depth 字段全为 episodic（旧数据未迁移），自动回退到 tier-based 查询。
-    pub fn get_memory_context(&self, max_bytes: usize) -> Result<String> {
+    /// - `topic_hint`：当前事件的主题关键词，用于 semantic/episodic 层按相关性加载（而非纯时间）
+    /// - 如果 depth 字段全为 episodic（旧数据未迁移），自动回退到 tier-based 查询。
+    pub fn get_memory_context(&self, max_bytes: usize, topic_hint: Option<&str>) -> Result<String> {
         let conn = self.conn()?;
 
         // 检查是否有非 episodic 的 depth（用于 fallback 判断）
@@ -47,7 +48,7 @@ impl Store {
 
         let mut sections = Vec::new();
 
-        // 1. 信念层（axiom）— 开头，高注意力区
+        // 1. 信念层（axiom）— 开头，高注意力区；始终按置信度加载，与主题无关
         let axiom_items = Self::query_memories_by(
             &conn,
             "depth = 'axiom' AND status = 'active'",
@@ -58,7 +59,7 @@ impl Store {
             sections.push(format!("## 信念（始终有效）\n{lines}"));
         }
 
-        // 2. 判断模式（procedural）
+        // 2. 判断模式（procedural）— 始终加载，与主题无关
         let proc_items = Self::query_memories_by(
             &conn,
             "depth = 'procedural' AND status = 'active'",
@@ -69,27 +70,45 @@ impl Store {
             sections.push(format!("## 判断模式\n{lines}"));
         }
 
-        // 3. 行为模式（semantic）
-        let sem_items = Self::query_memories_by(
-            &conn,
-            "depth = 'semantic' AND status = 'active'",
-            10,
-        )?;
+        // 3. 行为模式（semantic）— 有 topic_hint 时按相关性加载，否则按时间
+        let sem_items = if let Some(hint) = topic_hint {
+            self.search_memories_by_depth(hint, "semantic", 10)?
+        } else {
+            Self::query_memories_by(&conn, "depth = 'semantic' AND status = 'active'", 10)?
+        };
         if !sem_items.is_empty() {
+            let section_label = if topic_hint.is_some() { "## 相关模式" } else { "## 行为模式" };
             let lines = format_memory_lines(&sem_items);
-            sections.push(format!("## 行为模式\n{lines}"));
+            sections.push(format!("{section_label}\n{lines}"));
         }
 
-        // 4. 近期事件（episodic）— 结尾，高注意力区；过滤已过期
-        let epi_items = {
-            let sql = "SELECT id, category, content, source, confidence, visibility,                        created_at, updated_at, about_person, last_accessed_at, depth,                        valid_until, validation_count                        FROM memories                        WHERE depth = 'episodic' AND status = 'active'                          AND (valid_until IS NULL OR valid_until > datetime('now'))                        ORDER BY updated_at DESC LIMIT 5";
+        // 4. 近期事件（episodic）— 有 topic_hint 时按相关性加载；过滤已过期
+        let epi_items = if let Some(hint) = topic_hint {
+            self.search_memories_by_depth(hint, "episodic", 5)?
+                .into_iter()
+                .filter(|m| {
+                    m.valid_until.as_deref().map_or(true, |vu| {
+                        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                        vu >= now.as_str()
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let sql = "SELECT id, category, content, source, confidence, visibility, \
+                       created_at, updated_at, about_person, last_accessed_at, depth, \
+                       valid_until, validation_count, derived_from, evolution_note, derivable \
+                       FROM memories \
+                       WHERE depth = 'episodic' AND status = 'active' \
+                         AND (valid_until IS NULL OR valid_until > datetime('now')) \
+                       ORDER BY updated_at DESC LIMIT 5";
             let mut stmt = conn.prepare(sql).context("准备 episodic 查询失败")?;
             let rows = stmt.query_map([], Self::row_to_memory)?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
         if !epi_items.is_empty() {
+            let section_label = if topic_hint.is_some() { "## 相关事件" } else { "## 近期事件" };
             let lines = format_memory_lines(&epi_items);
-            sections.push(format!("## 近期事件\n{lines}"));
+            sections.push(format!("{section_label}\n{lines}"));
         }
 
         let full = sections.join("\n\n");

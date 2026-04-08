@@ -11,7 +11,7 @@ use sage_core::onboarding::OnboardingState;
 use sage_core::plugin::PluginRunner;
 use sage_core::store::Store;
 use sage_core::Daemon;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::task::AbortHandle;
 
 /// Tauri 应用共享状态
@@ -61,7 +61,10 @@ fn main() {
     let config = Config::load_or_default(&config_path);
 
     let plugin_runner = Arc::new(PluginRunner::new(config.plugins.clone()));
-    let daemon = Arc::new(Daemon::with_store(config, Arc::clone(&store)).expect("Daemon 创建失败"));
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let mut daemon_init = Daemon::with_store(config, Arc::clone(&store)).expect("Daemon 创建失败");
+    daemon_init.set_event_tx(event_tx);
+    let daemon = Arc::new(daemon_init);
 
     let background = std::env::args().any(|a| a == "--background");
     let daemon_for_spawn = daemon.clone();
@@ -227,6 +230,14 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = daemon_for_spawn.run().await {
                     tracing::error!("Daemon 事件循环错误: {e}");
+                }
+            });
+
+            // 转发 daemon 数据变更事件到前端（接收端无限循环直到 sender 关闭）
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(event_name) = event_rx.recv().await {
+                    let _ = app_handle.emit(&event_name, ());
                 }
             });
 

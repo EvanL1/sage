@@ -437,6 +437,9 @@ pub struct Memory {
     /// 演化备注：为什么产生这条变更
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolution_note: Option<String>,
+    /// 可重新推导标记：1 = 该记忆是原始观察的直接重述，evolution 优先衰减
+    #[serde(default)]
+    pub derivable: i64,
 }
 
 fn default_visibility() -> String {

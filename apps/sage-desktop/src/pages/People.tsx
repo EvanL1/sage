@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLang } from "../LangContext";
 import { PersonMemory } from "../types";
@@ -14,8 +14,11 @@ function People() {
   // 合并相关
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
+  // mergeTarget = last-clicked person; that person is kept; others are merged into it
+  const [mergeTarget, setMergeTarget] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
   const [mergeMsg, setMergeMsg] = useState<string | null>(null);
+  const mergeMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshPersons = useCallback(async () => {
     const list = await invoke<string[]>("get_known_persons");
@@ -62,30 +65,43 @@ function People() {
   const toggleMergeSelect = (name: string) => {
     setMergeSelection((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      if (next.has(name)) {
+        next.delete(name);
+        // If we deselect the current target, pick any remaining as new target
+        setMergeTarget((t) => t === name ? (next.size > 0 ? Array.from(next)[next.size - 1] : null) : t);
+      } else {
+        next.add(name);
+        // Last clicked becomes the merge target (the person that is kept)
+        setMergeTarget(name);
+      }
       return next;
     });
   };
 
   const handleMerge = async () => {
     const names = Array.from(mergeSelection);
-    if (names.length < 2) return;
-    // 第一个选中的作为 target
-    const target = names[0];
+    if (names.length < 2 || !mergeTarget) return;
+    // mergeTarget (last-clicked) is kept; all others are merged into it
+    const target = mergeTarget;
     setMerging(true);
     setMergeMsg(null);
     try {
       let totalMoved = 0;
-      for (let i = 1; i < names.length; i++) {
-        const moved = await invoke<number>("merge_persons", { target, source: names[i] });
+      for (const name of names) {
+        if (name === target) continue;
+        const moved = await invoke<number>("merge_persons", { target, source: name });
         totalMoved += moved;
       }
-      setMergeMsg(t("people.mergeSuccess").replace("{0}", String(totalMoved)));
+      const msg = t("people.mergeSuccess").replace("{0}", String(totalMoved));
+      setMergeMsg(msg);
+      // Auto-dismiss after 3 seconds
+      if (mergeMsgTimerRef.current) clearTimeout(mergeMsgTimerRef.current);
+      mergeMsgTimerRef.current = setTimeout(() => setMergeMsg(null), 3000);
       const list = await refreshPersons();
       setSelected(target);
       setMergeMode(false);
       setMergeSelection(new Set());
+      setMergeTarget(null);
       if (list.includes(target)) loadMemories(target);
     } catch (e) {
       setError(String(e));
@@ -94,9 +110,15 @@ function People() {
     }
   };
 
+  // Cleanup auto-dismiss timer on unmount
+  useEffect(() => {
+    return () => { if (mergeMsgTimerRef.current) clearTimeout(mergeMsgTimerRef.current); };
+  }, []);
+
   const exitMergeMode = () => {
     setMergeMode(false);
     setMergeSelection(new Set());
+    setMergeTarget(null);
     setMergeMsg(null);
   };
 
@@ -144,7 +166,7 @@ function People() {
     return acc;
   }, {});
 
-  const sortedNames = Array.from(mergeSelection);
+  const selectedNames = Array.from(mergeSelection);
 
   return (
     <div style={{ padding: 24 }}>
@@ -167,7 +189,7 @@ function People() {
                 opacity: merging ? 0.6 : 1,
               }}>
                 {mergeSelection.size >= 2
-                  ? `${t("people.mergeConfirm")} "${sortedNames[0]}"`
+                  ? `${t("people.mergeConfirm")} "${mergeTarget ?? selectedNames[0]}"`
                   : t("people.merge")}
               </button>
             </>
@@ -196,9 +218,9 @@ function People() {
           color: "var(--accent-text)",
         }}>
           {t("people.mergeTip")}
-          {sortedNames.length >= 2 && (
+          {selectedNames.length >= 2 && mergeTarget && (
             <span style={{ marginLeft: 8, fontWeight: 600 }}>
-              {sortedNames.slice(1).join(", ")} → {sortedNames[0]}
+              {selectedNames.filter(n => n !== mergeTarget).join(", ")} → {mergeTarget}
             </span>
           )}
         </div>

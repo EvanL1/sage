@@ -97,20 +97,27 @@ impl Router {
             let preview: String = report.content.chars().take(500).collect();
             context.push_str(&format!("## Week Start\n{}\n\n", preview));
         }
-        // 已有 open tasks（避免重复）
-        if let Ok(existing) = self.store.list_tasks(Some("open"), 20) {
-            if !existing.is_empty() {
-                context.push_str("## Existing open tasks (DO NOT duplicate)\n");
-                for (_, content, _, _, _, _, _, _, _, _, _) in &existing {
-                    context.push_str(&format!("- {}\n", content));
-                }
-                context.push('\n');
+
+        // 已有 open tasks — 带 action_key 提示，帮助 LLM 去重
+        let existing = self.store.list_tasks(Some("open"), 20).unwrap_or_default();
+        if !existing.is_empty() {
+            context.push_str("## Existing open tasks (DO NOT duplicate these action_keys)\n");
+            for (_, content, _, priority, _, _, _, _, _, _, _) in &existing {
+                let key = derive_action_key(content);
+                context.push_str(&format!("- [action_key={}] [{}] {}\n", key, priority, content));
             }
+            context.push('\n');
         }
 
         if context.is_empty() {
             return Ok(0);
         }
+
+        // 已有 action_keys（用于 Rust 侧精确去重）
+        let existing_keys: Vec<String> = existing
+            .iter()
+            .map(|(_, content, _, _, _, _, _, _, _, _, _)| derive_action_key(content))
+            .collect();
 
         let lang = self.store.prompt_lang();
         let system = crate::prompts::cmd_task_extraction_system(&lang, &today);
@@ -123,10 +130,23 @@ impl Router {
         let mut count = 0;
         for t in &tasks {
             let content = t["content"].as_str().unwrap_or("").trim();
+            let action_key = t["action_key"].as_str().unwrap_or("").trim();
             if content.is_empty() {
                 continue;
             }
-            // 通过 ACTION 约束系统写入（LLM 生成内容走统一管控层）
+
+            // action_key 去重：与已有任务精确比对
+            if !action_key.is_empty() {
+                let dominated = existing_keys
+                    .iter()
+                    .any(|k| normalize_action_key(k) == normalize_action_key(action_key));
+                if dominated {
+                    tracing::info!("Task planner: skip duplicate action_key '{action_key}'");
+                    continue;
+                }
+            }
+
+            // 通过 ACTION 约束系统写入（LLM 生成内容走统一管控层，含 text_similarity 去重）
             let priority = t["priority"].as_str().unwrap_or("P1");
             let due = t["due_date"].as_str().or(Some(today.as_str()));
             let due_part = due.map(|d| format!(" | due:{d}")).unwrap_or_default();
@@ -148,7 +168,9 @@ impl Router {
     }
 
     /// 构建完整 system prompt = SOP + 记忆上下文（从 SQLite memories 表读取）
-    fn full_system_prompt(&self) -> String {
+    ///
+    /// `topic_hint` 用于 semantic/episodic 层按相关性加载（传 None 则按时间）
+    fn full_system_prompt(&self, topic_hint: Option<&str>) -> String {
         let lang = self.store.prompt_lang();
         let (guideline_header, guideline_body, memory_header) = match lang.as_str() {
             "en" => (
@@ -166,7 +188,7 @@ impl Router {
             "{}\n\n---\n\n{guideline_header}\n{guideline_body}",
             self.sop_text
         );
-        let ctx = self.store.get_memory_context(2000).unwrap_or_default();
+        let ctx = self.store.get_memory_context(2000, topic_hint).unwrap_or_default();
         if !ctx.is_empty() {
             format!("{base}\n\n{memory_header}\n{ctx}")
         } else {
@@ -175,7 +197,8 @@ impl Router {
     }
 
     async fn handle_scheduled(&self, event: Event) -> Result<()> {
-        let system = self.full_system_prompt();
+        let topic_hint = event.title.clone();
+        let system = self.full_system_prompt(Some(&topic_hint));
 
         // 确定报告类型，收集上下文
         let report_type = match event.title.as_str() {
@@ -289,7 +312,8 @@ impl Router {
     }
 
     async fn handle_immediate(&self, event: Event) -> Result<()> {
-        let system = self.full_system_prompt();
+        let topic_hint = format!("{} {}", event.title, event.body.chars().take(100).collect::<String>());
+        let system = self.full_system_prompt(Some(&topic_hint));
         let lang = self.store.prompt_lang();
         let prompt = build_urgent_prompt(&lang, &event.title, &event.body);
 
@@ -492,11 +516,230 @@ fn build_urgent_prompt(lang: &str, title: &str, body: &str) -> String {
     }
 }
 
+/// 从任务内容派生一个粗粒度 action_key，格式 "verb:entity:person"。
+/// 用于 Rust 侧对 LLM 已有任务进行去重提示，不要求完美，LLM 做主力，这里是安全网。
+fn derive_action_key(content: &str) -> String {
+    let content_lower = content.to_lowercase();
+
+    // 常见动词前缀（中英文），按优先级顺序匹配
+    let verb_prefixes: &[(&str, &str)] = &[
+        ("reply", "reply"), ("respond", "reply"), ("回复", "reply"), ("答复", "reply"),
+        ("send", "send"), ("发送", "send"), ("发邮件", "send"), ("发消息", "send"), ("发", "send"),
+        ("confirm", "confirm"), ("确认", "confirm"),
+        ("review", "review"), ("审查", "review"), ("审阅", "review"), ("review", "review"),
+        ("fix", "fix"), ("修复", "fix"), ("修", "fix"),
+        ("call", "call"), ("打电话", "call"), ("致电", "call"),
+        ("schedule", "schedule"), ("安排", "schedule"), ("预约", "schedule"),
+        ("check", "check"), ("检查", "check"), ("查看", "check"), ("确认", "check"),
+        ("update", "update"), ("更新", "update"),
+        ("complete", "complete"), ("完成", "complete"),
+        ("submit", "submit"), ("提交", "submit"),
+        ("run", "run"), ("运行", "run"), ("执行", "run"),
+        ("test", "test"), ("测试", "test"),
+        ("write", "write"), ("写", "write"), ("撰写", "write"), ("起草", "write"),
+        ("read", "read"), ("阅读", "read"), ("读", "read"),
+        ("meet", "meet"), ("开会", "meet"), ("会议", "meet"),
+    ];
+
+    let mut verb = "do";
+    for (prefix, canonical) in verb_prefixes {
+        if content_lower.contains(prefix) {
+            verb = canonical;
+            break;
+        }
+    }
+
+    // 提取人名：大写英文单词 或 常见中文人名模式（2-3 汉字）
+    let person = extract_person_name(content).unwrap_or_default();
+
+    // 实体：取内容前 20 字符的小写，去掉动词和人名，作为实体占位
+    let entity_raw: String = content
+        .chars()
+        .take(25)
+        .collect::<String>()
+        .to_lowercase()
+        .replace(verb, "")
+        .replace(&person.to_lowercase(), "")
+        .split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("-");
+    let entity = if entity_raw.is_empty() { "task".to_string() } else { entity_raw };
+
+    format!("{verb}:{entity}:{person}")
+}
+
+/// 提取文本中第一个人名（大写英文词 或 2-3 汉字短词）
+fn extract_person_name(content: &str) -> Option<String> {
+    // 英文大写单词（长度 2-15，非全大写缩写）
+    for word in content.split_whitespace() {
+        let clean: String = word.chars().filter(|c| c.is_alphabetic()).collect();
+        if clean.len() >= 2 && clean.len() <= 15
+            && clean.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+            && clean.chars().skip(1).any(|c| c.is_lowercase())
+        {
+            // 跳过常见非人名大写词
+            let skip = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                "Saturday", "Sunday", "January", "February", "March", "April",
+                "May", "June", "July", "August", "September", "October",
+                "November", "December", "Send", "Review", "Check", "Update",
+                "Complete", "Submit", "Run", "Test", "Write", "Read", "Fix",
+                "Call", "Meet", "Schedule", "Confirm", "Reply", "Respond",
+                "Please", "Today", "Tomorrow", "This", "Next", "The", "An"];
+            if !skip.contains(&clean.as_str()) {
+                return Some(clean.to_lowercase());
+            }
+        }
+    }
+    // 中文：寻找 @ 或 "给" / "向" 后接 2-3 个汉字的模式
+    let chars: Vec<char> = content.chars().collect();
+    for i in 0..chars.len().saturating_sub(1) {
+        if (chars[i] == '给' || chars[i] == '向' || chars[i] == '@')
+            && i + 1 < chars.len()
+            && ('\u{4e00}'..='\u{9fff}').contains(&chars[i + 1])
+        {
+            // 取 2 个汉字作为名字（避免把后续动词字符误纳入）
+            let name: String = chars[i + 1..]
+                .iter()
+                .take(2)
+                .take_while(|&&c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+                .collect();
+            if name.chars().count() >= 2 {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// 标准化 action_key：小写 + trim + 同义词归一化
+fn normalize_action_key(key: &str) -> String {
+    let s = key.trim().to_lowercase();
+    // 动词同义词表
+    let synonyms: &[(&[&str], &str)] = &[
+        (&["reply", "respond", "回复", "答复"], "reply"),
+        (&["send", "发送", "发邮件", "发消息"], "send"),
+        (&["confirm", "确认"], "confirm"),
+        (&["review", "审查", "审阅"], "review"),
+        (&["fix", "修复", "修"], "fix"),
+        (&["call", "打电话", "致电"], "call"),
+        (&["schedule", "安排", "预约"], "schedule"),
+        (&["check", "检查", "查看"], "check"),
+        (&["update", "更新"], "update"),
+        (&["complete", "完成"], "complete"),
+        (&["submit", "提交"], "submit"),
+        (&["run", "运行", "执行"], "run"),
+        (&["test", "测试"], "test"),
+        (&["write", "写", "撰写", "起草"], "write"),
+        (&["read", "阅读", "读"], "read"),
+        (&["meet", "开会", "会议"], "meet"),
+    ];
+    let mut result = s.clone();
+    // 替换 key 第一段（verb 部分）
+    if let Some(colon_pos) = result.find(':') {
+        let verb_part = &s[..colon_pos];
+        for (variants, canonical) in synonyms {
+            if variants.iter().any(|&v| v == verb_part) {
+                result = format!("{}{}", canonical, &s[colon_pos..]);
+                break;
+            }
+        }
+    }
+    result
+}
+
 fn classify(event: &Event) -> Priority {
     match event.event_type {
         EventType::UrgentEmail | EventType::UpcomingMeeting => Priority::Immediate,
         EventType::ScheduledTask => Priority::Scheduled,
         EventType::NewEmail | EventType::NewMessage => Priority::Normal,
         EventType::PatternObserved => Priority::Background,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_action_key_english_verb() {
+        let key = derive_action_key("Send draft to Emily by Friday");
+        assert!(key.starts_with("send:"), "expected send verb, got: {key}");
+        assert!(key.contains("emily"), "expected person emily, got: {key}");
+    }
+
+    #[test]
+    fn test_derive_action_key_chinese_verb() {
+        let key = derive_action_key("发邮件给李明确认会议时间");
+        assert!(key.starts_with("send:"), "expected send verb for 发邮件, got: {key}");
+    }
+
+    #[test]
+    fn test_derive_action_key_review() {
+        let key = derive_action_key("Review the budget proposal");
+        assert!(key.starts_with("review:"), "expected review verb, got: {key}");
+    }
+
+    #[test]
+    fn test_derive_action_key_unknown_verb_fallback() {
+        let key = derive_action_key("Something very unusual to do");
+        // falls back to "do" verb
+        assert!(key.starts_with("do:"), "expected do fallback, got: {key}");
+    }
+
+    #[test]
+    fn test_normalize_action_key_synonym_reply() {
+        let a = normalize_action_key("reply:email:emily");
+        let b = normalize_action_key("respond:email:emily");
+        assert_eq!(a, b, "reply and respond should normalize to same key");
+    }
+
+    #[test]
+    fn test_normalize_action_key_synonym_send() {
+        let a = normalize_action_key("send:draft:li");
+        let b = normalize_action_key("发送:draft:li");
+        assert_eq!(a, b, "send and 发送 should normalize to same key");
+    }
+
+    #[test]
+    fn test_normalize_action_key_lowercases() {
+        let key = normalize_action_key("REVIEW:Budget:Emily");
+        assert_eq!(key, "review:budget:emily");
+    }
+
+    #[test]
+    fn test_normalize_action_key_no_colon_passthrough() {
+        // Keys without colons should pass through lowercased
+        let key = normalize_action_key("SomeRandomKey");
+        assert_eq!(key, "somerandomkey");
+    }
+
+    #[test]
+    fn test_extract_person_name_english() {
+        let name = extract_person_name("Send report to Alice before noon");
+        assert_eq!(name, Some("alice".to_string()));
+    }
+
+    #[test]
+    fn test_extract_person_name_chinese_gei() {
+        let name = extract_person_name("发邮件给李明确认议程");
+        assert_eq!(name, Some("李明".to_string()));
+    }
+
+    #[test]
+    fn test_extract_person_name_none_for_common_words() {
+        // "Send" is in skip list, "Today" is in skip list
+        let name = extract_person_name("Send report today");
+        assert!(name.is_none(), "common words should not be treated as names");
+    }
+
+    #[test]
+    fn test_derive_action_key_dedup_same_intent() {
+        // Two phrasings of same action should produce matching normalized keys
+        let k1 = normalize_action_key(&derive_action_key("Reply to Emily's email about budget"));
+        let k2 = normalize_action_key(&derive_action_key("Respond to Emily on budget discussion"));
+        // Both should start with "reply" after normalization
+        assert!(k1.starts_with("reply:"), "k1={k1}");
+        assert!(k2.starts_with("reply:"), "k2={k2}");
     }
 }

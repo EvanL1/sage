@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use tauri::State;
+use tauri::{Emitter, State};
 
 use super::{claude_memory_dir, format_existing_memories, get_provider, map_err, trigger_memory_sync};
 use crate::AppState;
@@ -112,9 +112,10 @@ pub async fn sync_memory(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn delete_memory(state: State<'_, AppState>, memory_id: i64) -> Result<(), String> {
+pub async fn delete_memory(app: tauri::AppHandle, state: State<'_, AppState>, memory_id: i64) -> Result<(), String> {
     state.store.delete_memory(memory_id).map_err(map_err)?;
     trigger_memory_sync(&state.store);
+    app.emit("sage:data:memories", ()).ok();
     Ok(())
 }
 
@@ -223,6 +224,7 @@ pub async fn export_memories(state: State<'_, AppState>) -> Result<String, Strin
 
 #[tauri::command]
 pub async fn import_memories(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     entries: Vec<Value>,
 ) -> Result<usize, String> {
@@ -249,13 +251,14 @@ pub async fn import_memories(
     }
     if count > 0 {
         trigger_memory_sync(&state.store);
+        app.emit("sage:data:memories", ()).ok();
     }
     Ok(count)
 }
 
 /// 用户主动告诉 Sage 想被记住的内容
 #[tauri::command]
-pub async fn add_user_memory(state: State<'_, AppState>, content: String) -> Result<i64, String> {
+pub async fn add_user_memory(app: tauri::AppHandle, state: State<'_, AppState>, content: String) -> Result<i64, String> {
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("内容不能为空".to_string());
@@ -265,12 +268,14 @@ pub async fn add_user_memory(state: State<'_, AppState>, content: String) -> Res
         .save_memory_with_visibility("user_input", &content, "user", 1.0, "private")
         .map_err(map_err)?;
     trigger_memory_sync(&state.store);
+    app.emit("sage:data:memories", ()).ok();
     Ok(id)
 }
 
 /// 解析用户从其他 AI 助手粘贴的原始文本，通过 LLM 结构化后保存为记忆
 #[tauri::command]
 pub async fn import_raw_memories(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     text: String,
 ) -> Result<usize, String> {
@@ -319,6 +324,7 @@ pub async fn import_raw_memories(
 
     if count > 0 {
         trigger_memory_sync(&state.store);
+        app.emit("sage:data:memories", ()).ok();
     }
     Ok(count)
 }

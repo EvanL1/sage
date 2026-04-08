@@ -197,15 +197,9 @@ impl CognitivePipeline {
 
             if wave.is_empty() { break; }
 
-            // 分类：ctx 写入者串行，其余真并行
-            let ctx_writers: HashSet<&str> = [
-                "observer", "coach", "mirror", "questioner",
-                "evolution_merge", "evolution_synth", "evolution_condense",
-                "evolution_link", "evolution_decay", "evolution_promote",
-                "meta_params", "meta_prompts", "meta_ui",
-            ].into();
-            let (serial, parallel): (Vec<_>, Vec<_>) = wave.into_iter()
-                .partition(|name| ctx_writers.contains(name.as_str()));
+            // DAG 拓扑已保证依赖顺序，同一波内的 stage 天然无依赖 → 全部真并行
+            let serial: Vec<String> = Vec::new();
+            let parallel = wave;
 
             // 1. 串行组：顺序传递 ctx
             for name in &serial {
@@ -432,10 +426,30 @@ pub fn build_pipeline(config: &crate::config::PipelineConfig, store: &Store) -> 
 
 pub fn default_evening_stages() -> Vec<String> {
     vec![
-        "evolution_merge", "evolution_synth", "evolution_condense",
-        "evolution_link", "evolution_decay", "evolution_promote",
+        "observer", "coach", "mirror", "questioner",
+        "evolution_transform", "evolution_graph",
         "meta_params", "meta_prompts", "meta_ui",
     ].into_iter().map(String::from).collect()
+}
+
+/// 默认晚间管线边：认知链 & 进化链并行，meta 组最后并行
+pub fn default_evening_edges() -> Vec<crate::config::EdgeConfig> {
+    use crate::config::EdgeConfig;
+    vec![
+        // 认知链：observer → coach → mirror → questioner
+        EdgeConfig { from: "observer".into(), to: "coach".into() },
+        EdgeConfig { from: "coach".into(), to: "mirror".into() },
+        EdgeConfig { from: "mirror".into(), to: "questioner".into() },
+        // 进化链：transform → graph（与认知链并行）
+        EdgeConfig { from: "evolution_transform".into(), to: "evolution_graph".into() },
+        // 两条链汇合后 → meta 组（meta 三个并行）
+        EdgeConfig { from: "questioner".into(), to: "meta_params".into() },
+        EdgeConfig { from: "questioner".into(), to: "meta_prompts".into() },
+        EdgeConfig { from: "questioner".into(), to: "meta_ui".into() },
+        EdgeConfig { from: "evolution_graph".into(), to: "meta_params".into() },
+        EdgeConfig { from: "evolution_graph".into(), to: "meta_prompts".into() },
+        EdgeConfig { from: "evolution_graph".into(), to: "meta_ui".into() },
+    ]
 }
 
 pub fn default_weekly_stages() -> Vec<String> {
@@ -543,7 +557,19 @@ mod tests {
     fn default_evening_has_nine_stages() {
         assert_eq!(default_evening_stages().len(), 9);
         assert_eq!(default_evening_stages().last().unwrap(), "meta_ui");
-        assert_eq!(default_evening_stages().first().unwrap(), "evolution_merge");
+        assert_eq!(default_evening_stages().first().unwrap(), "observer");
+    }
+
+    #[test]
+    fn default_edges_create_parallel_chains() {
+        let edges = default_evening_edges();
+        // observer→coach 在认知链
+        assert!(edges.iter().any(|e| e.from == "observer" && e.to == "coach"));
+        // evolution_transform→evolution_graph 在进化链
+        assert!(edges.iter().any(|e| e.from == "evolution_transform" && e.to == "evolution_graph"));
+        // 两条链都汇入 meta_params
+        assert!(edges.iter().any(|e| e.from == "questioner" && e.to == "meta_params"));
+        assert!(edges.iter().any(|e| e.from == "evolution_graph" && e.to == "meta_params"));
     }
 
     #[test]

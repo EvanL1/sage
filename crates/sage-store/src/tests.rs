@@ -381,7 +381,7 @@ fn test_search_memories_delete() {
 #[test]
 fn test_get_memory_context_empty() {
     let store = Store::open_in_memory().unwrap();
-    let ctx = store.get_memory_context(2000).unwrap();
+    let ctx = store.get_memory_context(2000, None).unwrap();
     assert!(ctx.is_empty(), "空数据库应返回空字符串，但得到: {ctx:?}");
 }
 
@@ -402,7 +402,7 @@ fn test_get_memory_context_includes_all_categories() {
         .save_memory("coach_insight", "Alex 决策偏系统思考", "test", 0.8)
         .unwrap();
 
-    let ctx = store.get_memory_context(10000).unwrap();
+    let ctx = store.get_memory_context(10000, None).unwrap();
 
     // Phase 1a: depth-based layout (axiom/procedural/semantic/episodic)
     // identity/values → axiom → "## 信念（始终有效）"
@@ -429,7 +429,7 @@ fn test_get_memory_context_truncation() {
         .save_memory("decision", &long_content, "test", 0.8)
         .unwrap();
 
-    let ctx = store.get_memory_context(300).unwrap();
+    let ctx = store.get_memory_context(300, None).unwrap();
     assert!(ctx.len() <= 300, "截断后字节数 {} 应 ≤ 300", ctx.len());
     assert!(
         std::str::from_utf8(ctx.as_bytes()).is_ok(),
@@ -445,7 +445,7 @@ fn test_get_memory_context_utf8_safe_truncation() {
         .save_memory("core", chinese_content, "test", 0.9)
         .unwrap();
 
-    let ctx = store.get_memory_context(20).unwrap();
+    let ctx = store.get_memory_context(20, None).unwrap();
     assert!(
         std::str::from_utf8(ctx.as_bytes()).is_ok(),
         "中文截断后应仍为有效 UTF-8，得到字节数: {}",
@@ -529,7 +529,7 @@ fn test_append_pattern_appears_in_context() {
         .unwrap();
     store.save_coach_insight("主动学习型用户").unwrap();
 
-    let ctx = store.get_memory_context(10000).unwrap();
+    let ctx = store.get_memory_context(10000, None).unwrap();
 
     assert!(ctx.contains("偏好直接沟通"), "pattern 应出现在上下文");
     assert!(ctx.contains("工具选型"), "decision 应出现在上下文");

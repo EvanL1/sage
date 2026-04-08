@@ -43,10 +43,12 @@ function formatDateStr(year: number, month: number, day: number): string {
 function MiniCalendar({ selected, onSelect, taskDates }: {
   selected: string | null; onSelect: (d: string | null) => void; taskDates: Map<string, number>;
 }) {
+  const { lang } = useLang();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [viewDate, setViewDate] = useState(() => new Date());
   const today = new Date().toISOString().slice(0, 10);
   const year = viewDate.getFullYear(), month = viewDate.getMonth();
-  const monthLabel = viewDate.toLocaleDateString("en-US", { year: "numeric", month: "long" });
+  const monthLabel = viewDate.toLocaleDateString(locale, { year: "numeric", month: "long" });
   const cells = buildCalendarCells(year, month);
 
   return (
@@ -97,14 +99,15 @@ function categorize(tasks: TaskItem[], today: string, weekEnd: string) {
 
 /* ─── Inline Date Picker ─── */
 function DatePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const { t } = useLang();
+  const { t, lang } = useLang();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const sel = value || "";
   const base = sel ? new Date(sel) : new Date();
   const [viewDate, setViewDate] = useState(base);
   const [showCal, setShowCal] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const year = viewDate.getFullYear(), month = viewDate.getMonth();
-  const monthLabel = viewDate.toLocaleDateString("en-US", { year: "numeric", month: "long" });
+  const monthLabel = viewDate.toLocaleDateString(locale, { year: "numeric", month: "long" });
   const cells = buildCalendarCells(year, month);
 
   const quickDates = [
@@ -230,19 +233,24 @@ export default function Tasks() {
   const weekEnd = getWeekEnd(today);
 
   const verifyingRef = useRef(new Set<number>());
+  const loadingRef = useRef(false);
   const load = useCallback(() => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     invoke<TaskItem[]>("list_tasks", { status: null, limit: 200 })
       .then(tasks => {
         setAllTasks(tasks);
-        for (const task of tasks) {
-          if (task.status === "open" && !task.verification && !verifyingRef.current.has(task.id)) {
-            verifyingRef.current.add(task.id);
-            invoke("generate_verification", { taskId: task.id })
-              .then(() => load())
-              .catch(() => {});
-          }
-        }
-      }).catch(e => console.error("list_tasks:", e));
+        const pending = tasks.filter(
+          t => t.status === "open" && !t.verification && !verifyingRef.current.has(t.id)
+        );
+        for (const t of pending) verifyingRef.current.add(t.id);
+        loadingRef.current = false;
+        if (pending.length === 0) return;
+        Promise.all(
+          pending.map(t => invoke("generate_verification", { taskId: t.id }).catch(() => {}))
+        ).then(() => load());
+      })
+      .catch(e => { loadingRef.current = false; console.error("list_tasks:", e); });
   }, []);
 
   const loadSignals = useCallback(() => {

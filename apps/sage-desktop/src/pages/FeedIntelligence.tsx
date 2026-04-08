@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import ReactMarkdown from "react-markdown";
@@ -151,6 +151,8 @@ function FeedIntelligence() {
   const [learnedResults, setLearnedResults] = useState<Record<number, string[]>>({});
   const [noteContents, setNoteContents] = useState<Record<number, string>>({});
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set());
+  const [learnError, setLearnError] = useState<string | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadItems = useCallback(() => {
     invoke<FeedItem[]>("get_feed_items", { limit: 100 }).then(setItems).catch(console.error);
@@ -192,11 +194,16 @@ function FeedIntelligence() {
     try { await invoke("save_feed_config", { feedConfig: config }); setDirty(false); } catch {}
     setSaving(false);
   };
+  // Issue 8: cleanup poll timer on unmount
+  useEffect(() => {
+    return () => { if (pollTimerRef.current) clearTimeout(pollTimerRef.current); };
+  }, []);
+
   const handlePoll = async () => {
     setPolling(true);
     try {
       await invoke<string>("trigger_feed_poll");
-      setTimeout(() => { loadItems(); loadDigest(); setPolling(false); }, 8000);
+      pollTimerRef.current = setTimeout(() => { loadItems(); loadDigest(); setPolling(false); }, 8000);
     } catch { setPolling(false); }
   };
   const handleRegenerate = async () => {
@@ -232,7 +239,8 @@ function FeedIntelligence() {
         setExpandedNotes(prev => new Set(prev).add(it.id)); // 新学习的默认展开
       }
     } catch (e) {
-      alert(`学习失败: ${e}`);
+      console.error("deep learn failed:", e);
+      setLearnError(`${t("feed.deepLearnFailed")}: ${e}`);
     }
     setLearningIds(prev => { const n = new Set(prev); n.delete(it.id); return n; });
   };
@@ -286,12 +294,16 @@ function FeedIntelligence() {
     <div style={{ padding: "0 24px 32px" }}>
 
       {/* ── Topic search + NL config ── */}
+      {learnError && (
+        <div style={{ marginBottom: 8, padding: "6px 12px", borderRadius: 6, background: "var(--warning-bg, #fff3cd)", color: "var(--warning-text, #856404)", fontSize: 12 }}>
+          {learnError}
+          <button onClick={() => setLearnError(null)} style={{ ...S.ghostBtn, marginLeft: 8, fontSize: 11 }}>{t("close")}</button>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <input
           type="text"
-          placeholder={topicMode
-            ? "搜索主题，如 energy storage、AI agent、Rust async..."
-            : "Tell Sage what to follow, e.g. \"Add energy storage and AIDC topics\""}
+          placeholder={topicMode ? t("feed.topicPlaceholder") : t("feed.nlPlaceholder")}
           value={topicMode ? topicQuery : nlInput}
           onChange={(e) => topicMode ? setTopicQuery(e.target.value) : setNlInput(e.target.value)}
           onKeyDown={(e) => {
@@ -316,15 +328,15 @@ function FeedIntelligence() {
         />
         <button
           onClick={() => setTopicMode(!topicMode)}
-          title={topicMode ? "切换到订阅配置" : "切换到主题搜索"}
+          title={topicMode ? t("feed.switchToConfig") : t("feed.switchToSearch")}
           style={{
             ...S.btn(topicMode), padding: "6px 10px", fontSize: 12,
           }}
         >
-          {topicMode ? "搜索" : "配置"}
+          {topicMode ? t("feed.modeSearch") : t("feed.modeConfig")}
         </button>
-        {topicSearching && <span style={{ fontSize: 12, color: "var(--accent)", alignSelf: "center", whiteSpace: "nowrap" }}>搜索 + AI 分析中...</span>}
-        {nlBusy && <span style={{ fontSize: 12, color: "var(--text-tertiary)", alignSelf: "center" }}>Updating...</span>}
+        {topicSearching && <span style={{ fontSize: 12, color: "var(--accent)", alignSelf: "center", whiteSpace: "nowrap" }}>{t("feed.topicSearching")}</span>}
+        {nlBusy && <span style={{ fontSize: 12, color: "var(--text-tertiary)", alignSelf: "center" }}>{t("feed.nlUpdating")}</span>}
       </div>
 
       {/* ── Toolbar ── */}
@@ -337,23 +349,23 @@ function FeedIntelligence() {
             ...S.btn(showArchived), fontSize: 11, padding: "6px 10px",
             opacity: stats.archived > 0 ? 1 : 0.5,
           }}>
-          {showArchived ? `返回新闻` : `已归档 (${stats.archived})`}
+          {showArchived ? t("feed.backToFeed") : `${t("feed.archived")} (${stats.archived})`}
         </button>
         <span style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
           <button onClick={() => setSortBy("score")}
             style={{ fontSize: 10, padding: "4px 8px", border: "none", cursor: "pointer",
               background: sortBy === "score" ? "var(--accent)" : "transparent",
               color: sortBy === "score" ? "#fff" : "var(--text-secondary)",
-            }}>分数</button>
+            }}>{t("feed.sortScore")}</button>
           <button onClick={() => setSortBy("time")}
             style={{ fontSize: 10, padding: "4px 8px", border: "none", cursor: "pointer",
               background: sortBy === "time" ? "var(--accent)" : "transparent",
               color: sortBy === "time" ? "#fff" : "var(--text-secondary)",
-            }}>时间</button>
+            }}>{t("feed.sortTime")}</button>
         </span>
         <button onClick={handlePoll} disabled={polling}
           style={{ ...S.btn(!polling), opacity: polling ? 0.5 : 1 }}
-          title={enabledCount === 0 ? "请先在设置中启用至少一个数据源" : undefined}>
+          title={enabledCount === 0 ? t("feed.configHintEnabled") : undefined}>
           {polling ? t("feed.fetching") : t("feed.fetchNow")}
         </button>
         <button onClick={() => setShowConfig(!showConfig)}
@@ -380,7 +392,7 @@ function FeedIntelligence() {
                   const items = await invoke<string[]>("summarize_user_interests");
                   if (items.length) update("user_interests", items);
                 } catch (e) { console.error(e); }
-              }} style={{ ...S.btn(), fontSize: 10, padding: "2px 8px" }}>从记忆总结</button>
+              }} style={{ ...S.btn(), fontSize: 10, padding: "2px 8px" }}>{t("feed.summarizeFromMemory")}</button>
             </div>
             <TagInput values={config.user_interests} onChange={(v) => update("user_interests", v)}
               placeholder={t("feed.userInterestsPlaceholder")} />
@@ -435,10 +447,10 @@ function FeedIntelligence() {
         gap: 12, marginBottom: 16,
       }}>
         {[
-          { label: "未读条目", value: stats.active, icon: "📊", color: "var(--text)" },
-          { label: "高分推荐", value: stats.high, icon: "⭐", color: "var(--accent)" },
-          { label: "已学习", value: stats.learned, icon: "🧠", color: "#10b981" },
-          { label: "平均分", value: stats.avgScore, icon: "📈", color: "var(--text-secondary)" },
+          { label: t("feed.statsUnread"), value: stats.active, icon: "📊", color: "var(--text)" },
+          { label: t("feed.statsHighScore"), value: stats.high, icon: "⭐", color: "var(--accent)" },
+          { label: t("feed.statsLearned"), value: stats.learned, icon: "🧠", color: "#10b981" },
+          { label: t("feed.statsAvgScore"), value: stats.avgScore, icon: "📈", color: "var(--text-secondary)" },
         ].map((s) => (
           <div key={s.label} style={{
             padding: "16px 18px", borderRadius: 10,
@@ -471,7 +483,7 @@ function FeedIntelligence() {
             </span>
             {!briefingOpen && digest && (
               <span style={{ fontSize: 11, color: "var(--text-tertiary)", marginLeft: 4 }}>
-                点击展开完整简报
+                {t("feed.clickExpand")}
               </span>
             )}
           </div>
@@ -600,7 +612,7 @@ function FeedIntelligence() {
                       border: "1px solid rgba(16, 185, 129, 0.2)",
                       borderRadius: 6, fontSize: 11, lineHeight: 1.5,
                     }}>
-                      <div style={{ fontWeight: 600, color: "#10b981", marginBottom: 4 }}>🧠 学习结果</div>
+                      <div style={{ fontWeight: 600, color: "#10b981", marginBottom: 4 }}>{t("feed.learnedLabel")}</div>
                       {learnedResults[it.id].map((mem, i) => (
                         <div key={i} style={{
                           color: "var(--text-secondary)", paddingLeft: 8,
@@ -631,7 +643,7 @@ function FeedIntelligence() {
                         }}
                       >
                         <span style={{ transform: expandedNotes.has(it.id) ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
-                        📖 阅读笔记
+                        {t("feed.readingNote")}
                       </button>
                       {expandedNotes.has(it.id) && (
                         <div className="md-content" style={{
@@ -654,8 +666,8 @@ function FeedIntelligence() {
                   }}>
                     <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
                       {formatTime(it.created_at)}
-                      {it.action === "learned" && <span style={{ marginLeft: 6, color: "#10b981" }}>🧠 已学习</span>}
-                      {it.action === "archived" && <span style={{ marginLeft: 6 }}>📦 已归档</span>}
+                      {it.action === "learned" && <span style={{ marginLeft: 6, color: "#10b981" }}>{t("feed.actionLearned")}</span>}
+                      {it.action === "archived" && <span style={{ marginLeft: 6 }}>{t("feed.actionArchived")}</span>}
                     </span>
                     <div style={{ display: "flex", gap: 4 }}>
                       {/* 深入学习 */}
@@ -668,7 +680,7 @@ function FeedIntelligence() {
                             color: learningIds.has(it.id) ? "var(--text-tertiary)" : "#10b981",
                           }}
                         >
-                          {learningIds.has(it.id) ? "学习中..." : "🔬 深入学习"}
+                          {learningIds.has(it.id) ? t("feed.deepLearnBusy") : t("feed.deepLearn")}
                         </button>
                       )}
                       {/* 归档/取消归档 */}
@@ -677,14 +689,14 @@ function FeedIntelligence() {
                           onClick={(e) => { e.stopPropagation(); handleArchive(it.id); }}
                           style={{ ...S.ghostBtn, fontSize: 10, padding: "2px 6px" }}
                         >
-                          ✓ 已知
+                          {t("feed.markKnown")}
                         </button>
                       ) : (
                         <button
                           onClick={(e) => { e.stopPropagation(); handleUnarchive(it.id); }}
                           style={{ ...S.ghostBtn, fontSize: 10, padding: "2px 6px", color: "var(--accent)" }}
                         >
-                          ↩ 恢复
+                          {t("feed.unarchive")}
                         </button>
                       )}
                     </div>

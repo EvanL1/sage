@@ -1,10 +1,22 @@
+import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DashData, TYPE_LABEL, reportLabel } from "./types";
 
 export default function ClassicLayout({ data, navigate }: { data: DashData; navigate: ReturnType<typeof useNavigate> }) {
-  const allItems = [...data.curated, ...data.items];
+  const allItems = useMemo(() => {
+    const raw = [...data.curated, ...data.items].filter(
+      i => i.category !== "report" && i.category !== "question"
+    );
+    const seen = new Set<string | number>();
+    return raw.filter(item => {
+      const key = item.id ?? item.ref_id ?? item.content.slice(0, 50);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [data.curated, data.items]);
 
   return (
     <div className="classic-scroll">

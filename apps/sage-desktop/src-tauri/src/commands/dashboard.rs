@@ -280,14 +280,7 @@ pub fn get_dashboard_snapshot(state: State<'_, AppState>) -> Result<Value, Strin
         }
     }
 
-    if let Ok(Some(q)) = state.store.get_daily_question() {
-        items.push(json!({
-            "id": q.id,
-            "content": q.response,
-            "category": "question",
-            "meta": "Daily Question"
-        }));
-    }
+    // 注：daily question 由 QuestionWidget 独立获取，不放入 snapshot，避免在 ClassicLayout/NebulaLayout 重复显示
 
     Ok(json!(items))
 }

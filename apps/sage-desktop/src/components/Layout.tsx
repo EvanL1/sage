@@ -44,7 +44,7 @@ function Layout() {
   return (
     <div className="app-layout">
       <div className="titlebar" data-tauri-drag-region>
-        <span className="titlebar-text">{title} <span style={{fontSize:9,opacity:0.4,marginLeft:8}}>v0.1.9</span></span>
+        <span className="titlebar-text">{title} <span style={{fontSize:9,opacity:0.4,marginLeft:8}}>v{__APP_VERSION__}</span></span>
         <ModelSwitcher />
       </div>
       <div className="app-body">
