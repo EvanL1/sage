@@ -630,9 +630,52 @@ fn handle_link_memories(parts: &[&str], store: &Store, stage: &str) -> Option<i6
 
 fn handle_promote_memory(parts: &[&str], store: &Store, stage: &str) -> Option<i64> {
     let id: i64 = parts[1].parse().ok()?;
-    let depth = parts[2];
-    match store.update_memory_depth(id, depth) {
-        Ok(()) => { info!("Stage {stage}: ✓ promote_memory #{id} → {depth}"); Some(id) }
+    let target_depth = parts[2];
+
+    // 读取当前记忆状态做门控
+    if let Ok(memories) = store.get_memories_since("2000-01-01") {
+        if let Some(m) = memories.iter().find(|m| m.id == id) {
+            // 门控 1：不能跳级（必须逐级提升）
+            let current = m.depth.as_str();
+            let valid_next = match current {
+                "episodic" => "semantic",
+                "semantic" => "procedural",
+                "procedural" => "axiom",
+                _ => { warn!("Stage {stage}: promote #{id} blocked — current depth '{current}' cannot promote"); return None; }
+            };
+            if target_depth != valid_next {
+                warn!("Stage {stage}: promote #{id} blocked — must promote {current}→{valid_next}, not {current}→{target_depth}");
+                return None;
+            }
+
+            // 门控 2：→ axiom 需要 validation_count ≥ 10 且 confidence ≥ 0.9
+            if target_depth == "axiom" {
+                if m.validation_count < 10 {
+                    warn!("Stage {stage}: promote #{id} → axiom blocked — validation_count {} < 10", m.validation_count);
+                    return None;
+                }
+                if m.confidence < 0.9 {
+                    warn!("Stage {stage}: promote #{id} → axiom blocked — confidence {:.2} < 0.9", m.confidence);
+                    return None;
+                }
+                // 门控 3：calibration / decision / report_insight 类别不能成为 axiom
+                let banned = ["calibration", "calibration_task", "decision", "report_insight", "session"];
+                if banned.contains(&m.category.as_str()) {
+                    warn!("Stage {stage}: promote #{id} → axiom blocked — category '{}' is not axiom-eligible", m.category);
+                    return None;
+                }
+            }
+
+            // 门控 4：→ procedural 需要 validation_count ≥ 5
+            if target_depth == "procedural" && m.validation_count < 5 {
+                warn!("Stage {stage}: promote #{id} → procedural blocked — validation_count {} < 5", m.validation_count);
+                return None;
+            }
+        }
+    }
+
+    match store.update_memory_depth(id, target_depth) {
+        Ok(()) => { info!("Stage {stage}: ✓ promote_memory #{id} → {target_depth}"); Some(id) }
         Err(e) => { warn!("Stage {stage}: promote_memory failed: {e}"); None }
     }
 }

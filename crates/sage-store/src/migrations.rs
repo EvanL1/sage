@@ -868,6 +868,24 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 52;")?;
         }
 
+        // v53: 修正 axiom 分级 — 降级不合格的 axiom 到 procedural + 更新 evolution_graph prompt
+        if version < 53 {
+            // 降级：行为习惯/工作策略不是 axiom，降回 procedural
+            // 保留真正的信念：身份认同、价值底线、核心愿景
+            conn.execute_batch(
+                "UPDATE memories SET depth = 'procedural', evolution_note = 'v53: axiom→procedural（行为习惯非信念）'
+                 WHERE depth = 'axiom' AND status = 'active'
+                 AND (validation_count < 10 OR confidence < 0.9
+                      OR category IN ('calibration', 'calibration_task', 'decision', 'report_insight', 'session', 'behavior'));",
+            )?;
+            // 更新 evolution_graph preset prompt（含严格分级规则）
+            conn.execute_batch(
+                "DELETE FROM custom_stages WHERE name = 'evolution_graph' AND is_preset = 1;",
+            )?;
+            crate::pipeline::seed_preset_stages(&conn)?;
+            conn.execute_batch("PRAGMA user_version = 53;")?;
+        }
+
         Ok(())
     }
 }
