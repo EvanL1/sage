@@ -222,11 +222,24 @@ impl Daemon {
         // 确保无论成功/失败都清理 progress KV
         let result = async {
             for (i, (name, label)) in stage_labels.iter().enumerate() {
-                let _ = self.store.kv_set("evolution_progress",
-                    &format!("{}/{} — [{}] {}", i + 1, total, name, label));
+                let progress_base = format!("{}/{} — [{}] {}", i + 1, total, name, label);
+                let _ = self.store.kv_set("evolution_progress", &progress_base);
+                // 心跳：每 10 秒更新进度时间戳，防止前端 stale 检测误判
+                let store_hb = self.store.clone();
+                let hb_base = progress_base.clone();
+                let heartbeat = tokio::spawn(async move {
+                    let mut tick = 0u32;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        tick += 1;
+                        let _ = store_hb.kv_set("evolution_progress",
+                            &format!("{} ({}s)", hb_base, tick * 10));
+                    }
+                });
                 let ctx = pipeline.run(
                     &format!("manual_{name}"), &[name.to_string()], &agent, &store,
                 ).await;
+                heartbeat.abort();
                 summaries.push(format!("{label}: {}", ctx.summary()));
             }
             Ok::<_, anyhow::Error>(())

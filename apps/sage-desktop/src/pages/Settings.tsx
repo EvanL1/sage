@@ -150,7 +150,7 @@ function Settings() {
 
   }, []);
 
-  // 进入页面时检查 evolution 是否在跑，如果是则恢复轮询（30s 无变化视为残留并清除）
+  // 进入页面时检查 evolution 是否在跑，如果是则恢复轮询（5 分钟无变化视为残留并清除）
   useEffect(() => {
     const clearPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
     invoke<string>("get_evolution_progress").then((p) => {
@@ -165,8 +165,8 @@ function Settings() {
             if (!v) { clearPoll(); setEvolutionProgress(""); return; }
             if (v === lastValue) { staleCount++; } else { staleCount = 0; lastValue = v; }
             setEvolutionProgress(v);
-            // 30s (15 × 2s) 无变化 → 视为残留，清除
-            if (staleCount >= 15) { clearPoll(); setEvolutionProgress(""); }
+            // 5 分钟（150 × 2s）无变化 → 视为残留，清除
+            if (staleCount >= 150) { clearPoll(); setEvolutionProgress(""); }
           } catch { clearPoll(); setEvolutionProgress(""); }
         }, 2000);
       }
@@ -622,7 +622,7 @@ function Settings() {
                           }
                           setEvolutionProgress(p);
                           if (p === lastVal) { stale++; } else { stale = 0; lastVal = p; }
-                          if (stale >= 30) {
+                          if (stale >= 300) {
                             if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
                             setEvolutionProgress("");
                           }
