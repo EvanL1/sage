@@ -203,12 +203,12 @@ impl CognitivePipeline {
 
             // 1. 串行组：顺序传递 ctx
             for name in &serial {
-                let (result_ctx, elapsed, outcome, log_msg, status) =
+                let (result_ctx, elapsed, outcome, log_msg, status, score) =
                     self.run_stage_owned(name, agent, store, std::mem::take(&mut ctx)).await;
                 ctx = result_ctx;
                 if !log_msg.is_empty() { info!("{log_msg}"); }
                 ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
-                let _ = store.log_pipeline_run(name, pipeline_name, outcome, elapsed as i64);
+                let _ = store.log_pipeline_run_scored(name, pipeline_name, outcome, elapsed as i64, score);
                 completed.insert(name.clone());
                 self.push_ready(name, &node_set, &mut in_degree, &completed, &mut ready);
             }
@@ -216,12 +216,12 @@ impl CognitivePipeline {
             // 2. 并行组：tokio::spawn 真并行
             if parallel.len() == 1 {
                 let name = &parallel[0];
-                let (result_ctx, elapsed, outcome, log_msg, status) =
+                let (result_ctx, elapsed, outcome, log_msg, status, score) =
                     self.run_stage_owned(name, agent, store, ctx).await;
                 ctx = result_ctx;
                 if !log_msg.is_empty() { info!("{log_msg}"); }
                 ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
-                let _ = store.log_pipeline_run(name, pipeline_name, outcome, elapsed as i64);
+                let _ = store.log_pipeline_run_scored(name, pipeline_name, outcome, elapsed as i64, score);
                 completed.insert(name.clone());
                 self.push_ready(name, &node_set, &mut in_degree, &completed, &mut ready);
             } else if parallel.len() > 1 {
@@ -258,10 +258,10 @@ impl CognitivePipeline {
                     let (name, result, elapsed) = handle.await.unwrap_or_else(|e| {
                         ("panic".into(), Ok(Err(anyhow::anyhow!("stage panicked: {e}"))), 0)
                     });
-                    let (outcome, log_msg, status) = Self::classify_result(&name, result);
+                    let (outcome, log_msg, status, score) = Self::classify_result(&name, result);
                     if !log_msg.is_empty() { info!("{log_msg}"); }
                     ctx.stage_results.push(StageResult { name: name.clone(), status, duration_ms: elapsed });
-                    let _ = store.log_pipeline_run(&name, pipeline_name, outcome, elapsed as i64);
+                    let _ = store.log_pipeline_run_scored(&name, pipeline_name, outcome, elapsed as i64, score);
                     completed.insert(name.clone());
                     self.push_ready(&name, &node_set, &mut in_degree, &completed, &mut ready);
                 }
@@ -273,42 +273,44 @@ impl CognitivePipeline {
     fn classify_result(
         name: &str,
         result: Result<Result<(StageOutput, PipelineContext)>, tokio::time::error::Elapsed>,
-    ) -> (&'static str, String, StageStatus) {
+    ) -> (&'static str, String, StageStatus, Option<f64>) {
         match result {
-            Ok(Ok((StageOutput::Bool(true), _))) => ("ok", format!("{name}: completed"), StageStatus::Ok),
-            Ok(Ok((StageOutput::Bool(false), _))) => ("empty", String::new(), StageStatus::Empty),
+            Ok(Ok((StageOutput::Bool(true), _))) => ("ok", format!("{name}: completed"), StageStatus::Ok, Some(3.0)),
+            Ok(Ok((StageOutput::Bool(false), _))) => ("empty", String::new(), StageStatus::Empty, Some(1.0)),
             Ok(Ok((StageOutput::Evolution(r), _))) => {
                 let total = r.consolidated + r.condensed + r.linked + r.decayed + r.promoted + r.purged;
                 if total > 0 {
+                    // evolution 质量按操作数量打分：1-3 → 3分, 4-10 → 4分, >10 → 5分
+                    let score = if total > 10 { 5.0 } else if total > 3 { 4.0 } else { 3.0 };
                     ("ok", format!("{name}: consolidated={}, condensed={}, linked={}, decayed={}, promoted={}, purged={}",
-                        r.consolidated, r.condensed, r.linked, r.decayed, r.promoted, r.purged), StageStatus::Ok)
+                        r.consolidated, r.condensed, r.linked, r.decayed, r.promoted, r.purged), StageStatus::Ok, Some(score))
                 } else {
-                    ("empty", String::new(), StageStatus::Empty)
+                    ("empty", String::new(), StageStatus::Empty, Some(1.0))
                 }
             }
             Ok(Err(e)) => {
                 let msg = e.to_string();
                 if msg.contains("已达上限") {
                     warn!("{name}: LLM budget exhausted, degrading");
-                    ("degraded", String::new(), StageStatus::Degraded("llm_budget_exhausted".into()))
+                    ("degraded", String::new(), StageStatus::Degraded("llm_budget_exhausted".into()), Some(0.5))
                 } else {
                     error!("{name} failed: {msg}");
-                    ("error", String::new(), StageStatus::Error(msg))
+                    ("error", String::new(), StageStatus::Error(msg), Some(0.0))
                 }
             }
             Err(_) => {
                 error!("{name} timed out");
-                ("error", String::new(), StageStatus::Error("timeout".into()))
+                ("error", String::new(), StageStatus::Error("timeout".into()), Some(0.0))
             }
         }
     }
 
-    /// 执行单个 stage（owned ctx 传入传出），返回 (ctx, elapsed_ms, outcome, log_msg, status)
+    /// 执行单个 stage（owned ctx 传入传出），返回 (ctx, elapsed_ms, outcome, log_msg, status, score)
     async fn run_stage_owned(
         &self, name: &str, agent: &Agent, store: &Arc<Store>, ctx: PipelineContext,
-    ) -> (PipelineContext, u64, &'static str, String, StageStatus) {
+    ) -> (PipelineContext, u64, &'static str, String, StageStatus, Option<f64>) {
         let Some(stage) = self.stages.get(name) else {
-            return (ctx, 0, "error", String::new(), StageStatus::Error("not found".into()));
+            return (ctx, 0, "error", String::new(), StageStatus::Error("not found".into()), Some(0.0));
         };
         let stage_invoker = self.make_stage_invoker(name, agent, store);
         let start = std::time::Instant::now();
@@ -327,8 +329,8 @@ impl CognitivePipeline {
             Ok(Ok((_, ref c))) => c.clone(),
             _ => PipelineContext::default(),
         };
-        let (outcome, log_msg, status) = Self::classify_result(name, stage_result);
-        (returned_ctx, elapsed, outcome, log_msg, status)
+        let (outcome, log_msg, status, score) = Self::classify_result(name, stage_result);
+        (returned_ctx, elapsed, outcome, log_msg, status, score)
     }
 
     pub async fn run_evening(&self, agent: &Agent, store: &Arc<Store>) -> PipelineContext {

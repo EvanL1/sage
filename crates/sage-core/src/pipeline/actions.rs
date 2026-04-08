@@ -731,6 +731,18 @@ fn handle_promote_memory(parts: &[&str], store: &Store, stage: &str) -> Option<i
                 warn!("Stage {stage}: promote #{id} → procedural blocked — validation_count {} < 5", m.validation_count);
                 return None;
             }
+
+            // 门控 5：近 30 天有 contradicts 边则否决晋升
+            if let Ok(edges) = store.get_memory_edges(id) {
+                let cutoff = (chrono::Local::now() - chrono::Duration::days(30)).to_rfc3339();
+                let has_contradiction = edges.iter().any(|e| {
+                    e.relation == "contradicts" && e.created_at.as_str() > cutoff.as_str()
+                });
+                if has_contradiction {
+                    warn!("Stage {stage}: promote #{id} blocked — has contradicts edge within 30 days");
+                    return None;
+                }
+            }
         }
     }
 
