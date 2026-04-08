@@ -237,7 +237,7 @@ impl CognitivePipeline {
                     let stage_invoker = self.make_stage_invoker(name, agent, store);
                     let store_clone = Arc::clone(store);
                     let name_clone = name.clone();
-                    let default_timeout = if name.starts_with("evolution_") { 300u64 } else { 120 };
+                    let default_timeout = if name.starts_with("evolution_") { 600u64 } else { 180 };
                     let timeout = std::time::Duration::from_secs(
                         self.stage_configs.get(name).and_then(|c| c.timeout_secs).unwrap_or(default_timeout)
                     );
@@ -312,7 +312,7 @@ impl CognitivePipeline {
         };
         let stage_invoker = self.make_stage_invoker(name, agent, store);
         let start = std::time::Instant::now();
-        let default_timeout = if name.starts_with("evolution_") { 300u64 } else { 120 };
+        let default_timeout = if name.starts_with("evolution_") { 600u64 } else { 180 };
         let timeout = std::time::Duration::from_secs(
             self.stage_configs.get(name).and_then(|c| c.timeout_secs).unwrap_or(default_timeout)
         );
