@@ -109,11 +109,12 @@ pub fn select_best_provider(
     discovered: &[ProviderInfo],
     saved: &[ProviderConfig],
 ) -> Option<(ProviderInfo, ProviderConfig)> {
+    // 收集所有 Ready + enabled 的 provider，按用户设置的 priority 排序
+    let mut candidates: Vec<(ProviderInfo, ProviderConfig)> = Vec::new();
     for info in discovered {
         if info.status != ProviderStatus::Ready {
             continue;
         }
-        // 找到匹配的 saved config，或生成默认 config
         let config = saved
             .iter()
             .find(|c| c.provider_id == info.id)
@@ -127,10 +128,12 @@ pub fn select_best_provider(
                 priority: None,
             });
         if config.enabled {
-            return Some((info.clone(), config));
+            candidates.push((info.clone(), config));
         }
     }
-    None
+    // 按 priority 排序（数字越小优先级越高，None 排最后）
+    candidates.sort_by_key(|(_, c)| c.priority.unwrap_or(u8::MAX));
+    candidates.into_iter().next()
 }
 
 fn run_cli_probe(binary_path: &Path, args: &[&str]) -> Option<std::process::Output> {
