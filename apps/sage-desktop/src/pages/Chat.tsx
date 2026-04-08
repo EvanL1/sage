@@ -180,8 +180,9 @@ function Chat() {
     } catch (err) {
       const errStr = String(err);
       if (errStr.includes("cancelled")) return;
-      const isProviderError = errStr.includes("AI") || errStr.includes("API");
-      const errorContent = isProviderError
+      // 只有明确"没有可用的 AI 服务"/"No AI provider"才显示配置提示，其他错误显示原文
+      const isNoProvider = errStr.includes("没有可用的 AI") || errStr.includes("No AI provider");
+      const errorContent = isNoProvider
         ? t("chat.providerError")
         : t("chat.errorPrefix") + errStr;
       const errorMsg: ChatMessage = {
