@@ -31,49 +31,41 @@ impl Store {
     /// - `topic_hint`：当前事件的主题关键词，用于 semantic/episodic 层按相关性加载（而非纯时间）
     /// - 如果 depth 字段全为 episodic（旧数据未迁移），自动回退到 tier-based 查询。
     pub fn get_memory_context(&self, max_bytes: usize, topic_hint: Option<&str>) -> Result<String> {
-        let conn = self.conn()?;
-
-        // 检查是否有非 episodic 的 depth（用于 fallback 判断）
-        let has_deep: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memories WHERE status = 'active' AND depth != 'episodic' LIMIT 1",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap_or(0) > 0;
-
-        if !has_deep {
-            return self.get_memory_context_tier_fallback(&conn, max_bytes);
-        }
+        // 分段获取 conn 避免死锁：search_memories_by_depth 内部也会获取 conn
+        let (has_deep, axiom_items, proc_items) = {
+            let conn = self.conn()?;
+            let has_deep: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories WHERE status = 'active' AND depth != 'episodic' LIMIT 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0) > 0;
+            if !has_deep {
+                return self.get_memory_context_tier_fallback(&conn, max_bytes);
+            }
+            let axiom_items = Self::query_memories_by(&conn, "depth = 'axiom' AND status = 'active'", 20)?;
+            let proc_items = Self::query_memories_by(&conn, "depth = 'procedural' AND status = 'active'", 15)?;
+            (has_deep, axiom_items, proc_items)
+        }; // conn 释放
 
         let mut sections = Vec::new();
 
-        // 1. 信念层（axiom）— 开头，高注意力区；始终按置信度加载，与主题无关
-        let axiom_items = Self::query_memories_by(
-            &conn,
-            "depth = 'axiom' AND status = 'active'",
-            20,
-        )?;
         if !axiom_items.is_empty() {
             let lines = format_memory_lines(&axiom_items);
             sections.push(format!("## 信念（始终有效）\n{lines}"));
         }
 
-        // 2. 判断模式（procedural）— 始终加载，与主题无关
-        let proc_items = Self::query_memories_by(
-            &conn,
-            "depth = 'procedural' AND status = 'active'",
-            15,
-        )?;
         if !proc_items.is_empty() {
             let lines = format_memory_lines(&proc_items);
             sections.push(format!("## 判断模式\n{lines}"));
         }
 
-        // 3. 行为模式（semantic）— 有 topic_hint 时按相关性加载，否则按时间
+        // 3. 行为模式（semantic）— conn 已释放，search_memories_by_depth 可安全获取
         let sem_items = if let Some(hint) = topic_hint {
             self.search_memories_by_depth(hint, "semantic", 10)?
         } else {
+            let conn = self.conn()?;
             Self::query_memories_by(&conn, "depth = 'semantic' AND status = 'active'", 10)?
         };
         if !sem_items.is_empty() {
@@ -94,6 +86,7 @@ impl Store {
                 })
                 .collect::<Vec<_>>()
         } else {
+            let conn = self.conn()?;
             let sql = "SELECT id, category, content, source, confidence, visibility, \
                        created_at, updated_at, about_person, last_accessed_at, depth, \
                        valid_until, validation_count, derived_from, evolution_note, derivable \
