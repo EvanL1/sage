@@ -32,7 +32,7 @@ impl Store {
     /// - 如果 depth 字段全为 episodic（旧数据未迁移），自动回退到 tier-based 查询。
     pub fn get_memory_context(&self, max_bytes: usize, topic_hint: Option<&str>) -> Result<String> {
         // 分段获取 conn 避免死锁：search_memories_by_depth 内部也会获取 conn
-        let (has_deep, axiom_items, proc_items) = {
+        let (_has_deep, axiom_items, proc_items) = {
             let conn = self.conn()?;
             let has_deep: bool = conn
                 .query_row(

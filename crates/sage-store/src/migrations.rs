@@ -899,6 +899,13 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 54;")?;
         }
 
+        if version < 55 {
+            conn.execute_batch(
+                "ALTER TABLE pipeline_runs ADD COLUMN quality_score REAL;
+                 PRAGMA user_version = 55;",
+            )?;
+        }
+
         Ok(())
     }
 }

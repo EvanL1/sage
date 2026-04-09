@@ -32,13 +32,25 @@ impl Store {
         outcome: &str,
         elapsed_ms: i64,
     ) -> Result<()> {
+        self.log_pipeline_run_scored(stage, pipeline, outcome, elapsed_ms, None)
+    }
+
+    /// 记录一次 stage 执行（含质量评分）
+    pub fn log_pipeline_run_scored(
+        &self,
+        stage: &str,
+        pipeline: &str,
+        outcome: &str,
+        elapsed_ms: i64,
+        quality_score: Option<f64>,
+    ) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         conn.execute(
-            "INSERT INTO pipeline_runs (stage, pipeline, outcome, elapsed_ms) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![stage, pipeline, outcome, elapsed_ms],
+            "INSERT INTO pipeline_runs (stage, pipeline, outcome, elapsed_ms, quality_score) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![stage, pipeline, outcome, elapsed_ms, quality_score],
         )?;
         Ok(())
     }
