@@ -14,6 +14,15 @@ pub async fn get_memories(state: State<'_, AppState>) -> Result<Vec<Value>, Stri
 }
 
 #[tauri::command]
+pub async fn get_memories_by_ids(state: State<'_, AppState>, ids: Vec<i64>) -> Result<Vec<Value>, String> {
+    let memories = state.store.get_memories_by_ids(&ids).map_err(map_err)?;
+    memories
+        .into_iter()
+        .map(|m| serde_json::to_value(&m).map_err(map_err))
+        .collect()
+}
+
+#[tauri::command]
 pub async fn get_all_memories(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<Value>, String> {
     let mut memories = state.store.load_active_memories().map_err(map_err)?;
     if let Some(n) = limit {

@@ -265,17 +265,6 @@ impl Daemon {
         Ok(changed)
     }
 
-    /// 手动触发战略分析（通过 pipeline 执行 strategist preset）
-    pub async fn trigger_strategist(&self) -> Result<bool> {
-        let ctx = self.run_pipeline_preset("manual_strategist", "strategist").await;
-        let changed = !ctx.summary().contains("empty");
-        if changed {
-            self.emit_event(events::MEMORIES);
-            self.emit_event(events::REFRESH);
-        }
-        Ok(changed)
-    }
-
     /// 手动触发记忆连接（通过 pipeline 执行 evolution_graph preset）
     pub async fn trigger_memory_linking(&self) -> Result<usize> {
         let ctx = self.run_pipeline_preset("manual_linking", "evolution_graph").await;
@@ -512,7 +501,10 @@ impl Daemon {
             }
             match self.router.lock().await.route(event.clone()).await {
                 Ok(()) => self.mark_event_handled(&event),
-                Err(e) => error!("Route failed (will retry next tick): {e}"),
+                Err(e) => {
+                    error!("Route failed (will retry next tick): {e}");
+                    self.record_provider_error(&format!("{e}"));
+                }
             }
         }
 
@@ -536,6 +528,40 @@ impl Daemon {
                         }
                     }
                     Err(e) => error!("Task planner failed: {e}"),
+                }
+            }
+        }
+
+        // 每日一问：Morning Brief 后生成今日 Socratic question
+        if had_morning_brief {
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let qkey = format!("daily_question_date:{today}");
+            let already = self.store.kv_get(&qkey).ok().flatten().is_some();
+            if !already {
+                let lang = self.store.prompt_lang();
+                let memories = self.store.load_memories().unwrap_or_default();
+                let top: Vec<String> = memories.iter()
+                    .filter(|m| m.depth == "semantic" || m.depth == "procedural" || m.depth == "axiom")
+                    .take(15)
+                    .map(|m| format!("[{}] {}", m.category, m.content))
+                    .collect();
+                let ctx = if top.is_empty() { String::new() } else { format!("\n\n已知记忆：\n{}", top.join("\n")) };
+                let prompt = if lang == "en" {
+                    format!("Generate ONE thought-provoking Socratic question that touches on values, motivation, or blind spots. The question should help the user reflect deeply about themselves. Output ONLY the question, nothing else.{ctx}")
+                } else {
+                    format!("生成一个发人深省的苏格拉底式问题，触及价值观、动机或盲点。这个问题应该帮助用户深入反思自己。只输出问题本身，不要其他内容。{ctx}")
+                };
+                match self.router.lock().await.agent().invoke(&prompt, None).await {
+                    Ok(resp) => {
+                        let q = resp.text.trim().to_string();
+                        if !q.is_empty() {
+                            let _ = self.store.record_suggestion("questioner", "daily-question", &q);
+                            let _ = self.store.kv_set(&qkey, "1");
+                            info!("Daily question generated: {}", q.chars().take(50).collect::<String>());
+                            self.emit_event(events::REFRESH);
+                        }
+                    }
+                    Err(e) => error!("Daily question generation failed: {e}"),
                 }
             }
         }
@@ -836,6 +862,19 @@ impl Daemon {
         }
     }
 
+    /// 记录 provider 调用错误到 kv_store，供前端 Settings 展示
+    fn record_provider_error(&self, error: &str) {
+        let provider_id = self
+            .current_provider_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+        let val = serde_json::json!({ "error": error, "at": now }).to_string();
+        let _ = self.store.kv_set(&format!("provider_error:{provider_id}"), &val);
+    }
+
     /// 检测 provider 变更并热更新 Agent
     async fn maybe_reload_provider(&self) {
         let resolved = discovery::resolve_provider(&self.store, &self.config.agent);
@@ -931,6 +970,7 @@ impl Daemon {
                 ))
             }
             heartbeat::Action::MirrorWeekly => None, // 不生成事件，在 had_weekly_report 块中直接触发
+            heartbeat::Action::DailyQuestion => None, // 在 had_morning_brief 块中直接生成
             heartbeat::Action::Idle => None,
         }
     }

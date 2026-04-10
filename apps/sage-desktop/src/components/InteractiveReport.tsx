@@ -75,7 +75,7 @@ function parseReport(md: string): ParsedReport | null {
     // or (c) remaining text is short (title-like). Otherwise treat as a numbered item.
     const hasHashPrefix = /^#{1,3}\s/.test(line);
     const afterNum = secMatch ? line.replace(SECTION_RE, "").trim() : "";
-    const looksLikeTitle = afterNum.length < 20 && !/\*\*/.test(afterNum);
+    const looksLikeTitle = afterNum.length < 50 && !/\*\*/.test(afterNum);
     if (secMatch && (!cur || hasHashPrefix || looksLikeTitle)) {
       flushTable();
       cur = { title: line.replace(/^#{0,3}\s*/, ""), tables: [], items: [], prose: [] };
@@ -150,7 +150,15 @@ function InteractiveTable({ table, reportType, sectionIdx, tableIdx, persisted, 
     onPersist(next);
   };
 
-  const handleConfirm = (i: number) => setState(i, "confirmed");
+  const handleConfirm = async (i: number, row: TableRow) => {
+    setState(i, "confirmed");
+    try {
+      await invoke("save_report_correction", {
+        reportType, wrongClaim: row.cells.join(" | "),
+        correctFact: "✓", contextHint: "positive_confirm",
+      });
+    } catch {}
+  };
 
   const startCorrect = (i: number) => { setCorrIdx(i); setCorrText(""); };
 
@@ -190,14 +198,14 @@ function InteractiveTable({ table, reportType, sectionIdx, tableIdx, persisted, 
             <div className="ir-table-cell ir-table-cell-actions">
               {!st && (
                 <>
-                  <button className="ir-btn ir-btn-confirm" onClick={() => handleConfirm(i)} title={t("report.confirmTimeline")}>✓</button>
+                  <button className="ir-btn ir-btn-confirm" onClick={() => handleConfirm(i, row)} title={t("report.confirmTimeline")}>✓</button>
                   <button className="ir-btn ir-btn-correct" onClick={() => startCorrect(i)} title={t("report.correctTimeline")}>✗</button>
                   <button className="ir-btn ir-btn-task" onClick={() => createTask(i, row)} title={t("report.createTask")}>+任务</button>
                 </>
               )}
-              {st === "confirmed" && <span className="ir-badge ir-badge-ok">{t("report.confirmed")}</span>}
-              {st === "corrected" && <span className="ir-badge ir-badge-warn">{t("report.corrected")}</span>}
-              {st === "tasked" && <span className="ir-badge ir-badge-ok">✓ 任务 #{getTaskId(i)}</span>}
+              {st === "confirmed" && <><span className="ir-badge ir-badge-ok">{t("report.confirmed")}</span><button className="ir-btn ir-btn-undo" onClick={() => setState(i, "")} title={t("report.undo")}>↩</button></>}
+              {st === "corrected" && <><span className="ir-badge ir-badge-warn">{t("report.corrected")}</span><button className="ir-btn ir-btn-undo" onClick={() => setState(i, "")} title={t("report.undo")}>↩</button></>}
+              {st === "tasked" && <><span className="ir-badge ir-badge-ok">✓ 任务 #{getTaskId(i)}</span><button className="ir-btn ir-btn-undo" onClick={() => setState(i, "")} title={t("report.undo")}>↩</button></>}
             </div>
             {corrIdx === i && !st && (
               <div className="ir-correction-inline" style={{ flexBasis: "100%" }}>
@@ -242,14 +250,13 @@ function InteractiveItems({ items, reportType, sectionIdx, persisted, onPersist 
 
   const handleFeedback = async (i: number, accurate: boolean, text: string) => {
     setState(i, accurate ? "accurate" : "inaccurate");
-    if (!accurate) {
-      try {
-        await invoke("save_report_correction", {
-          reportType, wrongClaim: text,
-          correctFact: "用户标记此项不准确", contextHint: "item_feedback",
-        });
-      } catch {}
-    }
+    try {
+      await invoke("save_report_correction", {
+        reportType, wrongClaim: text,
+        correctFact: accurate ? "✓" : "用户标记此项不准确",
+        contextHint: accurate ? "positive_accurate" : "negative_inaccurate",
+      });
+    } catch {}
   };
 
   const createTask = async (i: number, item: ListItem) => {
@@ -284,9 +291,9 @@ function InteractiveItems({ items, reportType, sectionIdx, persisted, onPersist 
                   <button className="ir-btn ir-btn-task" onClick={() => createTask(i, item)}>+ {t("report.createTask")}</button>
                 </>
               )}
-              {st === "accurate" && <span className="ir-badge ir-badge-ok">{t("report.patternAccurate")}</span>}
-              {st === "inaccurate" && <span className="ir-badge ir-badge-warn">{t("report.patternInaccurate")}</span>}
-              {st === "created" && <span className="ir-badge ir-badge-ok">✓ {t("report.taskCreated")} #{getTaskId(i)}</span>}
+              {st === "accurate" && <><span className="ir-badge ir-badge-ok">{t("report.patternAccurate")}</span><button className="ir-btn ir-btn-undo" onClick={() => setState(i, "")} title={t("report.undo")}>↩</button></>}
+              {st === "inaccurate" && <><span className="ir-badge ir-badge-warn">{t("report.patternInaccurate")}</span><button className="ir-btn ir-btn-undo" onClick={() => setState(i, "")} title={t("report.undo")}>↩</button></>}
+              {st === "created" && <><span className="ir-badge ir-badge-ok">✓ {t("report.taskCreated")} #{getTaskId(i)}</span><button className="ir-btn ir-btn-undo" onClick={() => setState(i, "")} title={t("report.undo")}>↩</button></>}
             </div>
           </div>
         );

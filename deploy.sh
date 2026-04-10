@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+export PATH="$HOME/.cargo/bin:$PATH"
 
 # 关闭正在运行的 Sage
 osascript -e 'quit app "Sage"' 2>/dev/null || true

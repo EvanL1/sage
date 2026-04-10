@@ -67,6 +67,7 @@ export interface Memory {
   depth?: string;
   valid_until?: string;
   validation_count?: number;
+  derived_from?: string;
 }
 
 export interface CustomPage {

@@ -16,6 +16,7 @@ interface FeedItem {
   idea: string;
   created_at: string;
   action: string;   // "" | "archived" | "learning" | "learned"
+  bookmarked: boolean;
   category: string | null;
 }
 
@@ -142,6 +143,7 @@ function FeedIntelligence() {
   const [briefingOpen, setBriefingOpen] = useState(false);
   const [sortBy, setSortBy] = useState<"score" | "time">("score");
   const [showArchived, setShowArchived] = useState(false);
+  const [showBookmarked, setShowBookmarked] = useState(false);
   const [learningIds, setLearningIds] = useState<Set<number>>(new Set());
   const [nlInput, setNlInput] = useState("");
   const [nlBusy, setNlBusy] = useState(false);
@@ -223,6 +225,14 @@ function FeedIntelligence() {
     await invoke("unarchive_feed_item", { observationId: id }).catch(console.error);
     setItems(prev => prev.map(it => it.id === id ? { ...it, action: "" } : it));
   };
+  const handleBookmark = async (id: number, bookmarked: boolean) => {
+    if (bookmarked) {
+      await invoke("unbookmark_feed_item", { observationId: id }).catch(console.error);
+    } else {
+      await invoke("bookmark_feed_item", { observationId: id }).catch(console.error);
+    }
+    setItems(prev => prev.map(it => it.id === id ? { ...it, bookmarked: !bookmarked } : it));
+  };
   const handleDeepLearn = async (it: FeedItem) => {
     setLearningIds(prev => new Set(prev).add(it.id));
     try {
@@ -259,14 +269,16 @@ function FeedIntelligence() {
         (it.summary || "").toLowerCase().includes(q)
       );
     }
-    // 归档过滤（learned 留在活跃列表，不算归档）
-    if (!showArchived) {
-      list = list.filter(it => !it.action || it.action === "learning" || it.action === "learned");
-    } else {
+    // 收藏 / 归档过滤
+    if (showBookmarked) {
+      list = list.filter(it => it.bookmarked);
+    } else if (showArchived) {
       list = list.filter(it => it.action === "archived");
+    } else {
+      list = list.filter(it => !it.action || it.action === "learning" || it.action === "learned");
     }
     return list;
-  }, [items, search, showArchived]);
+  }, [items, search, showArchived, showBookmarked]);
 
   // 按分数降序排列
   const sorted = useMemo(() => [...filtered].sort((a, b) =>
@@ -278,8 +290,9 @@ function FeedIntelligence() {
     const archived = items.filter(it => it.action === "archived");
     const high = active.filter(it => it.score >= 4).length;
     const learned = items.filter(it => it.action === "learned").length;
+    const bookmarked = items.filter(it => it.bookmarked).length;
     const avgScore = active.length > 0 ? (active.reduce((s, it) => s + it.score, 0) / active.length).toFixed(1) : "—";
-    return { active: active.length, archived: archived.length, high, learned, avgScore };
+    return { active: active.length, archived: archived.length, high, learned, bookmarked, avgScore };
   }, [items]);
 
   // Split items into two columns (interleaved by rank to keep both columns balanced)
@@ -344,7 +357,14 @@ function FeedIntelligence() {
         <input type="text" placeholder={t("feed.searchPlaceholder")}
           value={search} onChange={(e) => setSearch(e.target.value)}
           style={{ ...S.input, flex: 1, padding: "8px 12px", fontSize: 13 }} />
-        <button onClick={() => setShowArchived(!showArchived)}
+        <button onClick={() => { setShowBookmarked(!showBookmarked); if (!showBookmarked) setShowArchived(false); }}
+          style={{
+            ...S.btn(showBookmarked), fontSize: 11, padding: "6px 10px",
+            opacity: stats.bookmarked > 0 || showBookmarked ? 1 : 0.5,
+          }}>
+          {showBookmarked ? t("feed.backToFeed") : `${t("feed.bookmarked")} (${stats.bookmarked})`}
+        </button>
+        <button onClick={() => { setShowArchived(!showArchived); if (!showArchived) setShowBookmarked(false); }}
           style={{
             ...S.btn(showArchived), fontSize: 11, padding: "6px 10px",
             opacity: stats.archived > 0 ? 1 : 0.5,
@@ -683,6 +703,14 @@ function FeedIntelligence() {
                           {learningIds.has(it.id) ? t("feed.deepLearnBusy") : t("feed.deepLearn")}
                         </button>
                       )}
+                      {/* 收藏 */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleBookmark(it.id, it.bookmarked); }}
+                        style={{ ...S.ghostBtn, fontSize: 10, padding: "2px 6px", color: it.bookmarked ? "#f59e0b" : "var(--text-tertiary)" }}
+                        title={it.bookmarked ? t("feed.unbookmark") : t("feed.bookmark")}
+                      >
+                        {it.bookmarked ? "★" : "☆"}
+                      </button>
                       {/* 归档/取消归档 */}
                       {!showArchived ? (
                         <button

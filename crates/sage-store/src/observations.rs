@@ -206,19 +206,41 @@ impl Store {
         Ok(())
     }
 
-    /// 获取所有 feed actions（归档/学习状态）
-    pub fn get_feed_actions(&self) -> Result<std::collections::HashMap<i64, (String, Option<String>)>> {
+    /// 收藏 feed 条目
+    pub fn bookmark_feed_item(&self, observation_id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO feed_actions (observation_id, action, bookmarked)
+             VALUES (?1, '', 1)
+             ON CONFLICT(observation_id) DO UPDATE SET bookmarked = 1",
+            rusqlite::params![observation_id],
+        ).context("收藏 feed 条目失败")?;
+        Ok(())
+    }
+
+    /// 取消收藏
+    pub fn unbookmark_feed_item(&self, observation_id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE feed_actions SET bookmarked = 0 WHERE observation_id = ?1",
+            rusqlite::params![observation_id],
+        ).context("取消收藏失败")?;
+        Ok(())
+    }
+
+    /// 获取所有 feed actions（归档/学习/收藏状态）
+    pub fn get_feed_actions(&self) -> Result<std::collections::HashMap<i64, (String, Option<String>, bool)>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT observation_id, action, category FROM feed_actions"
+            "SELECT observation_id, action, category, bookmarked FROM feed_actions"
         ).context("查询 feed_actions 失败")?;
         let mut map = std::collections::HashMap::new();
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, bool>(3)?))
         })?;
         for row in rows {
-            let (id, action, category) = row?;
-            map.insert(id, (action, category));
+            let (id, action, category, bookmarked) = row?;
+            map.insert(id, (action, category, bookmarked));
         }
         Ok(map)
     }

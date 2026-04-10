@@ -3014,23 +3014,23 @@ body {
 .subpage-close:hover { color: var(--text); }
 
 .subpage-body {
-  padding: 16px;
+  padding: 20px;
   overflow-y: auto;
   flex: 1;
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 15px;
+  line-height: 1.75;
   color: var(--text);
 }
 
 .subpage-body a { color: var(--accent); text-decoration: none; }
 .subpage-body a:hover { text-decoration: underline; }
-.subpage-body h1, .subpage-body h2, .subpage-body h3 { font-size: 15px; font-weight: 600; margin: 12px 0 6px; }
+.subpage-body h1, .subpage-body h2, .subpage-body h3 { font-size: 17px; font-weight: 600; margin: 16px 0 8px; }
 .subpage-body h1:first-child { display: none; }
 .subpage-body p { margin: 6px 0; }
 .subpage-body ul, .subpage-body ol { padding-left: 20px; margin: 6px 0; }
 .subpage-body strong { color: var(--text); font-weight: 650; }
-.subpage-body table { font-size: 13px; border-collapse: collapse; width: 100%; margin: 8px 0; }
-.subpage-body th, .subpage-body td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
+.subpage-body table { font-size: 14px; border-collapse: collapse; width: 100%; margin: 8px 0; }
+.subpage-body th, .subpage-body td { padding: 6px 10px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
 .subpage-body th { font-weight: 600; }
 .subpage-body hr { border: none; border-top: 1px solid var(--border-subtle); margin: 10px 0; }
 
@@ -3714,15 +3714,15 @@ body {
 
 /* ─── Interactive Report ─── */
 .ir-report { padding: 0; color: var(--text); }
-.ir-title { font-size: 16px; font-weight: 700; margin: 0 0 12px; color: var(--text); }
-.ir-preamble { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+.ir-title { font-size: 17px; font-weight: 700; margin: 0 0 14px; color: var(--text); }
+.ir-preamble { font-size: 14px; color: var(--text-secondary); margin-bottom: 16px; }
 .ir-preamble p { margin: 2px 0; }
 
-.ir-section { margin-bottom: 20px; }
+.ir-section { margin-bottom: 24px; }
 .ir-section-title {
-  font-size: 14px; font-weight: 700; margin: 0 0 10px;
+  font-size: 15px; font-weight: 700; margin: 0 0 12px;
   color: var(--accent); letter-spacing: 0.3px;
-  padding-bottom: 6px; border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle);
 }
 
 /* Generic Table */
@@ -3748,7 +3748,7 @@ body {
 .ir-table-row.corrected { border-left: 3px solid var(--warning, #f59e0b); background: rgba(245,158,11,0.04); }
 .ir-table-row.tasked { border-left: 3px solid var(--accent, #6366f1); background: rgba(99,102,241,0.04); }
 
-.ir-table-cell { flex: 1; min-width: 0; font-size: 12px; line-height: 1.5; padding: 2px 4px; }
+.ir-table-cell { flex: 1; min-width: 0; font-size: 13px; line-height: 1.6; padding: 4px 6px; }
 .ir-table-cell p, .ir-table-cell span { margin: 0; }
 .ir-table-cell-actions {
   flex: 0 0 auto; width: 130px;
@@ -3783,7 +3783,7 @@ body {
 .ir-item.created { border-left: 3px solid var(--success, #22c55e); background: rgba(34,197,94,0.04); }
 .ir-item.optional { opacity: 0.8; }
 
-.ir-item-content { flex: 1; font-size: 13px; line-height: 1.6; color: var(--text); }
+.ir-item-content { flex: 1; font-size: 14px; line-height: 1.65; color: var(--text); }
 .ir-item-content p, .ir-item-content span { margin: 0; }
 .ir-item-actions { display: flex; gap: 4px; flex-shrink: 0; align-items: center; }
 
@@ -3794,7 +3794,7 @@ body {
   vertical-align: middle; letter-spacing: 0.5px;
 }
 
-.ir-prose { font-size: 13px; line-height: 1.6; color: var(--text-secondary); margin-top: 8px; }
+.ir-prose { font-size: 14px; line-height: 1.65; color: var(--text-secondary); margin-top: 8px; }
 .ir-prose p { margin: 4px 0; }
 .ir-prose strong { color: var(--text); }
 
@@ -3802,11 +3802,14 @@ body {
 .ir-btn {
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface); color: var(--text-secondary);
-  font-size: 11px; padding: 2px 6px; cursor: pointer;
+  font-size: 12px; padding: 4px 8px; cursor: pointer;
   transition: all 0.15s; font-family: inherit; white-space: nowrap;
 }
 .ir-btn:hover { background: var(--surface-hover); color: var(--text); }
 
+.ir-btn-undo { opacity: 0; font-size: 11px; padding: 2px 5px; transition: opacity 0.15s; }
+.ir-table-row:hover .ir-btn-undo, .ir-item:hover .ir-btn-undo { opacity: 0.6; }
+.ir-btn-undo:hover { opacity: 1 !important; border-color: var(--text-tertiary); color: var(--text-secondary); }
 .ir-btn-confirm:hover { border-color: var(--success, #22c55e); color: var(--success, #22c55e); }
 .ir-btn-correct:hover { border-color: var(--warning, #f59e0b); color: var(--warning, #f59e0b); }
 .ir-btn-task { border-color: var(--accent); color: var(--accent); }

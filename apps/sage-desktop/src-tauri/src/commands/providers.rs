@@ -60,6 +60,25 @@ pub async fn test_provider(
     }
 }
 
+/// 获取各 provider 最近一次调用错误（从 kv_store 读取）
+#[tauri::command]
+pub async fn get_provider_errors(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, Value>, String> {
+    let mut result = std::collections::HashMap::new();
+    // 扫描所有已知 provider 的错误记录
+    let providers = sage_core::discovery::discover_providers(&state.store);
+    for p in &providers {
+        let key = format!("provider_error:{}", p.id);
+        if let Ok(Some(val)) = state.store.kv_get(&key) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&val) {
+                result.insert(p.id.clone(), parsed);
+            }
+        }
+    }
+    Ok(result)
+}
+
 /// 批量保存 provider 优先级（接收有序的 provider_id 列表）
 #[tauri::command]
 pub async fn save_provider_priorities(

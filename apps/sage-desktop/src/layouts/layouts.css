@@ -148,20 +148,20 @@
 
 /* Report markdown */
 .cmd-report-md {
-  font-size: 13px; line-height: 1.65; color: var(--text-secondary); cursor: pointer;
+  font-size: 14px; line-height: 1.7; color: var(--text-secondary); cursor: pointer;
   word-wrap: break-word; overflow-wrap: break-word;
 }
 .cmd-report-md:hover { color: var(--text); }
 .cmd-report-md h1, .cmd-report-md h2, .cmd-report-md h3 {
-  font-size: 14px; font-weight: 700; margin: 10px 0 4px; color: var(--text);
+  font-size: 15px; font-weight: 700; margin: 12px 0 6px; color: var(--text);
 }
 .cmd-report-md h1:first-child { display: none; }
 .cmd-report-md p { margin: 0 0 6px; }
 .cmd-report-md ul, .cmd-report-md ol { padding-left: 18px; margin: 0 0 6px; }
 .cmd-report-md li { margin: 2px 0; }
-.cmd-report-md table { font-size: 12px; width: 100%; border-collapse: collapse; margin: 6px 0; }
+.cmd-report-md table { font-size: 13px; width: 100%; border-collapse: collapse; margin: 6px 0; }
 .cmd-report-md th { font-weight: 600; color: var(--text); }
-.cmd-report-md th, .cmd-report-md td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
+.cmd-report-md th, .cmd-report-md td { padding: 5px 8px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
 .cmd-report-md hr { border: none; border-top: 1px solid var(--border-subtle); margin: 8px 0; }
 .cmd-report-md strong { color: var(--text); }
 .cmd-report-md a { color: var(--accent); text-decoration: none; }

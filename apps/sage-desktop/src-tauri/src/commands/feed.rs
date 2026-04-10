@@ -31,13 +31,13 @@ pub async fn get_feed_items(
     let actions = state.store.get_feed_actions().unwrap_or_default();
 
     // 构建 URL→action 映射：同一 URL 的任意 observation 有 action 都算
-    let mut url_actions: std::collections::HashMap<String, (String, Option<String>)> =
+    let mut url_actions: std::collections::HashMap<String, (String, Option<String>, bool)> =
         std::collections::HashMap::new();
     for row in &items {
-        if let Some((action, cat)) = actions.get(&row.id) {
+        if let Some((action, cat, bm)) = actions.get(&row.id) {
             let url = extract_url(row);
             if !url.is_empty() {
-                url_actions.entry(url).or_insert_with(|| (action.clone(), cat.clone()));
+                url_actions.entry(url).or_insert_with(|| (action.clone(), cat.clone(), *bm));
             }
         }
     }
@@ -52,10 +52,10 @@ pub async fn get_feed_items(
             continue;
         }
         // action：先查当前 id，再查 URL 映射（继承旧 observation 的状态）
-        let (action, category) = actions.get(&row.id)
-            .map(|(a, c)| (a.as_str(), c.as_deref()))
-            .or_else(|| url_actions.get(&url).map(|(a, c)| (a.as_str(), c.as_deref())))
-            .unwrap_or(("", None));
+        let (action, category, bookmarked) = actions.get(&row.id)
+            .map(|(a, c, bm)| (a.as_str(), c.as_deref(), *bm))
+            .or_else(|| url_actions.get(&url).map(|(a, c, bm)| (a.as_str(), c.as_deref(), *bm)))
+            .unwrap_or(("", None, false));
         result.push(json!({
             "id": row.id,
             "title": title,
@@ -67,6 +67,7 @@ pub async fn get_feed_items(
             "created_at": row.created_at,
             "action": action,
             "category": category,
+            "bookmarked": bookmarked,
         }));
     }
     Ok(result)
@@ -437,6 +438,24 @@ pub async fn unarchive_feed_item(
     observation_id: i64,
 ) -> Result<(), String> {
     state.store.unarchive_feed_item(observation_id).map_err(map_err)
+}
+
+/// 收藏 feed 条目
+#[tauri::command]
+pub async fn bookmark_feed_item(
+    state: State<'_, AppState>,
+    observation_id: i64,
+) -> Result<(), String> {
+    state.store.bookmark_feed_item(observation_id).map_err(map_err)
+}
+
+/// 取消收藏
+#[tauri::command]
+pub async fn unbookmark_feed_item(
+    state: State<'_, AppState>,
+    observation_id: i64,
+) -> Result<(), String> {
+    state.store.unbookmark_feed_item(observation_id).map_err(map_err)
 }
 
 /// 深入学习 feed 条目：全方位研究 → LLM 提取记忆 → 存入 memories

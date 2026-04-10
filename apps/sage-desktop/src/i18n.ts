@@ -151,6 +151,7 @@ const translations = {
   "report.taskCreated": { zh: "已创建", en: "Created" },
   "report.correctionPlaceholder": { zh: "实际情况是…", en: "The actual situation is…" },
   "report.submitCorrection": { zh: "提交", en: "Submit" },
+  "report.undo": { zh: "撤销", en: "Undo" },
 
   // Widget — report
   "widget.reportEmpty": { zh: "点 AM / PM / WK 生成报告", en: "Click AM / PM / WK to generate report" },
@@ -343,6 +344,9 @@ const translations = {
   "feed.nlUpdating": { zh: "更新中...", en: "Updating..." },
   "feed.backToFeed": { zh: "返回新闻", en: "Back to Feed" },
   "feed.archived": { zh: "已归档", en: "Archived" },
+  "feed.bookmarked": { zh: "收藏", en: "Saved" },
+  "feed.bookmark": { zh: "收藏", en: "Save" },
+  "feed.unbookmark": { zh: "取消收藏", en: "Unsave" },
   "feed.sortScore": { zh: "分数", en: "Score" },
   "feed.sortTime": { zh: "时间", en: "Time" },
   "feed.configHintEnabled": { zh: "请先在设置中启用至少一个数据源", en: "Enable at least one source in settings first" },
@@ -546,6 +550,24 @@ const translations = {
   "about.depth.semantic": { zh: "规律", en: "Patterns" },
   "about.depth.procedural": { zh: "判断", en: "Judgments" },
   "about.depth.axiom": { zh: "信念", en: "Beliefs" },
+  "about.depthDesc.episodic": { zh: "具体发生的事——日期、人名、动作", en: "Specific events — dates, people, actions" },
+  "about.depthDesc.semantic": { zh: "从多次事件中归纳出的行为规律", en: "Patterns distilled from multiple events" },
+  "about.depthDesc.procedural": { zh: "遇到特定情境时的判断逻辑和决策倾向", en: "Decision logic and judgment tendencies in specific situations" },
+  "about.depthDesc.axiom": { zh: "经反复验证的核心信念，定义你是谁", en: "Core beliefs verified over time — defines who you are" },
+  "about.basedOn": { zh: "基于", en: "Based on" },
+  "about.memories": { zh: "条记忆", en: "memories" },
+  "about.sourcesNotFound": { zh: "来源记忆已删除", en: "Source memories deleted" },
+  "about.noMemoriesInDepth": { zh: "该层级暂无记忆", en: "No memories at this depth" },
+  "about.confidence": { zh: "置信度", en: "Confidence" },
+
+  // Category labels
+  "about.cat.identity": { zh: "身份认知", en: "Identity" },
+  "about.cat.values": { zh: "价值观", en: "Values" },
+  "about.cat.behavior": { zh: "行为模式", en: "Behavior" },
+  "about.cat.thinking": { zh: "思维方式", en: "Thinking" },
+  "about.cat.emotion": { zh: "情绪", en: "Emotion" },
+  "about.cat.growth": { zh: "成长", en: "Growth" },
+  "about.categoryDimension": { zh: "认知维度", en: "Dimensions" },
 
   // Pages
   "pages.title": { zh: "页面", en: "Pages" },

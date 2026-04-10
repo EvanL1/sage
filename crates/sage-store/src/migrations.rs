@@ -899,10 +899,28 @@ impl Store {
             conn.execute_batch("PRAGMA user_version = 54;")?;
         }
 
+        // v55: pipeline_runs 新增 quality_score 列 + 移除低效 preset stages
         if version < 55 {
             conn.execute_batch(
-                "ALTER TABLE pipeline_runs ADD COLUMN quality_score REAL;
-                 PRAGMA user_version = 55;",
+                "ALTER TABLE pipeline_runs ADD COLUMN quality_score REAL;",
+            )?;
+            // 移除 strategist / calibrator / mirror_weekly（功能合并或冗余）
+            conn.execute_batch(
+                "DELETE FROM custom_stages WHERE name IN ('strategist', 'calibrator', 'mirror_weekly') AND is_preset = 1;",
+            )?;
+            // 重新种入 verifier（新增 save_calibration_rule action）
+            conn.execute_batch(
+                "DELETE FROM custom_stages WHERE name = 'verifier' AND is_preset = 1;",
+            )?;
+            crate::pipeline::seed_preset_stages(&conn)?;
+            conn.execute_batch("PRAGMA user_version = 55;")?;
+        }
+
+        // v56: feed_actions.bookmarked 收藏字段
+        if version < 56 {
+            conn.execute_batch(
+                "ALTER TABLE feed_actions ADD COLUMN bookmarked INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 56;",
             )?;
         }
 

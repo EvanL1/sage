@@ -1474,6 +1474,27 @@ impl Store {
         Ok(results.into_iter().map(|(m, _)| m).collect())
     }
 
+    /// 按 ID 列表批量获取记忆（用于 derived_from 证据链接）
+    pub fn get_memories_by_ids(&self, ids: &[i64]) -> Result<Vec<Memory>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let placeholders = ids.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, category, content, source, confidence, visibility, created_at, updated_at, \
+             about_person, last_accessed_at, depth, valid_until, validation_count, derived_from, evolution_note, derivable \
+             FROM memories WHERE id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql).context("准备 get_memories_by_ids 查询失败")?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), Self::row_to_memory)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// 按 ID 获取单条记忆（无论 status，用于 provenance 溯源查询）
     pub fn get_memory_by_id(&self, id: i64) -> Result<Option<Memory>> {
         let conn = self

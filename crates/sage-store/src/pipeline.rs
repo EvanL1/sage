@@ -11,6 +11,7 @@ pub struct PipelineRun {
     pub pipeline: String,
     pub outcome: String,   // "ok", "empty", "error"
     pub elapsed_ms: i64,
+    pub quality_score: Option<f64>, // 0-5 执行质量评分
     pub created_at: String,
 }
 
@@ -24,7 +25,7 @@ pub struct PipelineOverride {
 }
 
 impl Store {
-    /// 记录一次 stage 执行
+    /// 记录一次 stage 执行（含可选质量评分）
     pub fn log_pipeline_run(
         &self,
         stage: &str,
@@ -35,7 +36,7 @@ impl Store {
         self.log_pipeline_run_scored(stage, pipeline, outcome, elapsed_ms, None)
     }
 
-    /// 记录一次 stage 执行（含质量评分）
+    /// 记录一次 stage 执行 + 质量评分
     pub fn log_pipeline_run_scored(
         &self,
         stage: &str,
@@ -62,7 +63,7 @@ impl Store {
             .lock()
             .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT stage, pipeline, outcome, elapsed_ms, created_at
+            "SELECT stage, pipeline, outcome, elapsed_ms, quality_score, created_at
              FROM pipeline_runs WHERE stage = ?1
              ORDER BY created_at DESC LIMIT ?2",
         )?;
@@ -73,12 +74,30 @@ impl Store {
                     pipeline: row.get(1)?,
                     outcome: row.get(2)?,
                     elapsed_ms: row.get(3)?,
-                    created_at: row.get(4)?,
+                    quality_score: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
             })?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    /// 获取某 stage 近 N 天的平均质量评分
+    pub fn get_stage_avg_quality(&self, stage: &str, days: u32) -> Result<Option<f64>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("数据库锁获取失败: {e}"))?;
+        let window = format!("-{days} days");
+        let avg: Option<f64> = conn.query_row(
+            "SELECT AVG(quality_score) FROM pipeline_runs
+             WHERE stage = ?1 AND quality_score IS NOT NULL
+             AND created_at > datetime('now', ?2)",
+            rusqlite::params![stage, window],
+            |row| row.get(0),
+        )?;
+        Ok(avg)
     }
 
     /// 获取所有 stage 最近 N 天的执行摘要
@@ -393,37 +412,8 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             "mirror", "",
             "record_suggestion_dedup,save_open_question", "coach_insights,memories", 5, "", false,
         ),
-        (
-            "calibrator",
-            "校准器：从用户纠正中提炼自约束规则",
-            concat!(
-                "你是 Sage 的校准器。分析下面用户对报告的纠正记录，提炼出共性模式和根因。\n\n",
-                "## 纠正记录\n{context}\n\n",
-                "## 规则\n",
-                "- 输出 1-2 条具体的自约束规则，每条 ≤50 字\n",
-                "- 用 ACTION save_calibration_rule | 规则内容 | confidence:0.75\n",
-                "- 输出 NONE 如果纠正记录不足以提炼规则",
-            ),
-            "questioner", "每条规则一行 ACTION",
-            "save_calibration_rule", "corrections", 10, "", false,
-        ),
-        (
-            "strategist",
-            "战略分析师：识别跨领域的结构性趋势和轨迹信号",
-            concat!(
-                "你是一个完全超脱的战略分析师。从月球看地球——没有情绪、没有偏见，只有结构和轨迹。\n\n",
-                "## 数据\n{context}\n\n",
-                "## 规则\n",
-                "- 识别 2-3 个结构性观察或轨迹信号\n",
-                "- 不要重复 Coach 已发现的内容，关注价值观和行为之间的一致性/分歧\n",
-                "- 完全中立的学术语调\n",
-                "- 每条用 ACTION save_memory_visible 保存，category=strategy_insight，visibility=subconscious\n",
-                "- 最后用一个 ACTION record_suggestion_dedup 汇总\n",
-                "- 输出 NONE 如果数据不足",
-            ),
-            "", "最多 3 条，少即是多",
-            "save_memory_visible,record_suggestion_dedup", "coach_insights,memories", 10, "", false,
-        ),
+        // calibrator 已移除：save_calibration_rule 并入 verifier
+        // strategist 已移除：与 coach 重叠
         (
             "person_observer",
             "人物认知：从今日事件中提取关于特定人物的行为观察",
@@ -441,28 +431,7 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             "coach", "",
             "save_person_memory", "emails,messages,observer_notes,coach_insights", 30, "", false,
         ),
-        (
-            "mirror_weekly",
-            "周度认知镜像：汇总本周反思信号，生成反映性周报",
-            concat!(
-                "你是 Sage 的周度认知镜像。回顾本周的行为信号和反思记录，\n",
-                "写一份温和、有洞察力的周度回顾（3-5 段落）。\n",
-                "风格：像一个理解你的朋友在周末和你聊这一周发生的事。\n\n",
-                "## 本周信号\n{context}\n\n",
-                "## 规则\n",
-                "- 先用 ACTION save_report 保存完整周报\n",
-                "- 再用 ACTION record_suggestion_dedup 记录建议（source=mirror, key=weekly-mirror）\n",
-                "- 最后用 ACTION notify_user 通知用户查看\n",
-                "- 如果信号不足，输出 NONE",
-            ),
-            "", // insert_after（周度管线自行排序）
-            "先输出 ACTION save_report，再输出 ACTION record_suggestion_dedup，最后 ACTION notify_user",
-            "save_report,record_suggestion_dedup,notify_user",
-            "weekly_signals,coach_insights,memories",
-            3,
-            "SELECT COUNT(*) = 0 FROM suggestions WHERE source = 'mirror' AND dedup_key = 'weekly-mirror' AND created_at > datetime('now', '-6 days')",
-            false,
-        ),
+        // mirror_weekly 已移除：gather_weekly 已覆盖周报功能
         // ── Evolution Presets（批量化：6→2 阶段）───────────────────────────
         (
             "evolution_transform",
@@ -605,7 +574,7 @@ pub fn seed_preset_stages(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             ),
             "", // insert_after（由 DAG edges 控制）
             "每行一个 ACTION",
-            "verify_confirm,verify_challenge",
+            "verify_confirm,verify_challenge,save_calibration_rule",
             "observer_notes,verifiable_memories",
             10,
             "",

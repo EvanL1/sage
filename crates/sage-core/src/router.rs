@@ -450,6 +450,20 @@ impl Router {
 
 /// Build the user prompt for scheduled reports (bilingual)
 fn build_report_prompt(lang: &str, title: &str, time_header: &str, ctx_section: &str, body: &str) -> String {
+    // Format instructions ensure the parser can extract interactive sections.
+    // parseReport() needs: ## N. ShortTitle headings, pipe tables, bullet items.
+    let fmt_en = "\n\nFormat rules (MUST follow):\n\
+         - Each section: ## N. Title (title ≤ 15 chars, e.g. ## 1. Focus)\n\
+         - Use | pipe tables for structured data (schedule, tasks)\n\
+         - Use - bullet lists for action items\n\
+         - At least 3 sections\n\
+         - Keep it concise, no long paragraphs";
+    let fmt_zh = "\n\n格式要求（必须遵守）：\n\
+         - 每个章节用 ## N. 标题（标题≤8字，如 ## 1. 今日重点）\n\
+         - 用 | 表格展示结构化数据（日程、任务）\n\
+         - 用 - 列表展示行动项\n\
+         - 至少 3 个章节\n\
+         - 简洁，不要长段落";
     match lang {
         "en" => match title {
             "Morning Brief" => format!(
@@ -457,26 +471,26 @@ fn build_report_prompt(lang: &str, title: &str, time_header: &str, ctx_section: 
                  1. Key focus areas for today\n\
                  2. Pending decisions / follow-ups\n\
                  3. Suggested priority order\n\n\
-                 All data has original timestamps — use them to assess recency. Use Markdown, keep it concise."
+                 All data has original timestamps — use them to assess recency.{fmt_en}"
             ),
             "Evening Review" => format!(
                 "{time_header}{ctx_section}\n\nSummarize today's work:\n\
                  1. What was accomplished (in chronological order)\n\
                  2. Behavioral patterns observed\n\
-                 3. What to focus on tomorrow\n\nUse Markdown."
+                 3. What to focus on tomorrow{fmt_en}"
             ),
             "Weekly Report" => format!(
                 "{time_header}{ctx_section}\n\nDraft this week's work report:\n\
                  1. Key accomplishments this week (with dates)\n\
                  2. Work in progress\n\
                  3. Next week's plan\n\
-                 4. Issues requiring manager attention\n\nUse Markdown, professional and concise."
+                 4. Issues requiring manager attention{fmt_en}"
             ),
             "Week Start" => format!(
                 "{time_header}{ctx_section}\n\nNew week kickoff — highlight this week's priorities:\n\
                  1. Key items this week (with specific dates and times)\n\
                  2. Follow-up to-dos\n\
-                 3. Expected challenges\n\nUse Markdown."
+                 3. Expected challenges{fmt_en}"
             ),
             _ => format!("{time_header}\nHandling scheduled task: {title}\n{body}"),
         },
@@ -484,19 +498,19 @@ fn build_report_prompt(lang: &str, title: &str, time_header: &str, ctx_section: 
             "Morning Brief" => format!(
                 "{time_header}{ctx_section}\n\n生成今日 Morning Brief：\n\
                  1. 今日重点关注事项\n2. 待决策/待跟进事项\n3. 建议优先级排序\n\n\
-                 所有信息都带有原始时间戳，请据此判断时效性。用 Markdown 格式，简洁有结构。"
+                 所有信息都带有原始时间戳，请据此判断时效性。{fmt_zh}"
             ),
             "Evening Review" => format!(
                 "{time_header}{ctx_section}\n\n总结今天的工作：\n\
-                 1. 完成了什么（按时间线整理）\n2. 发现了什么行为模式\n3. 明天需要关注什么\n\n用 Markdown 格式。"
+                 1. 完成了什么（按时间线整理）\n2. 发现了什么行为模式\n3. 明天需要关注什么{fmt_zh}"
             ),
             "Weekly Report" => format!(
                 "{time_header}{ctx_section}\n\n生成本周工作周报草稿：\n\
-                 1. 本周完成的重要事项（标注日期）\n2. 进行中的工作\n3. 下周计划\n4. 需要上级关注的问题\n\n用 Markdown 格式，专业简洁。"
+                 1. 本周完成的重要事项（标注日期）\n2. 进行中的工作\n3. 下周计划\n4. 需要上级关注的问题{fmt_zh}"
             ),
             "Week Start" => format!(
                 "{time_header}{ctx_section}\n\n新的一周开始，提醒本周重点：\n\
-                 1. 本周重点事项（含具体日期和时间）\n2. 需要跟进的待办\n3. 预期的挑战\n\n用 Markdown 格式。"
+                 1. 本周重点事项（含具体日期和时间）\n2. 需要跟进的待办\n3. 预期的挑战{fmt_zh}"
             ),
             _ => format!("{time_header}\n处理定时任务：{title}\n{body}"),
         },

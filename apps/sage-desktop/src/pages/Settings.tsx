@@ -106,6 +106,7 @@ function Settings() {
   const [models, setModels] = useState<Record<string, string>>({});
   const [customModelOpen, setCustomModelOpen] = useState<Record<string, boolean>>({});
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
+  const [providerErrors, setProviderErrors] = useState<Record<string, { error: string; at: string }>>({});
   const [providersLoading, setProvidersLoading] = useState(true);
   const [evolutionProgress, setEvolutionProgress] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -127,9 +128,11 @@ function Settings() {
     Promise.all([
       invoke<ProviderInfo[]>("discover_providers"),
       invoke<ProviderConfig[]>("get_provider_configs"),
+      invoke<Record<string, { error: string; at: string }>>("get_provider_errors").catch(() => ({})),
     ])
-      .then(([infos, configs]) => {
+      .then(([infos, configs, errors]) => {
         setProviders(infos);
+        setProviderErrors(errors);
         const configMap: Record<string, ProviderConfig> = {};
         const keyMap: Record<string, string> = {};
         const modelMap: Record<string, string> = {};
@@ -184,10 +187,6 @@ function Settings() {
 
   const updateSchedule = (updates: Partial<UserProfile["schedule"]>) => {
     setProfile((prev) => prev ? { ...prev, schedule: { ...prev.schedule, ...updates } } : prev);
-  };
-
-  const updateComm = (updates: Partial<UserProfile["communication"]>) => {
-    setProfile((prev) => prev ? { ...prev, communication: { ...prev.communication, ...updates } } : prev);
   };
 
   const handleSave = async () => {
@@ -370,6 +369,12 @@ function Settings() {
                           {providerLoginHint(p.id)}
                         </div>
                       )}
+                      {providerErrors[p.id] && (
+                        <div style={{ marginTop: 4, marginLeft: 28, fontSize: 11, color: "var(--error)", lineHeight: 1.4, maxWidth: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                          title={providerErrors[p.id].error}>
+                          {providerErrors[p.id].at} — {providerErrors[p.id].error.slice(0, 120)}
+                        </div>
+                      )}
                       {p.status !== "NotFound" && (() => {
                         const knownModels = PROVIDER_MODELS[p.id] || [];
                         const currentModel = models[p.id] ?? "";
@@ -479,76 +484,69 @@ function Settings() {
         </div>
       </div>
 
-      {/* Profile */}
+      {/* Profile & Schedule — merged compact */}
       <div className="settings-section">
           <div className="settings-section-title">{t("settings.profile")}</div>
           <div className="card">
-            <div className="form-group">
-              <label className="form-label">{t("settings.name")}</label>
-              <input className="form-input" value={profile.identity.name} onChange={(e) => updateIdentity({ name: e.target.value })} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">{t("settings.role")}</label>
-              <input className="form-input" value={profile.identity.role} onChange={(e) => updateIdentity({ role: e.target.value })} />
-            </div>
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">{t("settings.primaryLanguage")}</label>
-                <input className="form-input" value={profile.identity.primary_language} onChange={(e) => updateIdentity({ primary_language: e.target.value })} />
+                <label className="form-label">{t("settings.name")}</label>
+                <input className="form-input" value={profile.identity.name} onChange={(e) => updateIdentity({ name: e.target.value })} />
               </div>
               <div className="form-group">
-                <label className="form-label">{t("settings.secondaryLanguage")}</label>
-                <input className="form-input" value={profile.identity.secondary_language} onChange={(e) => updateIdentity({ secondary_language: e.target.value })} />
+                <label className="form-label">{t("settings.promptLanguage")}</label>
+                <select
+                  className="form-select"
+                  value={profile.identity.prompt_language ?? "zh"}
+                  onChange={async (e) => {
+                    const lang = e.target.value;
+                    const updated = { ...profile, identity: { ...profile.identity, prompt_language: lang } };
+                    setProfile(updated);
+                    setAppLang(lang === "en" ? "en" : "zh");
+                    try {
+                      await invoke("save_profile", { profile: updated });
+                      showToast("success", t("settings.promptLanguageSaved"));
+                    } catch (err) {
+                      showToast("error", String(err));
+                    }
+                  }}
+                >
+                  <option value="zh">{t("settings.chinese")}</option>
+                  <option value="en">English</option>
+                </select>
               </div>
-            </div>
-            <div className="form-group">
-              <label className="form-label">{t("settings.promptLanguage")}</label>
-              <select
-                className="form-select"
-                value={profile.identity.prompt_language ?? "zh"}
-                onChange={async (e) => {
-                  const lang = e.target.value;
-                  const updated = { ...profile, identity: { ...profile.identity, prompt_language: lang } };
-                  setProfile(updated);
-                  setAppLang(lang === "en" ? "en" : "zh");
-                  try {
-                    await invoke("save_profile", { profile: updated });
-                    showToast("success", t("settings.promptLanguageSaved"));
-                  } catch (err) {
-                    showToast("error", String(err));
-                  }
-                }}
-              >
-                <option value="zh">{t("settings.chinese")}</option>
-                <option value="en">English</option>
-              </select>
-              <div className="form-hint">{t("settings.promptLanguageHint")}</div>
             </div>
           </div>
         </div>
 
-        {/* Schedule */}
+        {/* Schedule — time pickers */}
         <div className="settings-section">
           <div className="settings-section-title">{t("settings.schedule")}</div>
           <div className="card">
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">{t("settings.morningBrief")}</label>
-                <input className="form-input" type="number" value={profile.schedule.morning_brief_hour} onChange={(e) => updateSchedule({ morning_brief_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
-              </div>
-              <div className="form-group">
-                <label className="form-label">{t("settings.eveningReview")}</label>
-                <input className="form-input" type="number" value={profile.schedule.evening_review_hour} onChange={(e) => updateSchedule({ evening_review_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
-              </div>
-            </div>
-            <div className="form-row">
-              <div className="form-group">
                 <label className="form-label">{t("settings.workStart")}</label>
-                <input className="form-input" type="number" value={profile.schedule.work_start_hour} onChange={(e) => updateSchedule({ work_start_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
+                <select className="form-select" value={profile.schedule.work_start_hour}
+                  onChange={(e) => {
+                    const h = parseInt(e.target.value, 10);
+                    updateSchedule({ work_start_hour: h, morning_brief_hour: h });
+                  }}>
+                  {Array.from({ length: 24 }, (_, i) => (
+                    <option key={i} value={i}>{String(i).padStart(2, "0")}:00</option>
+                  ))}
+                </select>
               </div>
               <div className="form-group">
                 <label className="form-label">{t("settings.workEnd")}</label>
-                <input className="form-input" type="number" value={profile.schedule.work_end_hour} onChange={(e) => updateSchedule({ work_end_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
+                <select className="form-select" value={profile.schedule.work_end_hour}
+                  onChange={(e) => {
+                    const h = parseInt(e.target.value, 10);
+                    updateSchedule({ work_end_hour: h, evening_review_hour: h });
+                  }}>
+                  {Array.from({ length: 24 }, (_, i) => (
+                    <option key={i} value={i}>{String(i).padStart(2, "0")}:00</option>
+                  ))}
+                </select>
               </div>
             </div>
             <div className="form-row">
@@ -562,29 +560,13 @@ function Settings() {
               </div>
               <div className="form-group">
                 <label className="form-label">{t("settings.weeklyReportTime")}</label>
-                <input className="form-input" type="number" value={profile.schedule.weekly_report_hour} onChange={(e) => updateSchedule({ weekly_report_hour: parseInt(e.target.value, 10) || 0 })} min="0" max="23" />
+                <select className="form-select" value={profile.schedule.weekly_report_hour}
+                  onChange={(e) => updateSchedule({ weekly_report_hour: parseInt(e.target.value, 10) })}>
+                  {Array.from({ length: 24 }, (_, i) => (
+                    <option key={i} value={i}>{String(i).padStart(2, "0")}:00</option>
+                  ))}
+                </select>
               </div>
-            </div>
-            <div className="form-hint">{t("settings.timeFormatHint")}</div>
-          </div>
-        </div>
-
-        {/* Communication */}
-        <div className="settings-section">
-          <div className="settings-section-title">{t("settings.communication")}</div>
-          <div className="card">
-            <div className="form-group">
-              <label className="form-label">{t("settings.commStyle")}</label>
-              <select className="form-select" value={profile.communication.style} onChange={(e) => updateComm({ style: e.target.value })}>
-                <option value="Direct">{t("settings.commDirect")}</option>
-                <option value="Formal">{t("settings.commFormal")}</option>
-                <option value="Casual">{t("settings.commCasual")}</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label className="form-label">{t("settings.maxNotifLen")}</label>
-              <input className="form-input" type="number" value={profile.communication.notification_max_chars} onChange={(e) => updateComm({ notification_max_chars: parseInt(e.target.value, 10) || 200 })} min="50" max="500" />
-              <div className="form-hint">{t("settings.maxNotifLenHint")}</div>
             </div>
           </div>
         </div>

@@ -99,13 +99,6 @@ pub async fn trigger_reconcile(state: State<'_, AppState>) -> Result<Value, Stri
     Ok(json!({ "revised": revised }))
 }
 
-/// 手动触发战略家分析
-#[tauri::command]
-pub async fn trigger_strategist(state: State<'_, AppState>) -> Result<Value, String> {
-    let ran = state.daemon.trigger_strategist().await.map_err(map_err)?;
-    Ok(json!({ "ran": ran }))
-}
-
 /// 获取自定义管线阶段列表
 #[tauri::command]
 pub async fn list_custom_stages(state: State<'_, AppState>) -> Result<Value, String> {

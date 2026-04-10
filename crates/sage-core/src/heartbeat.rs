@@ -13,6 +13,7 @@ pub enum Action {
     WeeklyReport,
     MirrorWeekly,
     WeekStart,
+    DailyQuestion,
     Idle,
 }
 
@@ -32,9 +33,10 @@ pub fn evaluate(config: &Config, schedule: Option<&WorkSchedule>) -> Vec<Action>
         .unwrap_or(chrono::Weekday::Fri);
     let report_hour = schedule.map(|s| s.weekly_report_hour).unwrap_or(16);
 
-    // 早间 brief
+    // 早间 brief + daily question
     if hour == brief_hour {
         actions.push(Action::MorningBrief);
+        actions.push(Action::DailyQuestion);
     }
 
     // 晚间回顾

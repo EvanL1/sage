@@ -37,6 +37,32 @@ fn sec<'a>(lang: &str, zh: &'a str, en: &'a str) -> &'a str {
     }
 }
 
+/// Context token budget 控制：~15000 字符 ≈ ~4000 tokens
+/// 前面的 section 优先级高（保留），超预算时从后面截断
+const MAX_CONTEXT_CHARS: usize = 15000;
+
+fn budget_trim(sections: &mut Vec<String>) {
+    if sections.is_empty() { return; }
+    let total: usize = sections.iter().map(|s| s.len() + 2).sum(); // +2 for "\n\n" join
+    if total <= MAX_CONTEXT_CHARS { return; }
+
+    let mut budget = MAX_CONTEXT_CHARS;
+    let mut keep = 0;
+    for s in sections.iter() {
+        let cost = s.len() + 2;
+        if cost > budget { break; }
+        budget -= cost;
+        keep += 1;
+    }
+    // 至少保留第一个 section
+    if keep == 0 { keep = 1; }
+    let dropped = sections.len() - keep;
+    sections.truncate(keep);
+    if dropped > 0 {
+        tracing::info!("Context budget: dropped {dropped} low-priority sections ({total} chars → ≤{MAX_CONTEXT_CHARS})");
+    }
+}
+
 /// 将 items 格式化为 `- item` 列表并附加到 sections（列表为空时跳过）
 fn push_bullet_section(sections: &mut Vec<String>, header: &str, items: &[impl AsRef<str>]) {
     if items.is_empty() {
@@ -201,9 +227,7 @@ async fn gather_morning(store: &Store, calendar_source: &str, lang: &str) -> Str
 
     inject_context_calibration(store, "morning", &mut sections, lang);
 
-    if sections.is_empty() {
-        return String::new();
-    }
+    budget_trim(&mut sections);
     sections.join("\n\n")
 }
 
@@ -414,9 +438,7 @@ async fn gather_evening(store: &Store, calendar_source: &str, lang: &str) -> Str
 
     inject_context_calibration(store, "evening", &mut sections, lang);
 
-    if sections.is_empty() {
-        return String::new();
-    }
+    budget_trim(&mut sections);
     sections.join("\n\n")
 }
 
@@ -470,9 +492,7 @@ fn gather_weekly(store: &Store, lang: &str) -> String {
 
     inject_context_calibration(store, "weekly", &mut sections, lang);
 
-    if sections.is_empty() {
-        return String::new();
-    }
+    budget_trim(&mut sections);
     sections.join("\n\n")
 }
 
@@ -494,9 +514,7 @@ fn gather_week_start(store: &Store, lang: &str) -> String {
     let proj_header = sec(lang, "## 项目相关记忆", "## Project Memories");
     push_bullet_section(&mut sections, proj_header, &proj_contents);
 
-    if sections.is_empty() {
-        return String::new();
-    }
+    budget_trim(&mut sections);
     sections.join("\n\n")
 }
 
@@ -606,44 +624,62 @@ fn days_ago(days: i64) -> String {
     (chrono::Local::now() - chrono::Duration::days(days)).to_rfc3339()
 }
 
-/// 注入历史校准记录到报告上下文
+/// 注入历史校准记录到报告上下文（正向确认 + 负向纠正分开注入）
 fn inject_corrections(store: &Store, report_type: &str, sections: &mut Vec<String>, lang: &str) {
     let corrections = store
-        .get_active_corrections(report_type, 10)
+        .get_active_corrections(report_type, 20)
         .unwrap_or_default();
     if corrections.is_empty() {
         return;
     }
-    let lines: Vec<String> = corrections
+    // 按 context_hint 前缀区分正向/负向反馈
+    let (positive, negative): (Vec<_>, Vec<_>) = corrections
         .iter()
-        .map(|c| {
-            let hint = if c.context_hint.is_empty() {
-                String::new()
-            } else {
-                format!("[{}] ", c.context_hint)
-            };
-            if lang == "en" {
-                format!(
-                    "- {hint}Wrong: \"{}\" → Correct: \"{}\" (corrected {} times)",
-                    c.wrong_claim, c.correct_fact, c.applied_count
-                )
-            } else {
-                format!(
-                    "- {hint}错误：「{}」→ 正确：「{}」（已校准{}次）",
-                    c.wrong_claim, c.correct_fact, c.applied_count
-                )
-            }
-        })
-        .collect();
+        .partition(|c| c.context_hint.starts_with("positive"));
+
     for c in &corrections {
         let _ = store.increment_correction_applied(c.id);
     }
-    let cal_header = sec(
-        lang,
-        "## 历史校准（你之前在此类报告中犯过这些错误，请避免重复）",
-        "## Historical Calibrations (errors you made before in this report type — avoid repeating)",
-    );
-    sections.push(format!("{cal_header}\n{}", lines.join("\n")));
+
+    // 正向反馈：用户确认准确的内容
+    if !positive.is_empty() {
+        let lines: Vec<String> = positive
+            .iter()
+            .map(|c| format!("- 「{}」", c.wrong_claim))
+            .collect();
+        let header = sec(
+            lang,
+            "## 用户确认准确（以下内容用户明确认可，请保持这些判断方向）",
+            "## User-Confirmed Accurate (user explicitly approved — maintain these judgments)",
+        );
+        sections.push(format!("{header}\n{}", lines.join("\n")));
+    }
+
+    // 负向反馈：用户标记有误的内容
+    if !negative.is_empty() {
+        let lines: Vec<String> = negative
+            .iter()
+            .map(|c| {
+                if lang == "en" {
+                    format!(
+                        "- Wrong: \"{}\" → Correct: \"{}\" (corrected {} times)",
+                        c.wrong_claim, c.correct_fact, c.applied_count
+                    )
+                } else {
+                    format!(
+                        "- 错误：「{}」→ 正确：「{}」（已校准{}次）",
+                        c.wrong_claim, c.correct_fact, c.applied_count
+                    )
+                }
+            })
+            .collect();
+        let header = sec(
+            lang,
+            "## 历史校准（你之前在此类报告中犯过这些错误，请避免重复）",
+            "## Historical Calibrations (errors you made before — avoid repeating)",
+        );
+        sections.push(format!("{header}\n{}", lines.join("\n")));
+    }
 }
 
 /// 注入 calibrator/self-reflect 生成的行为规则

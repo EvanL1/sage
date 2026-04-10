@@ -342,7 +342,7 @@ impl CognitivePipeline {
         let weekly: Vec<String> = self.stages.keys()
             .filter(|k| {
                 let s = k.as_str();
-                s == "mirror_weekly" || s.starts_with("weekly_")
+                s.starts_with("weekly_")
             })
             .cloned().collect();
         if weekly.is_empty() { return PipelineContext::default(); }
@@ -434,6 +434,7 @@ pub fn default_evening_stages() -> Vec<String> {
         "integrator",
         "evolution_transform", "evolution_graph",
         "meta_params", "meta_prompts", "meta_ui",
+        // 已移除: strategist（与 coach 重叠）, calibrator（并入 verifier）
     ].into_iter().map(String::from).collect()
 }
 
@@ -474,7 +475,8 @@ pub fn default_evening_edges() -> Vec<crate::config::EdgeConfig> {
 }
 
 pub fn default_weekly_stages() -> Vec<String> {
-    vec!["mirror_weekly"].into_iter().map(String::from).collect()
+    // mirror_weekly 已移除：gather_weekly 已覆盖周报功能
+    vec![]
 }
 
 #[cfg(test)]
@@ -607,10 +609,9 @@ mod tests {
     }
 
     #[test]
-    fn default_weekly_has_mirror_weekly() {
+    fn default_weekly_is_empty() {
         let stages = default_weekly_stages();
-        assert_eq!(stages.len(), 1);
-        assert_eq!(stages[0], "mirror_weekly");
+        assert!(stages.is_empty(), "mirror_weekly 已移除");
     }
 
     #[test]
