@@ -28,6 +28,16 @@ interface DailyQuestion {
   response: string;
 }
 
+export interface MeetingEvent {
+  subject: string;
+  start: string;
+  end: string;
+  location: string;
+  attendees: string;
+  organizer: string;
+  status: "past" | "now" | "upcoming";
+}
+
 export interface DashboardState {
   stats: DashStats | null;
   report: { type: string; data: ReportData } | null;
@@ -38,6 +48,7 @@ export interface DashboardState {
   taskSignals: TaskSignalLight[];
   messages: MessageItem[];
   connections: ConnectionStatus;
+  events: MeetingEvent[];
   loading: boolean;
 }
 
@@ -53,6 +64,7 @@ type Action =
   | { type: "SET_TASK_SIGNALS"; payload: TaskSignalLight[] }
   | { type: "SET_MESSAGES"; payload: MessageItem[] }
   | { type: "SET_CONNECTIONS"; payload: ConnectionStatus }
+  | { type: "SET_EVENTS"; payload: MeetingEvent[] }
   | { type: "SET_LOADING"; payload: boolean };
 
 const initial: DashboardState = {
@@ -65,6 +77,7 @@ const initial: DashboardState = {
   taskSignals: [],
   messages: [],
   connections: {},
+  events: [],
   loading: true,
 };
 
@@ -79,6 +92,7 @@ function reducer(state: DashboardState, action: Action): DashboardState {
     case "SET_TASK_SIGNALS":return { ...state, taskSignals: action.payload };
     case "SET_MESSAGES":    return { ...state, messages: action.payload };
     case "SET_CONNECTIONS": return { ...state, connections: action.payload };
+    case "SET_EVENTS":      return { ...state, events: action.payload };
     case "SET_LOADING":     return { ...state, loading: action.payload };
     default:                return state;
   }
@@ -164,6 +178,13 @@ async function fetchConnections(dispatch: (a: Action) => void) {
   } catch {}
 }
 
+async function fetchEvents(dispatch: (a: Action) => void) {
+  try {
+    const events = await invokeDeduped<MeetingEvent[]>("get_today_events");
+    dispatch({ type: "SET_EVENTS", payload: Array.isArray(events) ? events : [] });
+  } catch {}
+}
+
 /* ═══ Provider ═══ */
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
@@ -180,6 +201,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       fetchTaskSignals(dispatch),
       fetchMessages(dispatch),
       fetchConnections(dispatch),
+      fetchEvents(dispatch),
     ]).then(() => {}).finally(() => dispatch({ type: "SET_LOADING", payload: false }));
   }, []);
 
@@ -256,6 +278,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     } else if (domain === "question") {
       invalidateCachePrefix("get_daily_question");
       return fetchQuestion(dispatch);
+    } else if (domain === "events") {
+      invalidateCachePrefix("get_today_events");
+      return fetchEvents(dispatch);
     }
     return Promise.resolve();
   }, [fetchAll]);

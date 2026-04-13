@@ -24,36 +24,88 @@ impl InputChannel for CalendarChannel {
                 set todayEnd to todayStart + (1 * days)
                 set allCalendars to every calendar
                 set output to ""
+                set seenKeys to {}
                 repeat with cal in allCalendars
                     try
-                        set calEvents to (every calendar event of cal whose start time >= todayStart and start time < todayEnd)
+                        set calEvents to every calendar event of cal
                         repeat with evt in calEvents
-                            set evtSubject to subject of evt
-                            set evtStart to start time of evt as string
-                            set evtEnd to end time of evt as string
-                            set evtLocation to ""
+                            set theEvt to contents of evt
                             try
-                                set evtLocation to location of evt
-                            end try
-                            set attendeeList to ""
-                            try
-                                set reqAttendees to required attendees of evt
-                                repeat with att in reqAttendees
-                                    set attendeeList to attendeeList & (email address of att) & ","
-                                end repeat
-                            end try
-                            set evtOrganizer to ""
-                            try
-                                set evtOrganizer to address of organizer of evt
-                            end try
-                            set evtBody to ""
-                            try
-                                set evtBody to plain text content of evt
-                                if (count of evtBody) > 500 then
-                                    set evtBody to text 1 thru 500 of evtBody
+                                set isRec to is recurring of theEvt
+                                if isRec then
+                                    -- 周期事件：用 master 的时间分量拼今天日期，再 get occurrence of
+                                    set masterTime to time of (start time of theEvt)
+                                    set occDate to todayStart + masterTime
+                                    set occ to get occurrence of theEvt at occDate
+                                    if occ is not missing value then
+                                        set evtSubject to subject of occ
+                                        set evtStart to start time of occ as string
+                                        set dedupeKey to evtSubject & "|" & evtStart
+                                        if dedupeKey is not in seenKeys then
+                                            set seenKeys to seenKeys & {dedupeKey}
+                                            set evtEnd to end time of occ as string
+                                            set evtLocation to ""
+                                            try
+                                                set evtLocation to location of occ
+                                            end try
+                                            set attendeeList to ""
+                                            try
+                                                set reqAttendees to required attendees of occ
+                                                repeat with att in reqAttendees
+                                                    set attendeeList to attendeeList & (email address of att) & ","
+                                                end repeat
+                                            end try
+                                            set evtOrganizer to ""
+                                            try
+                                                set evtOrganizer to address of organizer of occ
+                                            end try
+                                            set evtBody to ""
+                                            try
+                                                set evtBody to plain text content of occ
+                                                if (count of evtBody) > 500 then
+                                                    set evtBody to text 1 thru 500 of evtBody
+                                                end if
+                                            end try
+                                            set output to output & "SUBJECT:" & evtSubject & "||START:" & evtStart & "||END:" & evtEnd & "||LOCATION:" & evtLocation & "||ATTENDEES:" & attendeeList & "||ORGANIZER:" & evtOrganizer & "||BODY:" & evtBody & "|||"
+                                        end if
+                                    end if
+                                else
+                                    -- 非周期事件：直接匹配 start time
+                                    set evtStart to start time of theEvt
+                                    if evtStart >= todayStart and evtStart < todayEnd then
+                                        set evtSubject to subject of theEvt
+                                        set evtStartStr to evtStart as string
+                                        set dedupeKey to evtSubject & "|" & evtStartStr
+                                        if dedupeKey is not in seenKeys then
+                                            set seenKeys to seenKeys & {dedupeKey}
+                                            set evtEndStr to end time of theEvt as string
+                                            set evtLocation to ""
+                                            try
+                                                set evtLocation to location of theEvt
+                                            end try
+                                            set attendeeList to ""
+                                            try
+                                                set reqAttendees to required attendees of theEvt
+                                                repeat with att in reqAttendees
+                                                    set attendeeList to attendeeList & (email address of att) & ","
+                                                end repeat
+                                            end try
+                                            set evtOrganizer to ""
+                                            try
+                                                set evtOrganizer to address of organizer of theEvt
+                                            end try
+                                            set evtBody to ""
+                                            try
+                                                set evtBody to plain text content of theEvt
+                                                if (count of evtBody) > 500 then
+                                                    set evtBody to text 1 thru 500 of evtBody
+                                                end if
+                                            end try
+                                            set output to output & "SUBJECT:" & evtSubject & "||START:" & evtStartStr & "||END:" & evtEndStr & "||LOCATION:" & evtLocation & "||ATTENDEES:" & attendeeList & "||ORGANIZER:" & evtOrganizer & "||BODY:" & evtBody & "|||"
+                                        end if
+                                    end if
                                 end if
                             end try
-                            set output to output & "SUBJECT:" & evtSubject & "||START:" & evtStart & "||END:" & evtEnd & "||LOCATION:" & evtLocation & "||ATTENDEES:" & attendeeList & "||ORGANIZER:" & evtOrganizer & "||BODY:" & evtBody & "|||"
                         end repeat
                     end try
                 end repeat
@@ -124,6 +176,71 @@ fn parse_events(raw: &str) -> Vec<Event> {
         .collect()
 }
 
+/// 扫描今日会议，返回结构化 JSON（供前端会议卡片使用）
+pub async fn get_today_meetings(source: &str) -> Result<Vec<serde_json::Value>> {
+    use chrono::Local;
+
+    let raw = if source == "apple" {
+        scan_apple_events().await?
+    } else {
+        scan_outlook_events().await?
+    };
+
+    if raw.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let now = Local::now();
+    let now_hhmm = now.format("%H:%M").to_string();
+
+    let meetings = raw
+        .split("|||")
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|entry| {
+            let mut subject = String::new();
+            let mut start = String::new();
+            let mut end_time = String::new();
+            let mut location = String::new();
+            let mut attendees = String::new();
+            let mut organizer = String::new();
+
+            for field in entry.split("||") {
+                if let Some(v) = field.strip_prefix("SUBJECT:") { subject = v.to_string(); }
+                else if let Some(v) = field.strip_prefix("START:") { start = v.to_string(); }
+                else if let Some(v) = field.strip_prefix("END:") { end_time = v.to_string(); }
+                else if let Some(v) = field.strip_prefix("LOCATION:") { location = v.to_string(); }
+                else if let Some(v) = field.strip_prefix("ATTENDEES:") { attendees = v.trim_end_matches(',').to_string(); }
+                else if let Some(v) = field.strip_prefix("ORGANIZER:") { organizer = v.to_string(); }
+            }
+
+            if subject.is_empty() { return None; }
+
+            let start_hhmm = extract_time(&start).unwrap_or_default();
+            let end_hhmm = extract_time(&end_time).unwrap_or_default();
+
+            let status = if !end_hhmm.is_empty() && end_hhmm <= now_hhmm {
+                "past"
+            } else if !start_hhmm.is_empty() && start_hhmm <= now_hhmm {
+                "now"
+            } else {
+                "upcoming"
+            };
+
+            Some(serde_json::json!({
+                "subject": subject,
+                "start": if start_hhmm.is_empty() { start.clone() } else { start_hhmm },
+                "end": if end_hhmm.is_empty() { end_time.clone() } else { end_hhmm },
+                "location": location,
+                "attendees": attendees,
+                "organizer": organizer,
+                "status": status,
+            }))
+        })
+        .collect();
+
+    Ok(meetings)
+}
+
 /// 扫描今日所有日历事件，根据 source 配置选择 Outlook/Apple/both
 /// source: "outlook"（默认）, "apple", "both"
 pub async fn scan_today_events(source: &str) -> Result<String> {
@@ -174,29 +291,74 @@ async fn scan_outlook_events() -> Result<String> {
             set todayEnd to todayStart + (1 * days)
             set allCalendars to every calendar
             set output to ""
+            set seenKeys to {}
             repeat with cal in allCalendars
                 try
-                    set calEvents to (every calendar event of cal whose start time >= todayStart and start time < todayEnd)
+                    set calEvents to every calendar event of cal
                     repeat with evt in calEvents
-                        set evtSubject to subject of evt
-                        set evtStart to start time of evt as string
-                        set evtEnd to end time of evt as string
-                        set evtLocation to ""
+                        set theEvt to contents of evt
                         try
-                            set evtLocation to location of evt
+                            set isRec to is recurring of theEvt
+                            if isRec then
+                                -- 周期事件：用 master 的时间分量拼今天日期，再 get occurrence of
+                                set masterTime to time of (start time of theEvt)
+                                set occDate to todayStart + masterTime
+                                set occ to get occurrence of theEvt at occDate
+                                if occ is not missing value then
+                                    set evtSubject to subject of occ
+                                    set evtStart to start time of occ as string
+                                    set dedupeKey to evtSubject & "|" & evtStart
+                                    if dedupeKey is not in seenKeys then
+                                        set seenKeys to seenKeys & {dedupeKey}
+                                        set evtEnd to end time of occ as string
+                                        set evtLocation to ""
+                                        try
+                                            set evtLocation to location of occ
+                                        end try
+                                        set attendeeList to ""
+                                        try
+                                            set reqAttendees to required attendees of occ
+                                            repeat with att in reqAttendees
+                                                set attendeeList to attendeeList & (email address of att) & ","
+                                            end repeat
+                                        end try
+                                        set evtOrganizer to ""
+                                        try
+                                            set evtOrganizer to address of organizer of occ
+                                        end try
+                                        set output to output & "SUBJECT:" & evtSubject & "||START:" & evtStart & "||END:" & evtEnd & "||LOCATION:" & evtLocation & "||ATTENDEES:" & attendeeList & "||ORGANIZER:" & evtOrganizer & "|||"
+                                    end if
+                                end if
+                            else
+                                -- 非周期事件：直接匹配 start time
+                                set evtStart to start time of theEvt
+                                if evtStart >= todayStart and evtStart < todayEnd then
+                                    set evtSubject to subject of theEvt
+                                    set evtStartStr to evtStart as string
+                                    set dedupeKey to evtSubject & "|" & evtStartStr
+                                    if dedupeKey is not in seenKeys then
+                                        set seenKeys to seenKeys & {dedupeKey}
+                                        set evtEndStr to end time of theEvt as string
+                                        set evtLocation to ""
+                                        try
+                                            set evtLocation to location of theEvt
+                                        end try
+                                        set attendeeList to ""
+                                        try
+                                            set reqAttendees to required attendees of theEvt
+                                            repeat with att in reqAttendees
+                                                set attendeeList to attendeeList & (email address of att) & ","
+                                            end repeat
+                                        end try
+                                        set evtOrganizer to ""
+                                        try
+                                            set evtOrganizer to address of organizer of theEvt
+                                        end try
+                                        set output to output & "SUBJECT:" & evtSubject & "||START:" & evtStartStr & "||END:" & evtEndStr & "||LOCATION:" & evtLocation & "||ATTENDEES:" & attendeeList & "||ORGANIZER:" & evtOrganizer & "|||"
+                                    end if
+                                end if
+                            end if
                         end try
-                        set attendeeList to ""
-                        try
-                            set reqAttendees to required attendees of evt
-                            repeat with att in reqAttendees
-                                set attendeeList to attendeeList & (email address of att) & ","
-                            end repeat
-                        end try
-                        set evtOrganizer to ""
-                        try
-                            set evtOrganizer to address of organizer of evt
-                        end try
-                        set output to output & "SUBJECT:" & evtSubject & "||START:" & evtStart & "||END:" & evtEnd & "||LOCATION:" & evtLocation & "||ATTENDEES:" & attendeeList & "||ORGANIZER:" & evtOrganizer & "|||"
                     end repeat
                 end try
             end repeat

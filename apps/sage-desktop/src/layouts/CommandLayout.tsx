@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { invokeDeduped } from "../utils/invokeCache";
 import { GridLayout, type LayoutItem, type Layout } from "react-grid-layout";
@@ -34,6 +35,7 @@ const WIDGET_CATALOG: WidgetMeta[] = [
   { id: "pinned",      title: "Pinned",          icon: "📌", defaultLayout: { w: 5, h: 5,  minW: 3, minH: 3 }, render: d => <PinnedWidget data={d} /> },
   { id: "nebula",      title: "Nebula",           icon: "✨", defaultLayout: { w: 5, h: 7,  minW: 3, minH: 5 }, render: d => <NebulaWidget data={d} /> },
   { id: "tasks",       title: "Tasks",            icon: "☑️", defaultLayout: { w: 5, h: 6,  minW: 3, minH: 4 }, render: _ => <TasksWidget /> },
+  { id: "meetings",    title: "Today's Meetings", icon: "📅", defaultLayout: { w: 5, h: 6,  minW: 3, minH: 4 }, render: _ => <MeetingsWidget /> },
 ];
 
 const CATALOG_MAP = new Map(WIDGET_CATALOG.map(w => [w.id, w]));
@@ -42,7 +44,7 @@ const CATALOG_MAP = new Map(WIDGET_CATALOG.map(w => [w.id, w]));
 
 const LAYOUT_KEY = "command_grid_layout";
 const VISIBLE_KEY = "command_visible_widgets";
-const DEFAULT_VISIBLE = ["report", "tasks", "nebula", "news", "tags"];
+const DEFAULT_VISIBLE = ["report", "meetings", "tasks", "nebula", "news", "tags"];
 
 function loadVisible(): string[] {
   try { const s = localStorage.getItem(VISIBLE_KEY); if (s) return JSON.parse(s); } catch {}
@@ -475,6 +477,42 @@ function PinnedWidget({ data }: { data: DashData }) {
     ))}
     {!items.length && <span className="cmd-empty">{t("widget.noPinned")}</span>}
   </div>);
+}
+
+/* ─── Meetings Widget ─── */
+
+function MeetingsWidget() {
+  const { t } = useLang();
+  const { state } = useDashboard();
+  const navigate = useNavigate();
+  const meetings = state.events;
+
+  const statusColor = (s: string) =>
+    s === "now" ? "var(--success, #22c55e)" : s === "upcoming" ? "var(--accent)" : "var(--text-tertiary)";
+  const statusLabel = (s: string) =>
+    s === "now" ? t("widget.meetingNow") : s === "upcoming" ? t("widget.meetingUpcoming") : t("widget.meetingPast");
+
+  return (
+    <div className="cmd-card-body">
+      {meetings.map((m, i) => (
+        <div key={i} className="cmd-meeting-row"
+          onClick={() => navigate("/chat", { state: { quote: `会议「${m.subject}」${m.start}–${m.end}` } })}>
+          <div className="cmd-meeting-time">
+            <span className="cmd-meeting-dot" style={{ background: statusColor(m.status) }} />
+            <span className="cmd-meeting-hm">{m.start}</span>
+          </div>
+          <div className="cmd-meeting-info">
+            <span className="cmd-meeting-title">{m.subject}</span>
+            {m.location && <span className="cmd-meeting-loc">{m.location}</span>}
+          </div>
+          <span className="cmd-meeting-badge" style={{ color: statusColor(m.status) }}>
+            {statusLabel(m.status)}
+          </span>
+        </div>
+      ))}
+      {!meetings.length && <span className="cmd-empty">{t("widget.noMeetings")}</span>}
+    </div>
+  );
 }
 
 /* ═══ Main Layout ═══ */

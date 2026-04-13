@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::{get_provider, map_err, strip_code_fences};
+use super::{config_path, get_provider, map_err, strip_code_fences};
 use crate::AppState;
 
 /// 将日期转为相对标签：今日/明日/昨日/周X/MM-DD（支持中英双语）
@@ -283,6 +283,18 @@ pub fn get_dashboard_snapshot(state: State<'_, AppState>) -> Result<Value, Strin
     // 注：daily question 由 QuestionWidget 独立获取，不放入 snapshot，避免在 ClassicLayout/NebulaLayout 重复显示
 
     Ok(json!(items))
+}
+
+/// 今日会议列表（实时从 Outlook 拉取，不调 LLM）
+#[tauri::command]
+pub async fn get_today_events(_state: State<'_, AppState>) -> Result<Value, String> {
+    let cfg_path = config_path()?;
+    let config = sage_core::config::Config::load_or_default(&cfg_path);
+    let source = config.channels.calendar.source.as_str();
+    let meetings = sage_core::channels::calendar::get_today_meetings(source)
+        .await
+        .map_err(map_err)?;
+    Ok(json!(meetings))
 }
 
 /// 首页统计数据（纯聚合，不调 LLM）

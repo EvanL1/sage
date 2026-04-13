@@ -194,6 +194,13 @@ const translations = {
   "widget.refresh": { zh: "↻ 刷新", en: "↻ Refresh" },
   "widget.fetching": { zh: "获取中…", en: "Fetching…" },
 
+  // Widget — meetings
+  "widget.noMeetings":      { zh: "今日暂无会议", en: "No meetings today" },
+  "widget.meetingNow":      { zh: "进行中", en: "In progress" },
+  "widget.meetingUpcoming": { zh: "即将开始", en: "Upcoming" },
+  "widget.meetingPast":     { zh: "已结束", en: "Ended" },
+  "widget.meetingDiscuss":  { zh: "在 Chat 讨论", en: "Discuss in Chat" },
+
   // Widget — pinned
   "widget.noPinned": { zh: "从星云视图钉住卡片", en: "Pin cards from the Nebula view" },
 

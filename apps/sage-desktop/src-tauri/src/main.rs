@@ -170,6 +170,7 @@ fn main() {
             commands::curate_homepage,
             commands::get_dashboard_snapshot,
             commands::get_dashboard_stats,
+            commands::get_today_events,
             commands::save_report_correction,
             commands::get_report_corrections,
             commands::delete_report_correction,
